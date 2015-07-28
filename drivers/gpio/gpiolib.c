@@ -60,11 +60,17 @@ struct gpio_desc {
 #define FLAG_ACTIVE_LOW	7	/* sysfs value has active low */
 #define FLAG_OPEN_DRAIN	8	/* Gpio is open drain type */
 #define FLAG_OPEN_SOURCE 9	/* Gpio is open source type */
+#define FLAG_PULLUP	10	/* Gpio drive is resistive pullup */
+#define FLAG_PULLDOWN	11	/* Gpio drive is resistive pulldown */
+#define FLAG_STRONG	12	/* Gpio drive is strong (fast output) */
+#define FLAG_HIZ	13	/* Gpio drive is Hi-Z (input) */
 
 #define ID_SHIFT	16	/* add new flags before this one */
 
 #define GPIO_FLAGS_MASK		((1 << ID_SHIFT) - 1)
 #define GPIO_TRIGGER_MASK	(BIT(FLAG_TRIG_FALL) | BIT(FLAG_TRIG_RISE))
+#define GPIO_DRIVE_MASK		(BIT(FLAG_PULLUP) | BIT(FLAG_PULLDOWN)	\
+				| BIT(FLAG_STRONG) | BIT(FLAG_HIZ))
 
 #ifdef CONFIG_DEBUG_FS
 	const char		*label;
@@ -243,6 +249,10 @@ static DEFINE_MUTEX(sysfs_lock);
  *      * is read/write as zero/nonzero
  *      * also affects existing and subsequent "falling" and "rising"
  *        /edge configuration
+ *   /drive
+ *      * sets signal drive mode
+ *      * is read/write as "pullup", "pulldown", "strong" or "hiz"
+ *
  */
 
 static ssize_t gpio_direction_show(struct device *dev,
@@ -573,9 +583,85 @@ static ssize_t gpio_active_low_store(struct device *dev,
 static const DEVICE_ATTR(active_low, 0644,
 		gpio_active_low_show, gpio_active_low_store);
 
+static ssize_t gpio_drive_show(struct device *dev,
+		struct device_attribute *attr, char *buf)
+{
+	const struct gpio_desc	*desc = dev_get_drvdata(dev);
+	ssize_t			status;
+
+	mutex_lock(&sysfs_lock);
+
+	if (!test_bit(FLAG_EXPORT, &desc->flags)) {
+		status = -EIO;
+	} else {
+		if (test_bit(FLAG_PULLUP, &desc->flags))
+			status = sprintf(buf, "pullup\n");
+		else if (test_bit(FLAG_PULLDOWN, &desc->flags))
+			status = sprintf(buf, "pulldown\n");
+		else if (test_bit(FLAG_STRONG, &desc->flags))
+			status = sprintf(buf, "strong\n");
+		else if (test_bit(FLAG_HIZ, &desc->flags))
+			status = sprintf(buf, "hiz\n");
+		else
+			status = -EINVAL;
+	}
+
+	mutex_unlock(&sysfs_lock);
+	return status;
+}
+
+static ssize_t gpio_drive_store(struct device *dev,
+		struct device_attribute *attr, const char *buf, size_t size)
+{
+	struct gpio_desc	*desc = dev_get_drvdata(dev);
+	unsigned		gpio = desc - gpio_desc;
+	ssize_t			status;
+
+	mutex_lock(&sysfs_lock);
+
+	if (!test_bit(FLAG_EXPORT, &desc->flags))
+		status = -EIO;
+	else {
+		if (sysfs_streq(buf, "pullup")) {
+			status = gpio_set_drive(gpio, GPIOF_DRIVE_PULLUP);
+			if (!status) {
+				desc->flags &= ~GPIO_DRIVE_MASK;
+				set_bit(FLAG_PULLUP, &desc->flags);
+			}
+		} else if (sysfs_streq(buf, "pulldown")) {
+			status = gpio_set_drive(gpio, GPIOF_DRIVE_PULLDOWN);
+			if (!status) {
+				desc->flags &= ~GPIO_DRIVE_MASK;
+				set_bit(FLAG_PULLDOWN, &desc->flags);
+			}
+		} else if (sysfs_streq(buf, "strong")) {
+			status = gpio_set_drive(gpio, GPIOF_DRIVE_STRONG);
+			if (!status) {
+				desc->flags &= ~GPIO_DRIVE_MASK;
+				set_bit(FLAG_STRONG, &desc->flags);
+			}
+		} else if (sysfs_streq(buf, "hiz")) {
+			status = gpio_set_drive(gpio, GPIOF_DRIVE_HIZ);
+			if (!status) {
+				desc->flags &= ~GPIO_DRIVE_MASK;
+				set_bit(FLAG_HIZ, &desc->flags);
+			}
+		} else {
+			status = -EINVAL;
+		}
+	}
+
+	mutex_unlock(&sysfs_lock);
+	return status ? : size;
+}
+
+static const DEVICE_ATTR(drive, 0644,
+		gpio_drive_show, gpio_drive_store);
+
 static const struct attribute *gpio_attrs[] = {
 	&dev_attr_value.attr,
 	&dev_attr_active_low.attr,
+	&dev_attr_drive.attr,
 	NULL,
 };
 
@@ -806,7 +892,7 @@ fail_unlock:
 }
 EXPORT_SYMBOL_GPL(gpio_export);
 
-static int match_export(struct device *dev, void *data)
+static int match_export(struct device *dev, const void *data)
 {
 	return dev_get_drvdata(dev) == data;
 }
@@ -1676,6 +1762,50 @@ fail:
 	return status;
 }
 EXPORT_SYMBOL_GPL(gpio_set_debounce);
+
+/**
+ * gpio_set_drive - sets drive @mode for a @gpio
+ * @gpio: the gpio to set the drive mode
+ * @mode: the drive mode
+ */
+int gpio_set_drive(unsigned gpio, unsigned mode)
+{
+	unsigned long		flags;
+	struct gpio_chip	*chip;
+	struct gpio_desc	*desc = &gpio_desc[gpio];
+	int			status = -EINVAL;
+
+	spin_lock_irqsave(&gpio_lock, flags);
+
+	if (!gpio_is_valid(gpio))
+		goto fail;
+	chip = desc->chip;
+	if (!chip || !chip->set || !chip->set_drive)
+		goto fail;
+	gpio -= chip->base;
+	if (gpio >= chip->ngpio)
+		goto fail;
+	status = gpio_ensure_requested(desc, gpio);
+	if (status < 0)
+		goto fail;
+
+	/* now we know the gpio is valid and chip won't vanish */
+
+	spin_unlock_irqrestore(&gpio_lock, flags);
+
+	might_sleep_if(chip->can_sleep);
+
+	return chip->set_drive(chip, gpio, mode);
+
+fail:
+	spin_unlock_irqrestore(&gpio_lock, flags);
+	if (status)
+		pr_debug("%s: gpio-%d status %d\n",
+			__func__, gpio, status);
+
+	return status;
+}
+EXPORT_SYMBOL_GPL(gpio_set_drive);
 
 /* I/O calls are only valid after configuration completed; the relevant
  * "is this a valid GPIO" error checks should already have been done.

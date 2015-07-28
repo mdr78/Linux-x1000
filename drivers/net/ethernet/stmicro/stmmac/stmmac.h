@@ -27,9 +27,11 @@
 #define DRV_MODULE_VERSION	"Nov_2012"
 
 #include <linux/clk.h>
+#include <linux/clocksource.h>
 #include <linux/stmmac.h>
 #include <linux/phy.h>
 #include <linux/pci.h>
+#include <linux/ptp_clock_kernel.h>
 #include "common.h"
 
 struct stmmac_priv {
@@ -72,8 +74,21 @@ struct stmmac_priv {
 	u32 msg_enable;
 	spinlock_t lock;
 	spinlock_t tx_lock;
+
+	/* PTP */
+	struct ptp_clock *ptp_clock;
+	struct ptp_clock_info ptp_caps;
+	struct delayed_work overflow_work;
+	spinlock_t tmreg_lock;
+	struct cyclecounter ccnt;
+	struct timecounter tcnt;
+	int hwts;
+	struct stmmac_timer *tm;
+
 	int wolopts;
 	int wol_irq;
+
+	int active_vlans;
 	struct plat_stmmacenet_data *plat;
 	struct stmmac_counters mmc;
 	struct dma_features dma_cap;
@@ -81,6 +96,8 @@ struct stmmac_priv {
 	struct clk *stmmac_clk;
 	int clk_csr;
 	int synopsys_id;
+	int irqmode_msi;
+	struct pci_dev *pdev;
 	struct timer_list eee_ctrl_timer;
 	bool tx_path_in_lpi_mode;
 	int lpi_irq;
@@ -110,6 +127,63 @@ int stmmac_dvr_remove(struct net_device *ndev);
 struct stmmac_priv *stmmac_dvr_probe(struct device *device,
 				     struct plat_stmmacenet_data *plat_dat,
 				     void __iomem *addr);
+#ifdef CONFIG_STMMAC_PTP
+
+#define STMMAC_PTP_OVERFLOW_CHECK_ENABLED	(u32)(1)
+#define STMMAC_PTP_PPS_ENABLED			(u32)(1 << 1)
+#define STMMAC_PTP_HWTS_TX_EN			(u32)(1 << 2)
+#define STMMAC_PTP_HWTS_RX_EN			(u32)(1 << 3)
+
+extern void stmmac_ptp_init(struct net_device *ndev, struct device *pdev);
+extern void stmmac_ptp_remove(struct stmmac_priv *priv);
+extern int stmmac_ptp_hwtstamp_ioctl(struct stmmac_priv *priv,
+			struct ifreq *ifr, int cmd);
+extern void stmmac_ptp_rx_hwtstamp(struct stmmac_priv *priv,
+			struct dma_desc *pdma, struct sk_buff *skb);
+extern void stmmac_ptp_tx_hwtstamp(struct stmmac_priv *priv,
+			struct dma_desc *pdma, struct sk_buff *skb);
+extern void stmmac_ptp_check_pps_event(struct stmmac_priv *priv);
+#endif
+
+#ifdef CONFIG_HAVE_CLK
+static inline int stmmac_clk_enable(struct stmmac_priv *priv)
+{
+	if (!IS_ERR(priv->stmmac_clk))
+		return clk_prepare_enable(priv->stmmac_clk);
+
+	return 0;
+}
+
+static inline void stmmac_clk_disable(struct stmmac_priv *priv)
+{
+	if (IS_ERR(priv->stmmac_clk))
+		return;
+
+	clk_disable_unprepare(priv->stmmac_clk);
+}
+static inline int stmmac_clk_get(struct stmmac_priv *priv)
+{
+	priv->stmmac_clk = clk_get(priv->device, NULL);
+
+	if (IS_ERR(priv->stmmac_clk))
+		return PTR_ERR(priv->stmmac_clk);
+
+	return 0;
+}
+#else
+static inline int stmmac_clk_enable(struct stmmac_priv *priv)
+{
+	return 0;
+}
+static inline void stmmac_clk_disable(struct stmmac_priv *priv)
+{
+}
+static inline int stmmac_clk_get(struct stmmac_priv *priv)
+{
+	return 0;
+}
+#endif /* CONFIG_HAVE_CLK */
+
 void stmmac_disable_eee_mode(struct stmmac_priv *priv);
 bool stmmac_eee_init(struct stmmac_priv *priv);
 
@@ -167,6 +241,7 @@ static inline int stmmac_register_pci(void)
 static inline void stmmac_unregister_pci(void)
 {
 }
+
 #endif /* CONFIG_STMMAC_PCI */
 
 #endif /* __STMMAC_H__ */

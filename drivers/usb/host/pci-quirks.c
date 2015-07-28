@@ -17,6 +17,7 @@
 #include <linux/export.h>
 #include <linux/acpi.h>
 #include <linux/dmi.h>
+#include <linux/intel_qrk_sb.h>
 #include "pci-quirks.h"
 #include "xhci-ext-caps.h"
 
@@ -722,6 +723,47 @@ static int handshake(void __iomem *ptr, u32 mask, u32 done,
 	return -ETIMEDOUT;
 }
 
+bool usb_is_intel_qrk(struct pci_dev *pdev)
+{
+	return pdev->vendor == PCI_VENDOR_ID_INTEL &&
+		pdev->device == PCI_DEVICE_ID_INTEL_QUARK_X1000_SOC;
+
+}
+EXPORT_SYMBOL_GPL(usb_is_intel_qrk);
+
+#define EHCI_INSNREG01		0x84
+#define EHCI_INSNREG01_THRESH	0x007F007F	/* Threshold value */
+void usb_set_qrk_bulk_thresh(struct pci_dev *pdev)
+{
+	void __iomem *base, *op_reg_base;
+	u8 cap_length;
+	u32 val;
+
+	if (!mmio_resource_enabled(pdev, 0))
+		return;
+
+	base = pci_ioremap_bar(pdev, 0);
+	if (base == NULL)
+		return;
+
+	cap_length = readb(base);
+	op_reg_base = base + cap_length;
+
+	val = readl(op_reg_base + EHCI_INSNREG01);
+	dev_printk(KERN_INFO, &pdev->dev, "INSNREG01 is 0x%08x\n", val);
+
+	val = EHCI_INSNREG01_THRESH;
+
+	writel(val, op_reg_base + EHCI_INSNREG01);
+
+	val = readl(op_reg_base + EHCI_INSNREG01);
+	dev_printk(KERN_INFO, &pdev->dev, "INSNREG01 is 0x%08x\n", val);
+
+	iounmap(base);
+
+}
+EXPORT_SYMBOL_GPL(usb_set_qrk_bulk_thresh);
+
 #define PCI_DEVICE_ID_INTEL_LYNX_POINT_XHCI	0x8C31
 #define PCI_DEVICE_ID_INTEL_LYNX_POINT_LP_XHCI	0x9C31
 
@@ -943,6 +985,47 @@ hc_init:
 
 	iounmap(base);
 }
+#ifdef CONFIG_INTEL_QUARK_X1000_SOC
+/**
+ * quirk_qrk_usb_phy_set_squelch
+ *
+ * Uses side band access on quark to access USB PHY registers where the
+ * squelch value can be adjusted.
+ * @threshold: ref to millivolts to set the squelch to there are just a few
+ *             values available to use in quark
+ *
+ * QRK_SQUELCH_DEFAULT	0 apply default of 112.5 mV
+ * QRK_SQUELCH_LO	1 apply low  of 100 mV
+ * QRK_SQUELCH_HI	2 apply high of 125 mV
+ */
+#define USB2COMPBG	0x7F04	/* PHY register over side band */
+#define HS_SQ_REF_POS   13	/* bit position for squelch */
+#define HS_SQ_REF_MASK  (3 << HS_SQ_REF_POS) /* bit mask for squelch */
+
+#define USBPHY_SB_READ	0x06	/* Sideband read command  */
+#define USBPHY_SB_WRITE	0x07	/* Sideband write command */
+#define SB_ID_USBPHY	0x14	/* Port of USB PHY */
+
+void quirk_qrk_usb_phy_set_squelch(u32 threshold)
+{
+	u32 regval, regnew;
+	intel_qrk_sb_read_reg(SB_ID_USBPHY, USBPHY_SB_READ, USB2COMPBG,
+								 &regval, 1);
+	regnew = regval & ~HS_SQ_REF_MASK;
+	regnew |= ((threshold<<HS_SQ_REF_POS) & HS_SQ_REF_MASK);
+	intel_qrk_sb_write_reg(SB_ID_USBPHY, USBPHY_SB_WRITE, USB2COMPBG,
+								regnew, 1);
+	pr_info("USB PHY squelch ref adjusted from %8x to %8x\n",
+						regval, regnew);
+}
+#else
+inline void quirk_qrk_usb_phy_set_squelch(u32 threshold)
+{
+}
+#endif
+EXPORT_SYMBOL_GPL(quirk_qrk_usb_phy_set_squelch);
+
+
 
 static void quirk_usb_early_handoff(struct pci_dev *pdev)
 {

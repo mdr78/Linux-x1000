@@ -27,7 +27,13 @@
 
 #include "8250.h"
 
-#undef SERIAL_DEBUG_PCI
+/* QUARK FPGA */
+#define SERIAL_DEBUG_PCI
+
+/* TODO: Bryan remove ! */
+static unsigned int quark_enable_msi = 0;
+module_param(quark_enable_msi, uint, 0644);
+MODULE_PARM_DESC(quark_enable_msi, "Enable MSI operation on Quark 8250-PCI");
 
 /*
  * init function returns:
@@ -151,6 +157,20 @@ afavlab_setup(struct serial_private *priv, const struct pciserial_board *board,
 		bar = 4;
 		offset += (idx - 4) * board->uart_offset;
 	}
+
+	return setup_port(priv, port, bar, offset, board->reg_shift);
+}
+
+/*
+ * UART parameters for Intel Quark setup
+ */
+static int
+pci_intel_qrk_setup(struct serial_private *priv,
+		const struct pciserial_board *board,
+		struct uart_8250_port *port, int idx)
+{
+	unsigned int bar, offset = board->first_offset;
+	bar = FL_GET_BASE(board->flags);
 
 	return setup_port(priv, port, bar, offset, board->reg_shift);
 }
@@ -1410,6 +1430,14 @@ static struct pci_serial_quirk pci_serial_quirks[] __refdata = {
 		.subdevice	= PCI_ANY_ID,
 		.setup		= kt_serial_setup,
 	},
+	{
+		.vendor		= PCI_VENDOR_ID_INTEL,
+		.device		= 0x0936,
+		.subvendor	= PCI_ANY_ID,
+		.subdevice	= PCI_ANY_ID,
+		.setup		= pci_intel_qrk_setup,
+	},
+
 	/*
 	 * ITE
 	 */
@@ -2139,6 +2167,8 @@ enum pci_board_num_t {
 	pbn_oxsemi_2_4000000,
 	pbn_oxsemi_4_4000000,
 	pbn_oxsemi_8_4000000,
+	pbn_intel_cb,
+	pbn_intel_qrk,
 	pbn_intel_i960,
 	pbn_sgi_ioc3,
 	pbn_computone_4,
@@ -2725,6 +2755,12 @@ static struct pciserial_board pci_boards[] = {
 		.reg_shift	= 2,
 		.first_offset	= 0x10000,
 	},
+	[pbn_intel_qrk] = {
+		.flags		= FL_BASE0,
+		.num_ports	= 1,
+		.base_baud	= 2764800,
+		.reg_shift	= 2,
+	},
 	[pbn_sgi_ioc3] = {
 		.flags		= FL_BASE0|FL_NOIRQ,
 		.num_ports	= 1,
@@ -3186,6 +3222,14 @@ pciserial_init_one(struct pci_dev *dev, const struct pci_device_id *ent)
 	pci_save_state(dev);
 	if (rc)
 		return rc;
+
+	/* TODO: Bryan remove ! */
+	if(quark_enable_msi == 1){
+		if(pci_enable_msi(dev)!=0){
+			printk(KERN_ERR "QUARK/DEBUG unable to enable MSIs on serial port!\n");
+		}
+	}
+
 
 	if (ent->driver_data == pbn_default) {
 		/*
@@ -3998,6 +4042,12 @@ static struct pci_device_id serial_pci_tbl[] = {
 	{	PCI_VENDOR_ID_MORETON, PCI_DEVICE_ID_RASTEL_2PORT,
 		PCI_ANY_ID, PCI_ANY_ID, 0, 0,
 		pbn_b2_bt_2_115200 },
+ 	/*
+	 * Quark descriptor
+	 */
+	{	PCI_VENDOR_ID_INTEL, 0x0936,
+		PCI_ANY_ID, PCI_ANY_ID, 0, 0,
+		pbn_intel_qrk },
 
 	/*
 	 * EKF addition for i960 Boards form EKF with serial port

@@ -50,6 +50,10 @@ static int ehci_pci_reinit(struct ehci_hcd *ehci, struct pci_dev *pdev)
 	if (!retval)
 		ehci_dbg(ehci, "MWI active\n");
 
+	/* Reset the threshold limit */
+	if(unlikely(usb_is_intel_qrk(pdev)))
+		usb_set_qrk_bulk_thresh(pdev);
+
 	return 0;
 }
 
@@ -114,6 +118,17 @@ static int ehci_pci_setup(struct usb_hcd *hcd)
 	case PCI_VENDOR_ID_INTEL:
 		if (pdev->device == PCI_DEVICE_ID_INTEL_CE4100_USB)
 			hcd->has_tt = 1;
+		else if (pdev->device == PCI_DEVICE_ID_INTEL_QUARK_X1000_SOC
+						&& pdev->revision  == 0x10) {
+			ehci->has_x1000_phy = 1;
+			ehci->x1000_phy_squelch = QRK_SQUELCH_DEFAULT;
+			/* Intel Quark device of this revision requires
+				adjustment of squelch on the PHY
+			*/
+			ehci_info(ehci,
+			"QUARK USB phy rev 0x%x may have squelch ref adjusted\n"
+						, pdev->revision);
+		}
 		break;
 	case PCI_VENDOR_ID_TDI:
 		if (pdev->device == PCI_DEVICE_ID_TDI_EHCI)

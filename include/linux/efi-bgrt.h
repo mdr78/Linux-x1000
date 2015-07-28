@@ -6,6 +6,7 @@
 #include <linux/acpi.h>
 
 void efi_bgrt_init(void);
+bool efi_bgrt_probe(void);
 
 /* The BGRT data itself; only valid if bgrt_image != NULL. */
 extern void *bgrt_image;
@@ -15,6 +16,7 @@ extern struct acpi_table_bgrt *bgrt_tab;
 #else /* !CONFIG_ACPI_BGRT */
 
 static inline void efi_bgrt_init(void) {}
+static inline bool efi_bgrt_probe(void) { return false; }
 
 #endif /* !CONFIG_ACPI_BGRT */
 

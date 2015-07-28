@@ -67,12 +67,12 @@ static void dwmac100_dump_mac_regs(void __iomem *ioaddr)
 		readl(ioaddr + MAC_VLAN2));
 }
 
-static int dwmac100_rx_ipc_enable(void __iomem *ioaddr)
+static int dwmac100_set_rx_ipc(void __iomem *ioaddr, bool on)
 {
 	return 0;
 }
 
-static int dwmac100_irq_status(void __iomem *ioaddr)
+static int dwmac100_irq_status(struct stmmac_priv *priv)
 {
 	return 0;
 }
@@ -160,7 +160,7 @@ static void dwmac100_pmt(void __iomem *ioaddr, unsigned long mode)
 
 static const struct stmmac_ops dwmac100_ops = {
 	.core_init = dwmac100_core_init,
-	.rx_ipc = dwmac100_rx_ipc_enable,
+	.set_rx_ipc = dwmac100_set_rx_ipc,
 	.dump_regs = dwmac100_dump_mac_regs,
 	.host_irq_status = dwmac100_irq_status,
 	.set_filter = dwmac100_set_filter,

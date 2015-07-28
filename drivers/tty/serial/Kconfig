@@ -1327,6 +1327,26 @@ config SERIAL_IFX6X60
 	help
 	  Support for the IFX6x60 modem devices on Intel MID platforms.
 
+config SERIAL_QUARK_UART
+	tristate "Quark High Speed UART support"
+	depends on PCI
+	select SERIAL_CORE
+	select DMADEVICES
+	select INTEL_MID_DMAC
+	help
+	  This driver is for Intel(R) Quark X1000 UART with DMA enabled.
+	  If you don't want DMA then you should use the standard 8250_pci
+	  driver.
+
+config SERIAL_QUARK_UART_CONSOLE
+	bool "Support for console on Intel(R) Quark X1000 UART"
+	depends on SERIAL_QUARK_UART=y
+	select SERIAL_CORE_CONSOLE
+	help
+	  Say Y here if you wish to use the Quark UART as the system console
+	  (the system  console is the device which receives all kernel messages and
+	  warnings and which allows logins in single user mode).
+
 config SERIAL_PCH_UART
 	tristate "Intel EG20T PCH/LAPIS Semicon IOH(ML7213/ML7223/ML7831) UART"
 	depends on PCI

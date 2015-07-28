@@ -65,6 +65,7 @@ struct device_node;
  * @direction_output: configures signal "offset" as output, or returns error
  * @set_debounce: optional hook for setting debounce time for specified gpio in
  *      interrupt triggered gpio chips
+ * @set_drive: optional hook for setting the drive signal for "offset"
  * @set: assigns output value for signal "offset"
  * @to_irq: optional hook supporting non-static gpio_to_irq() mappings;
  *	implementation may not sleep
@@ -113,6 +114,8 @@ struct gpio_chip {
 						unsigned offset, int value);
 	int			(*set_debounce)(struct gpio_chip *chip,
 						unsigned offset, unsigned debounce);
+	int			(*set_drive)(struct gpio_chip *chip,
+					     unsigned offset, unsigned mode);
 
 	void			(*set)(struct gpio_chip *chip,
 						unsigned offset, int value);
@@ -172,6 +175,7 @@ extern int gpio_direction_input(unsigned gpio);
 extern int gpio_direction_output(unsigned gpio, int value);
 
 extern int gpio_set_debounce(unsigned gpio, unsigned debounce);
+extern int gpio_set_drive(unsigned gpio, unsigned mode);
 
 extern int gpio_get_value_cansleep(unsigned gpio);
 extern void gpio_set_value_cansleep(unsigned gpio, int value);

@@ -32,9 +32,15 @@
 #include <linux/init.h>
 #if defined(CONFIG_VLAN_8021Q) || defined(CONFIG_VLAN_8021Q_MODULE)
 #define STMMAC_VLAN_TAG_USED
+#if defined(CONFIG_INTEL_QUARK_X1000_SOC)
+#define STMMAC_VLAN_HASH
+#endif
 #include <linux/if_vlan.h>
 #endif
 
+#if defined(STMMAC_VLAN_HASH) || defined(CONFIG_STMMAC_PTP)
+#define STMMAC_ATDS_USED
+#endif
 #include "descs.h"
 #include "mmc.h"
 
@@ -319,15 +325,16 @@ struct stmmac_dma_ops {
 	void (*rx_watchdog) (void __iomem *ioaddr, u32 riwt);
 };
 
+struct stmmac_priv;
 struct stmmac_ops {
 	/* MAC core initialization */
 	void (*core_init) (void __iomem *ioaddr) ____cacheline_aligned;
 	/* Enable and verify that the IPC module is supported */
-	int (*rx_ipc) (void __iomem *ioaddr);
+	int (*set_rx_ipc) (void __iomem *ioaddr, bool on);
 	/* Dump MAC registers */
 	void (*dump_regs) (void __iomem *ioaddr);
 	/* Handle extra events on specific interrupts hw dependent */
-	int (*host_irq_status) (void __iomem *ioaddr);
+	int (*host_irq_status) (struct stmmac_priv *priv);
 	/* Multicast filter setting */
 	void (*set_filter) (struct net_device *dev, int id);
 	/* Flow control setting */
@@ -340,6 +347,9 @@ struct stmmac_ops {
 			       unsigned int reg_n);
 	void (*get_umac_addr) (void __iomem *ioaddr, unsigned char *addr,
 			       unsigned int reg_n);
+	/* Enable/Disable VLAN Hash filters */
+	int (*vlan_rx_add_vid)(struct stmmac_priv *priv, unsigned short vid);
+	int (*vlan_rx_kill_vid)(struct stmmac_priv *priv, unsigned short vid);
 	void (*set_eee_mode) (void __iomem *ioaddr);
 	void (*reset_eee_mode) (void __iomem *ioaddr);
 	void (*set_eee_timer) (void __iomem *ioaddr, int ls, int tw);

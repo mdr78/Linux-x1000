@@ -144,11 +144,12 @@ void dwmac_mmc_ctrl(void __iomem *ioaddr, unsigned int mode)
 		 MMC_CNTRL, value);
 }
 
-/* To mask all all interrupts.*/
+/* To mask all interrupts.*/
 void dwmac_mmc_intr_all_mask(void __iomem *ioaddr)
 {
 	writel(MMC_DEFAULT_MASK, ioaddr + MMC_RX_INTR_MASK);
 	writel(MMC_DEFAULT_MASK, ioaddr + MMC_TX_INTR_MASK);
+	writel(MMC_DEFAULT_MASK, ioaddr + MMC_RX_IPC_INTR_MASK);
 }
 
 /* This reads the MAC core counters (if actaully supported).

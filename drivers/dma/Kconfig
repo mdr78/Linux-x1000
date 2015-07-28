@@ -34,13 +34,13 @@ if DMADEVICES
 comment "DMA Devices"
 
 config INTEL_MID_DMAC
-	tristate "Intel MID DMA support for Peripheral DMA controllers"
+	tristate "Intel DMAC Moorsetown/Medfield/Quark DMA controllers"
 	depends on PCI && X86
 	select DMA_ENGINE
 	default n
 	help
-	  Enable support for the Intel(R) MID DMA engine present
-	  in Intel MID chipsets.
+	  Enable support for the Intel(R) MID/Quark DMA engine present
+	  in Intel MID chipsets and Quark SOC devices
 
 	  Say Y here if you have such a chipset.
 
@@ -83,7 +83,6 @@ config INTEL_IOP_ADMA
 
 config DW_DMAC
 	tristate "Synopsys DesignWare AHB DMA support"
-	depends on HAVE_CLK
 	select DMA_ENGINE
 	default y if CPU_AT32AP7000
 	help

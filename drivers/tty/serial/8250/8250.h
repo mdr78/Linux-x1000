@@ -59,6 +59,11 @@ struct serial8250_config {
 #define SERIAL8250_SHARE_IRQS 0
 #endif
 
+#define PCI_DEVICE_ID_INTEL_BYT_UART1	0x0f0a
+#define PCI_DEVICE_ID_INTEL_BYT_UART2	0x0f0c
+#define LPSS_UART_BYTE_CNT		0x818
+#define LPSS_UART_OVRFLW_INTR_STAT	0x820
+
 static inline int serial_in(struct uart_8250_port *up, int offset)
 {
 	return up->port.serial_in(&up->port, offset);
@@ -142,4 +147,25 @@ static inline int is_omap1510_8250(struct uart_8250_port *pt)
 {
 	return 0;
 }
+#endif
+
+#ifdef CONFIG_SERIAL_8250_DMA
+extern int serial8250_tx_dma(struct uart_8250_port *);
+extern int serial8250_rx_dma(struct uart_8250_port *, unsigned int iir);
+extern int serial8250_request_dma(struct uart_8250_port *);
+extern void serial8250_release_dma(struct uart_8250_port *);
+#else
+static inline int serial8250_tx_dma(struct uart_8250_port *p)
+{
+	return -1;
+}
+static inline int serial8250_rx_dma(struct uart_8250_port *p, unsigned int iir)
+{
+	return -1;
+}
+static inline int serial8250_request_dma(struct uart_8250_port *p)
+{
+	return -1;
+}
+static inline void serial8250_release_dma(struct uart_8250_port *p) { }
 #endif

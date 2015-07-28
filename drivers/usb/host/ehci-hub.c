@@ -1,5 +1,6 @@
 /*
  * Copyright (C) 2001-2004 by David Brownell
+ * Portions Copyright (C) 2015 Intel Corporation
  *
  * This program is free software; you can redistribute it and/or modify it
  * under the terms of the GNU General Public License as published by the
@@ -569,6 +570,11 @@ static int check_reset_complete (
 	} else {
 		ehci_dbg(ehci, "port %d reset complete, port enabled\n",
 			index + 1);
+		if (ehci->has_x1000_phy && ehci->x1000_phy_squelch) {
+			/* If squelch was adjusted, then reset back to normal */
+			quirk_qrk_usb_phy_set_squelch(QRK_SQUELCH_DEFAULT);
+			ehci->x1000_phy_squelch = QRK_SQUELCH_DEFAULT;
+		}
 		/* ensure 440EPx ohci controller state is suspended */
 		if (ehci->has_amcc_usb23)
 			set_ohci_hcfs(ehci, 0);
@@ -656,6 +662,62 @@ ehci_hub_status_data (struct usb_hcd *hcd, char *buf)
 
 	spin_unlock_irqrestore (&ehci->lock, flags);
 	return status ? retval : 0;
+}
+
+/*-------------------------------------------------------------------------*/
+
+/*
+ * __ehci_adjust_x1000_squelch
+ *
+ * Adjust the squelch on PHY for Intel Quark X1000
+ *
+ * Feature on X1000 SOC where squelch of on SOC PHY may need to be adjusted
+ * during enumeration of HS, trying a number of different levels.
+ * The adjustment is followed by a port repower to enable
+ * the state machine realign and a RESET to restart the
+ * enumeration process. This will result in succesful HS enumeration instead
+ * of cycling through waits and resets which were not solving the issue and
+ * ultimately ending up with no enumeration.
+ */
+
+static void
+__ehci_adjust_x1000_squelch(
+	struct ehci_hcd	*ehci,
+	u32 __iomem	*status_reg,
+	u16		windex
+) {
+	u32		temp;
+	temp = ehci_readl(ehci, status_reg);
+
+	switch (ehci->x1000_phy_squelch) {
+	case QRK_SQUELCH_DEFAULT:   /* No squelch yet done now put it low */
+		ehci->x1000_phy_squelch = QRK_SQUELCH_LO;
+		break;
+	case QRK_SQUELCH_LO: /* Low squelch done now put it high */
+		ehci->x1000_phy_squelch = QRK_SQUELCH_HI;
+		break;
+	case QRK_SQUELCH_HI:
+			/* High done now put it back to default and
+			   reset state for for next time */
+		ehci->x1000_phy_squelch = QRK_SQUELCH_DEFAULT;
+		break;
+	}
+	temp = ehci_readl(ehci, status_reg);
+	ehci_writel(ehci, temp & ~PORT_POWER, status_reg);
+	quirk_qrk_usb_phy_set_squelch(ehci->x1000_phy_squelch);
+	temp = ehci_readl(ehci, status_reg);
+	ehci_writel(ehci, temp | PORT_POWER, status_reg);
+	handshake(ehci, status_reg, PORT_CONNECT, 1, 2000);
+			/*  allow time for repower to work */
+	if (ehci->x1000_phy_squelch == QRK_SQUELCH_DEFAULT)
+		return;	/* do not reset port when finished
+			   as we are OK with enum. Just set
+			   back to default for next device */
+	temp = ehci_readl(ehci, status_reg);
+	temp |= PORT_RESET;
+	temp &= ~PORT_PE;
+	ehci->reset_done[windex] = jiffies + msecs_to_jiffies(50);
+	ehci_writel(ehci, temp, status_reg);
 }
 
 /*-------------------------------------------------------------------------*/
@@ -903,7 +965,16 @@ static int ehci_hub_control (
 			 */
 			retval = handshake(ehci, status_reg,
 					PORT_RESET, 0, 1000);
-			if (retval != 0) {
+			if (retval == -ETIMEDOUT && ehci->has_x1000_phy) {
+				/* Quark, squelch adjust and RESET needed */
+				__ehci_adjust_x1000_squelch(ehci, status_reg,
+								wIndex);
+				if (ehci->x1000_phy_squelch)
+					/* If squelch adjusted */
+					goto error;
+				/* else squelch is back at default allow enum
+					to continue */
+			} else if (retval != 0) {
 				ehci_err (ehci, "port %d reset error %d\n",
 					wIndex + 1, retval);
 				goto error;
@@ -1056,7 +1127,10 @@ static int ehci_hub_control (
 				ehci_vdbg (ehci, "port %d reset\n", wIndex + 1);
 				temp |= PORT_RESET;
 				temp &= ~PORT_PE;
-
+				if (ehci->has_x1000_phy
+						&& ehci->x1000_phy_squelch)
+					ehci->x1000_phy_squelch
+						= QRK_SQUELCH_DEFAULT;
 				/*
 				 * caller must wait, then call GetPortStatus
 				 * usb 2.0 spec says 50 ms resets on root

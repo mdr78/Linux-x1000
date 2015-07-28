@@ -761,7 +761,10 @@ void __init setup_arch(char **cmdline_p)
 			KERNEL_PGD_PTRS);
 
 	load_cr3(swapper_pg_dir);
-	__flush_tlb_all();
+	if (boot_cpu_data.x86 == 5 && boot_cpu_data.x86_model == 9)
+		__flush_tlb();
+	else
+		__flush_tlb_all();
 #else
 	printk(KERN_INFO "Command line: %s\n", boot_command_line);
 #endif

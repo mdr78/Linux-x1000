@@ -847,6 +847,7 @@ void __init efi_enter_virtual_mode(void)
 	u64 end, systab, end_pfn;
 	void *p, *va, *new_memmap = NULL;
 	int count = 0;
+	bool bgrt_map;
 
 	efi.systab = NULL;
 
@@ -859,6 +860,11 @@ void __init efi_enter_virtual_mode(void)
 		efi_unmap_memmap();
 		return;
 	}
+
+	/*
+	 * Determine if mapping EFI boot code/data is required for BGRT mapping
+	 */
+	bgrt_map = efi_bgrt_probe();
 
 	/* Merge contiguous regions of the same type and attribute */
 	for (p = memmap.map; p < memmap.map_end; p += memmap.desc_size) {
@@ -889,9 +895,9 @@ void __init efi_enter_virtual_mode(void)
 
 	for (p = memmap.map; p < memmap.map_end; p += memmap.desc_size) {
 		md = p;
-		if (!(md->attribute & EFI_MEMORY_RUNTIME) &&
-		    md->type != EFI_BOOT_SERVICES_CODE &&
-		    md->type != EFI_BOOT_SERVICES_DATA)
+		if (!((md->attribute & EFI_MEMORY_RUNTIME) || (bgrt_map &&
+			(md->type == EFI_BOOT_SERVICES_CODE ||
+			 md->type == EFI_BOOT_SERVICES_DATA))))
 			continue;
 
 		size = md->num_pages << EFI_PAGE_SHIFT;

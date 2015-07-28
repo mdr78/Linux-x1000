@@ -1,11 +1,13 @@
 /*
  * Copyright (C) 2011 LAPIS Semiconductor Co., Ltd.
+ * Copyright (C) 2015 Intel Corporation
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
  * the Free Software Foundation; version 2 of the License.
  */
 #define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
+#include <asm/qrk.h>
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/pci.h>
@@ -17,6 +19,21 @@
 #include <linux/usb/gadget.h>
 #include <linux/gpio.h>
 #include <linux/irq.h>
+
+static unsigned int enable_msi = 1;
+module_param(enable_msi, uint, S_IRUGO | S_IWUSR);
+MODULE_PARM_DESC(enable_msi, "Enable PCI MSI mode");
+
+static unsigned int phy_err_max;
+module_param(phy_err_max, uint, S_IRUGO | S_IWUSR);
+MODULE_PARM_DESC(phy_err_max, "PHY ERR count before disconnect, 0 to disable");
+
+static unsigned int phy_err_time = 100;
+module_param(phy_err_time, uint, S_IRUGO | S_IWUSR);
+MODULE_PARM_DESC(phy_err_time, "delay time between disconnect in milliseconds");
+
+static unsigned long  phy_err_time_jiffies;	/* delay time between disconnect  */
+static unsigned long  phy_err_backoff_end;	/* timeout for PHY ERR disconnect */
 
 /* GPIO port for VBUS detecting */
 static int vbus_gpio_port = -1;		/* GPIO port number (-1:Not used) */
@@ -213,6 +230,18 @@ static int vbus_gpio_port = -1;		/* GPIO port number (-1:Not used) */
 #define UDC_DMA_MAXPACKET	65536	/* maximum packet size for DMA */
 
 /**
+ * Bit masks used to make sure the RO bits are saved as 0 thus restore will
+ * set them to 0, as specified in the Quak data-sheet.
+ */
+#define D_CFG_UDC_REG_MASK		0x0FFFBF
+#define D_CTRL_UDC_REG_MASK		0xFFFF3FFD
+#define D_INT_UDC_REG_MASK		0xFF
+#define D_INTR_MSK_UDC_REG_MASK		0xFF
+#define EP_INTR_UDC_REG_MASK		0x0F000F
+#define	EP_INTR_MSK_UDC_REG_MASK	0x0F000F
+#define TEST_MODE_UDC_REG_MASK		0x01
+
+/**
  * struct pch_udc_data_dma_desc - Structure to hold DMA descriptor information
  *				  for data
  * @status:		Status quadlet
@@ -318,6 +347,20 @@ struct pch_vbus_gpio_data {
 };
 
 /**
+ * struct pch_saved_reg - Registers to be saved during S3 suspend to RAM and
+ *			restore during S3 resume.
+ */
+struct pch_saved_regs {
+	u32	d_cfg_udc_reg;
+	u32	d_ctrl_udc_reg;
+	u32	d_int_udc_reg;
+	u32	d_intr_msk_udc_reg;
+	u32	ep_intr_udc_reg;
+	u32	ep_intr_msk_udc_reg;
+	u32	test_mode_udc_reg;
+};
+
+/**
  * struct pch_udc_dev - Structure holding complete information
  *			of the PCH USB device
  * @gadget:		gadget driver data
@@ -343,9 +386,12 @@ struct pch_vbus_gpio_data {
  * @setup_data:		Received setup data
  * @phys_addr:		of device memory
  * @base_addr:		for mapped device memory
+ * @bar:		Indicates which PCI BAR for USB regs
  * @irq:		IRQ line for the device
+ * @phy_err_cnt:	Count of phy_errs on this device
  * @cfg_data:		current cfg, intf, and alt in use
  * @vbus_gpio:		GPIO informaton for detecting VBUS
+ * @saved_regs		Where to save MMIO during suspend_noirq
  */
 struct pch_udc_dev {
 	struct usb_gadget		gadget;
@@ -371,13 +417,20 @@ struct pch_udc_dev {
 	struct usb_ctrlrequest		setup_data;
 	unsigned long			phys_addr;
 	void __iomem			*base_addr;
+	unsigned			bar;
 	unsigned			irq;
+	unsigned			phy_err_cnt;
 	struct pch_udc_cfg_data		cfg_data;
 	struct pch_vbus_gpio_data	vbus_gpio;
+#ifdef CONFIG_PM
+	struct pch_saved_regs		saved_regs;
+#endif
 };
 
-#define PCH_UDC_PCI_BAR			1
+#define PCH_UDC_PCI_BAR_QUARK		0
+#define PCH_UDC_PCI_BAR_EG20T		1
 #define PCI_DEVICE_ID_INTEL_EG20T_UDC	0x8808
+#define PCI_DEVICE_ID_INTEL_QUARK_UDC	0x0939
 #define PCI_VENDOR_ID_ROHM		0x10DB
 #define PCI_DEVICE_ID_ML7213_IOH_UDC	0x801D
 #define PCI_DEVICE_ID_ML7831_IOH_UDC	0x8808
@@ -562,6 +615,7 @@ static inline void pch_udc_set_selfpowered(struct pch_udc_dev *dev)
  */
 static inline void pch_udc_set_disconnect(struct pch_udc_dev *dev)
 {
+	dev_dbg(&dev->pdev->dev, "udc disconnect");
 	pch_udc_bit_set(dev, UDC_DEVCTL_ADDR, UDC_DEVCTL_SD);
 }
 
@@ -587,6 +641,7 @@ static void pch_udc_clear_disconnect(struct pch_udc_dev *dev)
 static void pch_udc_init(struct pch_udc_dev *dev);
 static void pch_udc_reconnect(struct pch_udc_dev *dev)
 {
+	dev_dbg(&dev->pdev->dev, "udc reconnect");
 	pch_udc_init(dev);
 
 	/* enable device interrupts */
@@ -1069,6 +1124,10 @@ static void pch_udc_init(struct pch_udc_dev *dev)
 	/* mask and clear all device interrupts */
 	pch_udc_bit_set(dev, UDC_DEVIRQMSK_ADDR, UDC_DEVINT_MSK);
 	pch_udc_bit_set(dev, UDC_DEVIRQSTS_ADDR, UDC_DEVINT_MSK);
+	if (phy_err_max)
+		/* Allow ES and US as they may come back when we hit PHY ERR*/
+		pch_udc_bit_clr(dev, UDC_DEVIRQMSK_ADDR, UDC_DEVINT_US |
+						UDC_DEVINT_ES);
 
 	/* mask and clear all ep interrupts */
 	pch_udc_bit_set(dev, UDC_EPIRQMSK_ADDR, UDC_EPINT_MSK_DISABLE_ALL);
@@ -1769,7 +1828,7 @@ static struct usb_request *pch_udc_alloc_request(struct usb_ep *usbep,
 		return NULL;
 	ep = container_of(usbep, struct pch_udc_ep, ep);
 	dev = ep->dev;
-	req = kzalloc(sizeof *req, gfp);
+	req = kzalloc(sizeof(*req), gfp);
 	if (!req)
 		return NULL;
 	req->req.dma = DMA_ADDR_INVALID;
@@ -2091,7 +2150,7 @@ static void pch_udc_init_setup_buff(struct pch_udc_stp_dma_desc *td_stp)
 	if (!td_stp)
 		return;
 	td_stp->reserved = ++pky_marker;
-	memset(&td_stp->request, 0xFF, sizeof td_stp->request);
+	memset(&td_stp->request, 0xFF, sizeof(td_stp->request));
 	td_stp->status = PCH_UDC_BS_HST_RDY;
 }
 
@@ -2152,8 +2211,8 @@ static void pch_udc_complete_transfer(struct pch_udc_ep *ep)
 		return;
 	if ((req->td_data_last->status & PCH_UDC_RXTX_STS) !=
 	     PCH_UDC_RTS_SUCC) {
-		dev_err(&dev->pdev->dev, "Invalid RXTX status (0x%08x) "
-			"epstatus=0x%08x\n",
+		dev_err(&dev->pdev->dev,
+			"Invalid RXTX status (0x%08x) epstatus=0x%08x\n",
 		       (req->td_data_last->status & PCH_UDC_RXTX_STS),
 		       (int)(ep->epsts));
 		return;
@@ -2201,8 +2260,8 @@ static void pch_udc_complete_receiver(struct pch_udc_ep *ep)
 
 	while (1) {
 		if ((td->status & PCH_UDC_RXTX_STS) != PCH_UDC_RTS_SUCC) {
-			dev_err(&dev->pdev->dev, "Invalid RXTX status=0x%08x "
-				"epstatus=0x%08x\n",
+			dev_err(&dev->pdev->dev,
+				"Invalid RXTX status=0x%08x epstatus=0x%08x\n",
 				(req->td_data->status & PCH_UDC_RXTX_STS),
 				(int)(ep->epsts));
 			return;
@@ -2618,6 +2677,7 @@ static void pch_udc_svc_enum_interrupt(struct pch_udc_dev *dev)
 		BUG();
 	}
 	dev->gadget.speed = speed;
+	dev->phy_err_cnt = 0;
 	pch_udc_activate_control_ep(dev);
 	pch_udc_enable_ep_interrupts(dev, UDC_EPINT_IN_EP0 | UDC_EPINT_OUT_EP0);
 	pch_udc_set_dma(dev, DMA_DIR_TX);
@@ -2647,7 +2707,7 @@ static void pch_udc_svc_intf_interrupt(struct pch_udc_dev *dev)
 							 UDC_DEVSTS_ALT_SHIFT;
 	dev->set_cfg_not_acked = 1;
 	/* Construct the usb request for gadget driver and inform it */
-	memset(&dev->setup_data, 0 , sizeof dev->setup_data);
+	memset(&dev->setup_data, 0 , sizeof(dev->setup_data));
 	dev->setup_data.bRequest = USB_REQ_SET_INTERFACE;
 	dev->setup_data.bRequestType = USB_RECIP_INTERFACE;
 	dev->setup_data.wValue = cpu_to_le16(dev->cfg_data.cur_alt);
@@ -2686,7 +2746,7 @@ static void pch_udc_svc_cfg_interrupt(struct pch_udc_dev *dev)
 	dev->cfg_data.cur_cfg = (dev_stat & UDC_DEVSTS_CFG_MASK) >>
 				UDC_DEVSTS_CFG_SHIFT;
 	/* make usb request for gadget driver */
-	memset(&dev->setup_data, 0 , sizeof dev->setup_data);
+	memset(&dev->setup_data, 0 , sizeof(dev->setup_data));
 	dev->setup_data.bRequest = USB_REQ_SET_CONFIGURATION;
 	dev->setup_data.wValue = cpu_to_le16(dev->cfg_data.cur_cfg);
 	/* program the NE registers */
@@ -2734,6 +2794,35 @@ static void pch_udc_dev_isr(struct pch_udc_dev *dev, u32 dev_intr)
 	/* Set Config Interrupt */
 	if (dev_intr & UDC_DEVINT_SC)
 		pch_udc_svc_cfg_interrupt(dev);
+
+	/* checking for PHY ERR is enabled */
+	if (phy_err_max) {
+		/* USB Suspend and IDLE interrupt together  */
+
+		if ((dev_intr & UDC_DEVINT_US)
+				&& (dev_intr & UDC_DEVINT_ES)) {
+			dev->phy_err_cnt += 1;
+			if (dev->phy_err_cnt >= phy_err_max
+				&& time_after(jiffies, phy_err_backoff_end)) {
+				/* HERE is a symptom of a state machine which
+				 * may need to be reset, so force a disconnect
+				 * and set a delay before allows again */
+				dev_dbg(&dev->pdev->dev,
+					"USB_SUSPEND & USB_ES phy_err_cnt count %d",
+					dev->phy_err_cnt);
+				phy_err_backoff_end = jiffies
+					+ phy_err_time_jiffies;
+				dev->phy_err_cnt = 0;
+				pch_udc_set_disconnect(dev);
+			} else  {
+				dev_dbg(&dev->pdev->dev,
+					"USB_SUSPEND & USB_ES");
+			}
+		} else {
+		/* received normal interrupt fault has cleared */
+			dev->phy_err_cnt = 0;
+		}
+	}
 	/* USB Suspend interrupt */
 	if (dev_intr & UDC_DEVINT_US) {
 		if (dev->driver
@@ -2779,55 +2868,74 @@ static irqreturn_t pch_udc_isr(int irq, void *pdev)
 {
 	struct pch_udc_dev *dev = (struct pch_udc_dev *) pdev;
 	u32 dev_intr, ep_intr;
-	int i;
+	int i, events = 0, count = 0;
 
-	dev_intr = pch_udc_read_device_interrupts(dev);
-	ep_intr = pch_udc_read_ep_interrupts(dev);
+	mask_pvm(dev->pdev);
+	do {
+		events = 0;
+		dev_intr = pch_udc_read_device_interrupts(dev);
+		ep_intr = pch_udc_read_ep_interrupts(dev);
 
-	/* For a hot plug, this find that the controller is hung up. */
-	if (dev_intr == ep_intr)
-		if (dev_intr == pch_udc_readl(dev, UDC_DEVCFG_ADDR)) {
-			dev_dbg(&dev->pdev->dev, "UDC: Hung up\n");
-			/* The controller is reset */
-			pch_udc_writel(dev, UDC_SRST, UDC_SRST_ADDR);
-			return IRQ_HANDLED;
-		}
-	if (dev_intr)
-		/* Clear device interrupts */
-		pch_udc_write_device_interrupts(dev, dev_intr);
-	if (ep_intr)
-		/* Clear ep interrupts */
-		pch_udc_write_ep_interrupts(dev, ep_intr);
-	if (!dev_intr && !ep_intr)
-		return IRQ_NONE;
-	spin_lock(&dev->lock);
-	if (dev_intr)
-		pch_udc_dev_isr(dev, dev_intr);
-	if (ep_intr) {
-		pch_udc_read_all_epstatus(dev, ep_intr);
-		/* Process Control In interrupts, if present */
-		if (ep_intr & UDC_EPINT_IN_EP0) {
-			pch_udc_svc_control_in(dev);
-			pch_udc_postsvc_epinters(dev, 0);
-		}
-		/* Process Control Out interrupts, if present */
-		if (ep_intr & UDC_EPINT_OUT_EP0)
-			pch_udc_svc_control_out(dev);
-		/* Process data in end point interrupts */
-		for (i = 1; i < PCH_UDC_USED_EP_NUM; i++) {
-			if (ep_intr & (1 <<  i)) {
-				pch_udc_svc_data_in(dev, i);
-				pch_udc_postsvc_epinters(dev, i);
+		/* For a hot plug, this find that the controller is hung up. */
+		if (dev_intr == ep_intr)
+			if (dev_intr == pch_udc_readl(dev, UDC_DEVCFG_ADDR)) {
+				dev_dbg(&dev->pdev->dev, "UDC: Hung up\n");
+				/* The controller is reset */
+				pch_udc_writel(dev, UDC_SRST, UDC_SRST_ADDR);
+				unmask_pvm(dev->pdev);
+				return IRQ_HANDLED;
 			}
+		if (dev_intr) {
+			/* Clear device interrupts */
+			pch_udc_write_device_interrupts(dev, dev_intr);
+			events = 1;
+			count = 1;
 		}
-		/* Process data out end point interrupts */
-		for (i = UDC_EPINT_OUT_SHIFT + 1; i < (UDC_EPINT_OUT_SHIFT +
-						 PCH_UDC_USED_EP_NUM); i++)
-			if (ep_intr & (1 <<  i))
-				pch_udc_svc_data_out(dev, i -
-							 UDC_EPINT_OUT_SHIFT);
-	}
-	spin_unlock(&dev->lock);
+		if (ep_intr) {
+			/* Clear ep interrupts */
+			pch_udc_write_ep_interrupts(dev, ep_intr);
+			events = 1;
+			count = 1;
+		}
+		if (!dev_intr && !ep_intr) {
+			unmask_pvm(dev->pdev);
+			if (count)
+				return IRQ_HANDLED;
+			else
+				return IRQ_NONE;
+		}
+		spin_lock(&dev->lock);
+		if (dev_intr)
+			pch_udc_dev_isr(dev, dev_intr);
+		if (ep_intr) {
+			pch_udc_read_all_epstatus(dev, ep_intr);
+			/* Process Control In interrupts, if present */
+			if (ep_intr & UDC_EPINT_IN_EP0) {
+				pch_udc_svc_control_in(dev);
+				pch_udc_postsvc_epinters(dev, 0);
+			}
+			/* Process Control Out interrupts, if present */
+			if (ep_intr & UDC_EPINT_OUT_EP0)
+				pch_udc_svc_control_out(dev);
+			/* Process data in end point interrupts */
+			for (i = 1; i < PCH_UDC_USED_EP_NUM; i++) {
+				if (ep_intr & (1 <<  i)) {
+					pch_udc_svc_data_in(dev, i);
+					pch_udc_postsvc_epinters(dev, i);
+				}
+			}
+			/* Process data out end point interrupts */
+			for (i = UDC_EPINT_OUT_SHIFT + 1;
+				i < (UDC_EPINT_OUT_SHIFT + PCH_UDC_USED_EP_NUM);
+				i++)
+				if (ep_intr & (1 <<  i))
+					pch_udc_svc_data_out(dev,
+						i - UDC_EPINT_OUT_SHIFT);
+		}
+		spin_unlock(&dev->lock);
+	} while (events == 1);
+	unmask_pvm(dev->pdev);
+
 	return IRQ_HANDLED;
 }
 
@@ -2877,7 +2985,7 @@ static void pch_udc_pcd_reinit(struct pch_udc_dev *dev)
 	INIT_LIST_HEAD(&dev->gadget.ep_list);
 
 	/* Initialize the endpoints structures */
-	memset(dev->ep, 0, sizeof dev->ep);
+	memset(dev->ep, 0, sizeof(dev->ep));
 	for (i = 0; i < PCH_UDC_EP_NUM; i++) {
 		struct pch_udc_ep *ep = &dev->ep[i];
 		ep->dev = dev;
@@ -3075,9 +3183,14 @@ static void pch_udc_remove(struct pci_dev *pdev)
 		dev_err(&pdev->dev,
 			"%s: gadget driver still bound!!!\n", __func__);
 	/* dma pool cleanup */
-	if (dev->data_requests)
-		pci_pool_destroy(dev->data_requests);
-
+	if (dev->data_requests) {
+		/* cleanup DMA desc's for ep0in */
+		if (dev->ep[UDC_EP0OUT_IDX].td_data) {
+			pci_pool_free(dev->data_requests,
+				dev->ep[UDC_EP0OUT_IDX].td_data,
+				dev->ep[UDC_EP0OUT_IDX].td_data_phys);
+		}
+	}
 	if (dev->stp_requests) {
 		/* cleanup DMA desc's for ep0in */
 		if (dev->ep[UDC_EP0OUT_IDX].td_stp) {
@@ -3085,13 +3198,11 @@ static void pch_udc_remove(struct pci_dev *pdev)
 				dev->ep[UDC_EP0OUT_IDX].td_stp,
 				dev->ep[UDC_EP0OUT_IDX].td_stp_phys);
 		}
-		if (dev->ep[UDC_EP0OUT_IDX].td_data) {
-			pci_pool_free(dev->stp_requests,
-				dev->ep[UDC_EP0OUT_IDX].td_data,
-				dev->ep[UDC_EP0OUT_IDX].td_data_phys);
-		}
-		pci_pool_destroy(dev->stp_requests);
 	}
+	if (dev->stp_requests)
+		pci_pool_destroy(dev->stp_requests);
+	if (dev->data_requests)
+		pci_pool_destroy(dev->data_requests);
 
 	if (dev->dma_addr)
 		dma_unmap_single(&dev->pdev->dev, dev->dma_addr,
@@ -3103,12 +3214,17 @@ static void pch_udc_remove(struct pci_dev *pdev)
 	pch_udc_exit(dev);
 
 	if (dev->irq_registered)
+		{
 		free_irq(pdev->irq, dev);
+		if (enable_msi){
+			pci_disable_msi(pdev);
+		}
+	}
 	if (dev->base_addr)
 		iounmap(dev->base_addr);
 	if (dev->mem_region)
 		release_mem_region(dev->phys_addr,
-				   pci_resource_len(pdev, PCH_UDC_PCI_BAR));
+				   pci_resource_len(pdev, dev->bar));
 	if (dev->active)
 		pci_disable_device(pdev);
 	if (dev->registered)
@@ -3116,45 +3232,6 @@ static void pch_udc_remove(struct pci_dev *pdev)
 	kfree(dev);
 	pci_set_drvdata(pdev, NULL);
 }
-
-#ifdef CONFIG_PM
-static int pch_udc_suspend(struct pci_dev *pdev, pm_message_t state)
-{
-	struct pch_udc_dev *dev = pci_get_drvdata(pdev);
-
-	pch_udc_disable_interrupts(dev, UDC_DEVINT_MSK);
-	pch_udc_disable_ep_interrupts(dev, UDC_EPINT_MSK_DISABLE_ALL);
-
-	pci_disable_device(pdev);
-	pci_enable_wake(pdev, PCI_D3hot, 0);
-
-	if (pci_save_state(pdev)) {
-		dev_err(&pdev->dev,
-			"%s: could not save PCI config state\n", __func__);
-		return -ENOMEM;
-	}
-	pci_set_power_state(pdev, pci_choose_state(pdev, state));
-	return 0;
-}
-
-static int pch_udc_resume(struct pci_dev *pdev)
-{
-	int ret;
-
-	pci_set_power_state(pdev, PCI_D0);
-	pci_restore_state(pdev);
-	ret = pci_enable_device(pdev);
-	if (ret) {
-		dev_err(&pdev->dev, "%s: pci_enable_device failed\n", __func__);
-		return ret;
-	}
-	pci_enable_wake(pdev, PCI_D3hot, 0);
-	return 0;
-}
-#else
-#define pch_udc_suspend	NULL
-#define pch_udc_resume	NULL
-#endif /* CONFIG_PM */
 
 static int pch_udc_probe(struct pci_dev *pdev,
 			  const struct pci_device_id *id)
@@ -3170,7 +3247,7 @@ static int pch_udc_probe(struct pci_dev *pdev,
 		return -EBUSY;
 	}
 	/* init */
-	dev = kzalloc(sizeof *dev, GFP_KERNEL);
+	dev = kzalloc(sizeof(*dev), GFP_KERNEL);
 	if (!dev) {
 		pr_err("%s: no memory for device structure\n", __func__);
 		return -ENOMEM;
@@ -3184,9 +3261,15 @@ static int pch_udc_probe(struct pci_dev *pdev,
 	dev->active = 1;
 	pci_set_drvdata(pdev, dev);
 
+	/* Determine BAR based on PCI ID */
+	if (id->device == PCI_DEVICE_ID_INTEL_QUARK_UDC)
+		dev->bar = PCH_UDC_PCI_BAR_QUARK;
+	else
+		dev->bar = PCH_UDC_PCI_BAR_EG20T;
+
 	/* PCI resource allocation */
-	resource = pci_resource_start(pdev, 1);
-	len = pci_resource_len(pdev, 1);
+	resource = pci_resource_start(pdev, dev->bar);
+	len = pci_resource_len(pdev, dev->bar);
 
 	if (!request_mem_region(resource, len, KBUILD_MODNAME)) {
 		dev_err(&pdev->dev, "%s: pci device used already\n", __func__);
@@ -3213,6 +3296,14 @@ static int pch_udc_probe(struct pci_dev *pdev,
 		retval = -ENODEV;
 		goto finished;
 	}
+
+	pci_set_master(pdev);
+	if (enable_msi == 1)
+		pci_enable_msi(pdev);
+	dev->phy_err_cnt = 0;
+	phy_err_backoff_end = jiffies;
+	phy_err_time_jiffies  = msecs_to_jiffies(phy_err_time);
+
 	if (request_irq(pdev->irq, pch_udc_isr, IRQF_SHARED, KBUILD_MODNAME,
 			dev)) {
 		dev_err(&pdev->dev, "%s: request_irq(%d) fail\n", __func__,
@@ -3223,7 +3314,7 @@ static int pch_udc_probe(struct pci_dev *pdev,
 	dev->irq = pdev->irq;
 	dev->irq_registered = 1;
 
-	pci_set_master(pdev);
+
 	pci_try_set_mwi(pdev);
 
 	/* device struct setup */
@@ -3259,7 +3350,153 @@ finished:
 	return retval;
 }
 
+#ifdef CONFIG_PM
+
+/**
+ * pch_udc_save_regs - save the Memory Mapped I/O device configuration
+ *		registers.
+ * @dev: - USB-Device instance
+ *
+ * It always returns 0.
+ */
+static int pch_udc_save_regs(struct pch_udc_dev *dev)
+{
+	dev->saved_regs.d_cfg_udc_reg = pch_udc_readl(dev, UDC_DEVCFG_ADDR) &
+		D_CFG_UDC_REG_MASK;
+	dev->saved_regs.d_ctrl_udc_reg = pch_udc_readl(dev, UDC_DEVCTL_ADDR) &
+		D_CTRL_UDC_REG_MASK;
+	dev->saved_regs.d_int_udc_reg = pch_udc_readl(dev, UDC_DEVIRQSTS_ADDR) &
+		D_INT_UDC_REG_MASK;
+	dev->saved_regs.d_intr_msk_udc_reg = pch_udc_readl(dev,
+			UDC_DEVIRQMSK_ADDR) & D_INTR_MSK_UDC_REG_MASK;
+	dev->saved_regs.ep_intr_udc_reg = pch_udc_readl(dev, UDC_EPIRQSTS_ADDR)
+		& EP_INTR_UDC_REG_MASK;
+	dev->saved_regs.ep_intr_msk_udc_reg = pch_udc_readl(dev,
+			UDC_EPIRQMSK_ADDR) & EP_INTR_MSK_UDC_REG_MASK;
+	dev->saved_regs.test_mode_udc_reg = pch_udc_readl(dev, UDC_DEVLPM_ADDR)
+		& TEST_MODE_UDC_REG_MASK;
+	return 0;
+}
+
+
+/**
+ * pch_udc_restore_regs - restore all the Memory Mapped I/O registers saved
+ *			during suspend phase by pch_udc_save_regs() function.
+ * @dev: - USB-Device instance
+ *
+ * Always returns 0.
+ */
+static int pch_udc_restore_regs(struct pch_udc_dev *dev)
+{
+	pch_udc_writel(dev, dev->saved_regs.d_cfg_udc_reg, UDC_DEVCFG_ADDR);
+	pch_udc_writel(dev, dev->saved_regs.d_ctrl_udc_reg, UDC_DEVCTL_ADDR);
+	pch_udc_writel(dev, dev->saved_regs.d_int_udc_reg, UDC_DEVIRQSTS_ADDR);
+	pch_udc_writel(dev, dev->saved_regs.d_intr_msk_udc_reg,
+			UDC_DEVIRQMSK_ADDR);
+	pch_udc_writel(dev, dev->saved_regs.ep_intr_udc_reg, UDC_EPIRQSTS_ADDR);
+	pch_udc_writel(dev, dev->saved_regs.ep_intr_msk_udc_reg,
+			UDC_EPIRQMSK_ADDR);
+	pch_udc_writel(dev, dev->saved_regs.test_mode_udc_reg, UDC_DEVLPM_ADDR);
+	return 0;
+}
+
+/**
+ * pch_udc_suspend - ".suspend" PM callback
+ *
+ * Always returns 0.
+ *
+ * If there is a USB Gadget on top of the USB-Device driver, shut it down (
+ * disable device and endpoints interrupts; set Soft Disconnect).
+ */
+static int pch_udc_suspend(struct device *pdevice)
+{
+	struct pci_dev *pdev = to_pci_dev(pdevice);
+	struct pch_udc_dev *dev = pci_get_drvdata(pdev);
+
+	if (dev->driver)
+		pch_udc_shutdown(pdev);
+
+	return 0;
+}
+
+/**
+ * pch_udc_suspend_noirq - ".suspend_noirq" PM callback.
+ *
+ * Always returns 0.
+ *
+ * It saves the Memory Mapped I/O device configuration registers.
+ */
+static int pch_udc_suspend_noirq(struct device *pdevice)
+{
+	int ret;
+
+	struct pci_dev *pdev	= to_pci_dev(pdevice);
+	struct pch_udc_dev *dev	= pci_get_drvdata(pdev);
+
+	ret = pch_udc_save_regs(dev);
+	return ret;
+}
+
+/**
+ * pch_udc_resume_noirq - ".resume_noirq" PM callback
+ *
+ * Always returns 0.
+ *
+ * Restore all the Memory Mapped I/O device configuration registers saved during
+ * suspend_noirq phase.
+ */
+static int pch_udc_resume_noirq(struct device *pdevice)
+{
+	struct pci_dev *pdev	= to_pci_dev(pdevice);
+	struct pch_udc_dev *dev	= pci_get_drvdata(pdev);
+
+	pch_udc_restore_regs(dev);
+	return 0;
+}
+
+/**
+ * pch_udc_resume - ".resume" PM callback.
+ *
+ * Always returns 0.
+ *
+ * Reconnects the USB Gadget if it exists on top of USB-Device.
+ */
+static int pch_udc_resume(struct device *pdevice)
+{
+	struct pci_dev *pdev	= to_pci_dev(pdevice);
+	struct pch_udc_dev *dev	= pci_get_drvdata(pdev);
+
+	if (dev->driver)
+		pch_udc_reconnect(dev);
+
+	return 0;
+}
+
+#else /* CONFIG_PM */
+
+#define pch_udc_suspend		NULL
+#define pch_udc_suspend_noirq	NULL
+#define pch_udc_resume_noirq	NULL
+#define pch_udc_resume		NULL
+
+#endif /* CONFIG_PM */
+
+/**
+ * Power Management callbacks
+ */
+const struct dev_pm_ops pch_udc_pm_ops = {
+	.suspend	= pch_udc_suspend,
+	.suspend_noirq	= pch_udc_suspend_noirq,
+	.resume_noirq	= pch_udc_resume_noirq,
+	.resume		= pch_udc_resume,
+};
+
 static DEFINE_PCI_DEVICE_TABLE(pch_udc_pcidev_id) = {
+	{
+		PCI_DEVICE(PCI_VENDOR_ID_INTEL, PCI_DEVICE_ID_INTEL_QUARK_UDC),
+		.class = (PCI_CLASS_SERIAL_USB << 8) | 0xfe,
+		.class_mask = 0xffffffff,
+	},
 	{
 		PCI_DEVICE(PCI_VENDOR_ID_INTEL, PCI_DEVICE_ID_INTEL_EG20T_UDC),
 		.class = (PCI_CLASS_SERIAL_USB << 8) | 0xfe,
@@ -3285,9 +3522,10 @@ static struct pci_driver pch_udc_driver = {
 	.id_table =	pch_udc_pcidev_id,
 	.probe =	pch_udc_probe,
 	.remove =	pch_udc_remove,
-	.suspend =	pch_udc_suspend,
-	.resume =	pch_udc_resume,
 	.shutdown =	pch_udc_shutdown,
+	.driver =	{
+		.pm =	&pch_udc_pm_ops,
+	},
 };
 
 module_pci_driver(pch_udc_driver);

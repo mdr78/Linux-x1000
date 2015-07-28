@@ -25,8 +25,8 @@
 #define __DESCS_H__
 
 struct dma_desc {
-	/* Receive descriptor */
 	union {
+		/* Receive descriptor */
 		struct {
 			/* RDES0 */
 			u32 payload_csum_error:1;
@@ -160,6 +160,49 @@ struct dma_desc {
 	} des01;
 	unsigned int des2;
 	unsigned int des3;
+
+	/* Enhanced mode - with VLAN/1588-2005/IPC CHKSUM offload */
+	#if defined(STMMAC_ATDS_USED)
+		union {
+			/* Receive descriptor */
+			struct {
+				/* RDES4 */
+				u32 ip_payload_type:3;
+				u32 ip_header_error:1;
+				u32 ip_payload_error:1;
+				u32 ip_checksum_bypassed:1;
+				u32 ipv4_packet_received:1;
+				u32 ipv6_packet_received:1;
+				u32 message_type:4;
+				u32 ptp_frame_type:1;
+				u32 ptp_version:1;
+				u32 timestamp_dropped:1;
+				u32 reserved1:1;
+				u32 av_packet_received:1;
+				u32 av_tagged_packet_received:1;
+				u32 vlan_tag_priority_value:3;
+				u32 reserved2:3;
+				u32 layer3_filter_match:1;
+				u32 layer4_filter_match:1;
+				u32 layer3_layer4_filter_num_matched:2;
+				u32 reserved3:4;
+
+				/* RDES5 */
+				u32 reserved4;
+			} erx;
+
+			/* Transmit descriptor */
+			struct {
+				/* TDES4 */
+				u32 reserved1;
+
+				/* TDES5 */
+				u32 reserved2;
+			} etx;
+		} des05;
+		unsigned int ts_lo;		/* des6 Tx/Rx timestmp lo */
+		unsigned int ts_hi;		/* des7 Tx/Rx timestamp hi */
+	#endif
 };
 
 /* Transmit checksum insertion control */

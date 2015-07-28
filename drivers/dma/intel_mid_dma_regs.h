@@ -27,6 +27,7 @@
 
 #include <linux/dmaengine.h>
 #include <linux/dmapool.h>
+#include <linux/intel_mid_dma.h>
 #include <linux/pci_ids.h>
 
 #define INTEL_MID_DMA_DRIVER_VERSION "1.1.0"
@@ -158,114 +159,29 @@ union intel_mid_dma_cfg_hi {
 };
 
 
-/**
- * struct intel_mid_dma_chan - internal mid representation of a DMA channel
- * @chan: dma_chan strcture represetation for mid chan
- * @ch_regs: MMIO register space pointer to channel register
- * @dma_base: MMIO register space DMA engine base pointer
- * @ch_id: DMA channel id
- * @lock: channel spinlock
- * @active_list: current active descriptors
- * @queue: current queued up descriptors
- * @free_list: current free descriptors
- * @slave: dma slave structure
- * @descs_allocated: total number of descriptors allocated
- * @dma: dma device structure pointer
- * @busy: bool representing if ch is busy (active txn) or not
- * @in_use: bool representing if ch is in use or not
- * @raw_tfr: raw trf interrupt received
- * @raw_block: raw block interrupt received
- */
-struct intel_mid_dma_chan {
-	struct dma_chan		chan;
-	void __iomem		*ch_regs;
-	void __iomem		*dma_base;
-	int			ch_id;
-	spinlock_t		lock;
-	struct list_head	active_list;
-	struct list_head	queue;
-	struct list_head	free_list;
-	unsigned int		descs_allocated;
-	struct middma_device	*dma;
-	bool			busy;
-	bool			in_use;
-	u32			raw_tfr;
-	u32			raw_block;
-	struct intel_mid_dma_slave *mid_slave;
-};
-
 static inline struct intel_mid_dma_chan *to_intel_mid_dma_chan(
 						struct dma_chan *chan)
 {
 	return container_of(chan, struct intel_mid_dma_chan, chan);
 }
 
-enum intel_mid_dma_state {
-	RUNNING = 0,
-	SUSPENDED,
-};
-/**
- * struct middma_device - internal representation of a DMA device
- * @pdev: PCI device
- * @dma_base: MMIO register space pointer of DMA
- * @dma_pool: for allocating DMA descriptors
- * @common: embedded struct dma_device
- * @tasklet: dma tasklet for processing interrupts
- * @ch: per channel data
- * @pci_id: DMA device PCI ID
- * @intr_mask: Interrupt mask to be used
- * @mask_reg: MMIO register for periphral mask
- * @chan_base: Base ch index (read from driver data)
- * @max_chan: max number of chs supported (from drv_data)
- * @block_size: Block size of DMA transfer supported (from drv_data)
- * @pimr_mask: MMIO register addr for periphral interrupt (from drv_data)
- * @state: dma PM device state
- */
-struct middma_device {
-	struct pci_dev		*pdev;
-	void __iomem		*dma_base;
-	struct pci_pool		*dma_pool;
-	struct dma_device	common;
-	struct tasklet_struct   tasklet;
-	struct intel_mid_dma_chan ch[MAX_CHAN];
-	unsigned int		pci_id;
-	unsigned int		intr_mask;
-	void __iomem		*mask_reg;
-	int			chan_base;
-	int			max_chan;
-	int			block_size;
-	unsigned int		pimr_mask;
-	enum intel_mid_dma_state state;
-};
-
 static inline struct middma_device *to_middma_device(struct dma_device *common)
 {
 	return container_of(common, struct middma_device, common);
 }
 
-struct intel_mid_dma_desc {
-	void __iomem			*block; /*ch ptr*/
-	struct list_head		desc_node;
-	struct dma_async_tx_descriptor	txd;
-	size_t				len;
+#if CONFIG_INTEL_QUARK_X1000_SOC
+struct intel_mid_dma_lli {
 	dma_addr_t			sar;
 	dma_addr_t			dar;
-	u32				cfg_hi;
-	u32				cfg_lo;
+	dma_addr_t			llp;
 	u32				ctl_lo;
 	u32				ctl_hi;
-	struct pci_pool			*lli_pool;
-	struct intel_mid_dma_lli	*lli;
-	dma_addr_t			lli_phys;
-	unsigned int			lli_length;
-	unsigned int			current_lli;
-	dma_addr_t			next;
-	enum dma_transfer_direction		dirn;
-	enum dma_status			status;
-	enum dma_slave_buswidth		width; /*width of DMA txn*/
-	enum intel_mid_dma_mode		cfg_mode; /*mode configuration*/
+	u32				sstatx;
+	u32				dstatx;
+} __attribute__ ((packed));
 
-};
+#else
 
 struct intel_mid_dma_lli {
 	dma_addr_t			sar;
@@ -275,6 +191,7 @@ struct intel_mid_dma_lli {
 	u32				ctl_hi;
 } __attribute__ ((packed));
 
+#endif
 static inline int test_ch_en(void __iomem *dma, u32 ch_no)
 {
 	u32 en_reg = ioread32(dma + DMA_CHAN_EN);
@@ -293,6 +210,14 @@ static inline struct intel_mid_dma_slave *to_intel_mid_dma_slave
 	return container_of(slave, struct intel_mid_dma_slave, dma_slave);
 }
 
+
+int mid_setup_dma(struct pci_dev *pdev, struct middma_device *dma);
+#if 0
+void middma_shutdown(struct pci_dev *pdev, struct middma_device *device);
+void dmac1_mask_periphral_intr(struct middma_device *mid);
+void dmac1_unmask_periphral_intr(struct intel_mid_dma_chan *midc);
+#endif
+int middma_resume(struct device *dev);
 
 int dma_resume(struct device *dev);
 

@@ -123,6 +123,16 @@ obj-$(CONFIG_MFD_DB8500_PRCMU)	+= db8500-prcmu.o
 obj-$(CONFIG_AB8500_CORE)	+= ab8500-core.o ab8500-sysctrl.o
 obj-$(CONFIG_MFD_TIMBERDALE)    += timberdale.o
 obj-$(CONFIG_PMIC_ADP5520)	+= adp5520.o
+obj-$(CONFIG_CY8C9540A)		+= cy8c9540a.o
+pca9685-objs			:= pca9685-core.o pca9685-gpio.o pca9685-pwm.o
+obj-$(CONFIG_MFD_PCA9685)	+= pca9685.o
+obj-$(CONFIG_INTEL_QRK_GIP)	+= intel_qrk_gip.o
+intel_qrk_gip-objs		:= intel_qrk_gip_core.o \
+					intel_qrk_gip_gpio.o \
+					intel_qrk_gip_i2c.o \
+					../i2c/busses/i2c-designware-core.o
+obj-$(CONFIG_INTEL_QUARK_X1000_SOC)	+= intel_qrk_gip_pdata.o
+obj-$(CONFIG_INTEL_QRK_GIP_TEST)+=intel_qrk_gip_test.o
 obj-$(CONFIG_LPC_SCH)		+= lpc_sch.o
 obj-$(CONFIG_LPC_ICH)		+= lpc_ich.o
 obj-$(CONFIG_MFD_RDC321X)	+= rdc321x-southbridge.o
@@ -148,3 +158,4 @@ obj-$(CONFIG_MFD_LM3533)	+= lm3533-core.o lm3533-ctrlbank.o
 obj-$(CONFIG_VEXPRESS_CONFIG)	+= vexpress-config.o vexpress-sysreg.o
 obj-$(CONFIG_MFD_RETU)		+= retu-mfd.o
 obj-$(CONFIG_MFD_AS3711)	+= as3711.o
+obj-$(CONFIG_MFD_INTEL_QUARK_HSUART_DMA)	+= intel_quark_hsuart_dma.o

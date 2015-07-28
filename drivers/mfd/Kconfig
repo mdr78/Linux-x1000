@@ -844,6 +844,16 @@ config AB3100_OTP
 	  programmable memory) support. This exposes a sysfs file to read
 	  out OTP values.
 
+config MFD_INTEL_QUARK_HSUART_DMA
+	tristate "Intel Quark MFD for High Speed UART with DMA Engine"
+	depends on PCI
+	select MFD_CORE
+	help
+	  This MFD supports High Speed UART PCI device with its DMA engine
+	  companion in Intel Quark product series such as Intel Quark X1000.
+	  Its role is spliting the 2 devices in orderly manner for their
+	  respective driver.
+
 config EZX_PCAP
 	bool "PCAP Support"
 	depends on GENERIC_HARDIRQS && SPI_MASTER
@@ -906,6 +916,54 @@ config MFD_TIMBERDALE
 
 	The timberdale FPGA can be found on the Intel Atom development board
 	for in-vehicle infontainment, called Russellville.
+
+config CY8C9540A
+	tristate "Cypress CY8C9540 GPIO/PWM expander"
+	depends on GPIOLIB
+	depends on I2C
+	depends on PWM
+	help
+	  Select this option to enable support for the CY8C9540 I/O expander.
+	  This device provides 40 interrupt-capable GPIOs, 8 PWMs and an EEPROM.
+
+config MFD_PCA9685
+	tristate "NPX Semiconductors PCA9685 (PWM/GPIO) driver"
+	depends on GPIOLIB && I2C && PWM
+	select REGMAP_I2C
+	help
+	  NPX PCA9685 I2C-bus PWM controller with GPIO output interface support.
+	  The I2C-bus LED controller provides 16-channel, 12-bit PWM Fm+.
+	  Additionally, the driver allows the channels to be configured as GPIO
+	  interface (output only).
+
+config INTEL_QRK_GIP
+	tristate "Intel Quark GIP"
+	depends on PCI && X86 && INTEL_QUARK_X1000_SOC
+	depends on I2C
+	select GENERIC_IRQ_CHIP
+	help
+	  GIP driver for Quark SoC.
+	  Quark GIP is a single PCI function exporting a GPIO and an I2C
+	  controller, namely Synopsys DesignWare GPIO and Synopsys DesignWare
+	  I2C.  The GPIO interface exports a total amount of 8 interrupt-capable
+	  GPIOs.
+
+config INTEL_QRK_GIP_TEST
+	tristate "Intel Quark GIP support for Integration Testing"
+	depends on INTEL_QRK_GIP
+	select I2C_CHARDEV
+	select GPIO_SYSFS
+	select SPI
+	select SPI_BITBANG
+	select SPI_GPIO
+	select SPI_MASTER
+	select SPI_SPIDEV
+	help
+	  Quark GIP automated Integration Testing package.
+	  It selects kernel components needed for GPIO and I2C tests as per
+	  Integration Test Specification, and it also adds a kernel-space
+	  facility for testing the GPIO.
+	  Note this module is also used to test the Quark Legacy GPIO.
 
 config LPC_SCH
 	tristate "Intel SCH LPC"

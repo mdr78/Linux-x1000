@@ -143,6 +143,17 @@ static void __cpuinit early_init_intel(struct cpuinfo_x86 *c)
 			setup_clear_cpu_cap(X86_FEATURE_ERMS);
 		}
 	}
+
+	/*
+	 * Quark X1000 PGE is advertised but not implemented. This matters since
+	 * cpu_has_pge is used to determine the type of TLB flushing to do. With
+	 * PGE not actually doing what it says on the tin writes to CR4.PGE do
+	 * nothing when we should be re-writing CR3 like a 486
+	 */
+	if (c->x86 == 5 && c->x86_model == 9){
+		printk(KERN_INFO "Disabling PGE capability bit\n");
+		setup_clear_cpu_cap(X86_FEATURE_PGE);
+	}
 }
 
 #ifdef CONFIG_X86_32

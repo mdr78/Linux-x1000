@@ -29,6 +29,12 @@
 #define PCA953X_INVERT		2
 #define PCA953X_DIRECTION	3
 
+#define PCAL953X_IN_LATCH	34
+#define PCAL953X_PUPD_EN	35
+#define PCAL953X_PUPD_SEL	36
+#define PCAL953X_INT_MASK	37
+#define PCAL953X_INT_STAT	38
+
 #define REG_ADDR_AI		0x80
 
 #define PCA957X_IN		0
@@ -44,29 +50,32 @@
 #define PCA_INT			0x0100
 #define PCA953X_TYPE		0x1000
 #define PCA957X_TYPE		0x2000
+#define PCAL953X_TYPE		0x4000
+
 
 static const struct i2c_device_id pca953x_id[] = {
-	{ "pca9534", 8  | PCA953X_TYPE | PCA_INT, },
-	{ "pca9535", 16 | PCA953X_TYPE | PCA_INT, },
-	{ "pca9536", 4  | PCA953X_TYPE, },
-	{ "pca9537", 4  | PCA953X_TYPE | PCA_INT, },
-	{ "pca9538", 8  | PCA953X_TYPE | PCA_INT, },
-	{ "pca9539", 16 | PCA953X_TYPE | PCA_INT, },
-	{ "pca9554", 8  | PCA953X_TYPE | PCA_INT, },
-	{ "pca9555", 16 | PCA953X_TYPE | PCA_INT, },
-	{ "pca9556", 8  | PCA953X_TYPE, },
-	{ "pca9557", 8  | PCA953X_TYPE, },
-	{ "pca9574", 8  | PCA957X_TYPE | PCA_INT, },
-	{ "pca9575", 16 | PCA957X_TYPE | PCA_INT, },
+	{ "pca9534",   8  | PCA953X_TYPE | PCA_INT, },
+	{ "pca9535",   16 | PCA953X_TYPE | PCA_INT, },
+	{ "pca9536",   4  | PCA953X_TYPE, },
+	{ "pca9537",   4  | PCA953X_TYPE | PCA_INT, },
+	{ "pca9538",   8  | PCA953X_TYPE | PCA_INT, },
+	{ "pca9539",   16 | PCA953X_TYPE | PCA_INT, },
+	{ "pca9554",   8  | PCA953X_TYPE | PCA_INT, },
+	{ "pca9555",   16 | PCA953X_TYPE | PCA_INT, },
+	{ "pcal9555a", 16 | PCAL953X_TYPE | PCA_INT, },
+	{ "pca9556",   8  | PCA953X_TYPE, },
+	{ "pca9557",   8  | PCA953X_TYPE, },
+	{ "pca9574",   8  | PCA957X_TYPE | PCA_INT, },
+	{ "pca9575",   16 | PCA957X_TYPE | PCA_INT, },
 
-	{ "max7310", 8  | PCA953X_TYPE, },
-	{ "max7312", 16 | PCA953X_TYPE | PCA_INT, },
-	{ "max7313", 16 | PCA953X_TYPE | PCA_INT, },
-	{ "max7315", 8  | PCA953X_TYPE | PCA_INT, },
-	{ "pca6107", 8  | PCA953X_TYPE | PCA_INT, },
-	{ "tca6408", 8  | PCA953X_TYPE | PCA_INT, },
-	{ "tca6416", 16 | PCA953X_TYPE | PCA_INT, },
-	{ "tca6424", 24 | PCA953X_TYPE | PCA_INT, },
+	{ "max7310",   8  | PCA953X_TYPE, },
+	{ "max7312",   16 | PCA953X_TYPE | PCA_INT, },
+	{ "max7313",   16 | PCA953X_TYPE | PCA_INT, },
+	{ "max7315",   8  | PCA953X_TYPE | PCA_INT, },
+	{ "pca6107",   8  | PCA953X_TYPE | PCA_INT, },
+	{ "tca6408",   8  | PCA953X_TYPE | PCA_INT, },
+	{ "tca6416",   16 | PCA953X_TYPE | PCA_INT, },
+	{ "tca6424",   24 | PCA953X_TYPE | PCA_INT, },
 	{ }
 };
 MODULE_DEVICE_TABLE(i2c, pca953x_id);
@@ -75,6 +84,8 @@ struct pca953x_chip {
 	unsigned gpio_start;
 	u32 reg_output;
 	u32 reg_direction;
+	u32 reg_pupd_en;
+	u32 reg_pupd_sel;
 	struct mutex i2c_lock;
 
 #ifdef CONFIG_GPIO_PCA953X_IRQ
@@ -105,9 +116,9 @@ static int pca953x_write_reg(struct pca953x_chip *chip, int reg, u32 val)
 						(reg << 2) | REG_ADDR_AI,
 						3,
 						(u8 *) &val);
-	}
-	else {
+	} else {
 		switch (chip->chip_type) {
+		case PCAL953X_TYPE:
 		case PCA953X_TYPE:
 			ret = i2c_smbus_write_word_data(chip->client,
 							reg << 1, val);
@@ -139,8 +150,7 @@ static int pca953x_read_reg(struct pca953x_chip *chip, int reg, u32 *val)
 	if (chip->gpio_chip.ngpio <= 8) {
 		ret = i2c_smbus_read_byte_data(chip->client, reg);
 		*val = ret;
-	}
-	else if (chip->gpio_chip.ngpio == 24) {
+	} else if (chip->gpio_chip.ngpio == 24) {
 		*val = 0;
 		ret = i2c_smbus_read_i2c_block_data(chip->client,
 						(reg << 2) | REG_ADDR_AI,
@@ -172,6 +182,7 @@ static int pca953x_gpio_direction_input(struct gpio_chip *gc, unsigned off)
 	reg_val = chip->reg_direction | (1u << off);
 
 	switch (chip->chip_type) {
+	case PCAL953X_TYPE:
 	case PCA953X_TYPE:
 		offset = PCA953X_DIRECTION;
 		break;
@@ -207,6 +218,7 @@ static int pca953x_gpio_direction_output(struct gpio_chip *gc,
 		reg_val = chip->reg_output & ~(1u << off);
 
 	switch (chip->chip_type) {
+	case PCAL953X_TYPE:
 	case PCA953X_TYPE:
 		offset = PCA953X_OUTPUT;
 		break;
@@ -223,6 +235,7 @@ static int pca953x_gpio_direction_output(struct gpio_chip *gc,
 	/* then direction */
 	reg_val = chip->reg_direction & ~(1u << off);
 	switch (chip->chip_type) {
+	case PCAL953X_TYPE:
 	case PCA953X_TYPE:
 		offset = PCA953X_DIRECTION;
 		break;
@@ -251,6 +264,7 @@ static int pca953x_gpio_get_value(struct gpio_chip *gc, unsigned off)
 
 	mutex_lock(&chip->i2c_lock);
 	switch (chip->chip_type) {
+	case PCAL953X_TYPE:
 	case PCA953X_TYPE:
 		offset = PCA953X_INPUT;
 		break;
@@ -286,6 +300,7 @@ static void pca953x_gpio_set_value(struct gpio_chip *gc, unsigned off, int val)
 		reg_val = chip->reg_output & ~(1u << off);
 
 	switch (chip->chip_type) {
+	case PCAL953X_TYPE:
 	case PCA953X_TYPE:
 		offset = PCA953X_OUTPUT;
 		break;
@@ -300,6 +315,60 @@ static void pca953x_gpio_set_value(struct gpio_chip *gc, unsigned off, int val)
 	chip->reg_output = reg_val;
 exit:
 	mutex_unlock(&chip->i2c_lock);
+}
+
+static int pca953x_gpio_set_drive(struct gpio_chip *gc,
+				  unsigned off, unsigned mode)
+{
+	struct pca953x_chip *chip;
+	u32 pupd_en_reg_val, pupd_sel_reg_val;
+	int ret = 0;
+
+	chip = container_of(gc, struct pca953x_chip, gpio_chip);
+
+	if (chip->chip_type != PCAL953X_TYPE)
+		return -EINVAL;
+
+	mutex_lock(&chip->i2c_lock);
+
+	switch (mode) {
+	case GPIOF_DRIVE_PULLUP:
+		pupd_en_reg_val = chip->reg_pupd_en | (1u << off);
+		pupd_sel_reg_val = chip->reg_pupd_sel | (1u << off);
+		break;
+	case GPIOF_DRIVE_PULLDOWN:
+		pupd_en_reg_val = chip->reg_pupd_en | (1u << off);
+		pupd_sel_reg_val = chip->reg_pupd_sel & ~(1u << off);
+		break;
+	case GPIOF_DRIVE_STRONG:
+	case GPIOF_DRIVE_HIZ:
+		pupd_en_reg_val = chip->reg_pupd_en & ~(1u << off);
+		pupd_sel_reg_val = chip->reg_pupd_sel;
+		break;
+	default:
+		ret = -EINVAL;
+		goto exit;
+	}
+
+	if (pupd_en_reg_val != chip->reg_pupd_en) {
+		ret = pca953x_write_reg(chip, PCAL953X_PUPD_EN,
+					pupd_en_reg_val);
+		if (ret)
+			goto exit;
+		chip->reg_pupd_en = pupd_en_reg_val;
+	}
+
+	if (pupd_sel_reg_val != chip->reg_pupd_sel) {
+		ret = pca953x_write_reg(chip, PCAL953X_PUPD_SEL,
+					pupd_sel_reg_val);
+		if (ret)
+			goto exit;
+		chip->reg_pupd_sel = pupd_sel_reg_val;
+	}
+
+exit:
+	mutex_unlock(&chip->i2c_lock);
+	return ret;
 }
 
 static void pca953x_setup_gpio(struct pca953x_chip *chip, int gpios)
@@ -320,6 +389,9 @@ static void pca953x_setup_gpio(struct pca953x_chip *chip, int gpios)
 	gc->dev = &chip->client->dev;
 	gc->owner = THIS_MODULE;
 	gc->names = chip->names;
+
+	if (chip->chip_type == PCAL953X_TYPE)
+		gc->set_drive = pca953x_gpio_set_drive;
 }
 
 #ifdef CONFIG_GPIO_PCA953X_IRQ
@@ -368,6 +440,15 @@ static void pca953x_irq_bus_sync_unlock(struct irq_data *d)
 		new_irqs &= ~(1 << level);
 	}
 
+	if (chip->chip_type == PCAL953X_TYPE) {
+		/* Enable latch on interrupt-enabled inputs */
+		pca953x_write_reg(chip, PCAL953X_IN_LATCH,
+				  chip->irq_mask);
+		/* Unmask enabled interrupts */
+		pca953x_write_reg(chip, PCAL953X_INT_MASK,
+				  ~chip->irq_mask);
+	}
+
 	mutex_unlock(&chip->irq_lock);
 }
 
@@ -411,6 +492,24 @@ static u32 pca953x_irq_pending(struct pca953x_chip *chip)
 	u32 pending;
 	u32 trigger;
 	int ret, offset = 0;
+
+	if (chip->chip_type == PCAL953X_TYPE) {
+		/* Read the current interrupt status from the device */
+		ret = pca953x_read_reg(chip, PCAL953X_INT_STAT, &pending);
+		if (ret)
+			return 0;
+
+		/* Check latched inputs and clear interrupt status */
+		ret = pca953x_read_reg(chip, PCA953X_INPUT, &cur_stat);
+		if (ret)
+			return 0;
+
+		/* Apply filter for rising/falling edge selection */
+		pending &= (~cur_stat & chip->irq_trig_fall) |
+			(cur_stat & chip->irq_trig_raise);
+
+		return pending;
+	}
 
 	switch (chip->chip_type) {
 	case PCA953X_TYPE:
@@ -468,37 +567,42 @@ static int pca953x_irq_setup(struct pca953x_chip *chip,
 			     int irq_base)
 {
 	struct i2c_client *client = chip->client;
-	int ret, offset = 0;
+	int ret = 0, offset = 0;
 	u32 temporary;
 
 	if (irq_base != -1
 			&& (id->driver_data & PCA_INT)) {
 		int lvl;
 
-		switch (chip->chip_type) {
-		case PCA953X_TYPE:
-			offset = PCA953X_INPUT;
-			break;
-		case PCA957X_TYPE:
-			offset = PCA957X_IN;
-			break;
-		}
-		ret = pca953x_read_reg(chip, offset, &temporary);
-		chip->irq_stat = temporary;
-		if (ret)
-			goto out_failed;
+		if (chip->chip_type != PCAL953X_TYPE) {
+			switch (chip->chip_type) {
+			case PCA953X_TYPE:
+				offset = PCA953X_INPUT;
+				break;
+			case PCA957X_TYPE:
+				offset = PCA957X_IN;
+				break;
+			}
+			ret = pca953x_read_reg(chip, offset, &temporary);
+			chip->irq_stat = temporary;
+			if (ret)
+				goto out_failed;
 
-		/*
-		 * There is no way to know which GPIO line generated the
-		 * interrupt.  We have to rely on the previous read for
-		 * this purpose.
-		 */
-		chip->irq_stat &= chip->reg_direction;
+			/*
+			 * There is no way to know which GPIO line generated the
+			 * interrupt.  We have to rely on the previous read for
+			 * this purpose.
+			 */
+			chip->irq_stat &= chip->reg_direction;
+		}
 		mutex_init(&chip->irq_lock);
 
-		chip->irq_base = irq_alloc_descs(-1, irq_base, chip->gpio_chip.ngpio, -1);
-		if (chip->irq_base < 0)
+		chip->irq_base = irq_alloc_descs(-1, irq_base,
+						 chip->gpio_chip.ngpio, -1);
+		if (chip->irq_base < 0) {
+			ret = chip->irq_base;
 			goto out_failed;
+		}
 
 		chip->domain = irq_domain_add_legacy(client->dev.of_node,
 						chip->gpio_chip.ngpio,
@@ -537,6 +641,8 @@ static int pca953x_irq_setup(struct pca953x_chip *chip,
 		}
 
 		chip->gpio_chip.to_irq = pca953x_gpio_to_irq;
+	} else {
+		chip->irq_base = -1;
 	}
 
 	return 0;
@@ -594,7 +700,8 @@ pca953x_get_alt_pdata(struct i2c_client *client, int *gpio_base, u32 *invert)
 
 	*gpio_base = -1;
 	val = of_get_property(node, "linux,gpio-base", &size);
-	WARN(val, "%s: device-tree property 'linux,gpio-base' is deprecated!", __func__);
+	WARN(val, "%s: device-tree property 'linux,gpio-base' is deprecated!",
+	     __func__);
 	if (val) {
 		if (size != sizeof(*val))
 			dev_warn(&client->dev, "%s: wrong linux,gpio-base\n",
@@ -604,7 +711,8 @@ pca953x_get_alt_pdata(struct i2c_client *client, int *gpio_base, u32 *invert)
 	}
 
 	val = of_get_property(node, "polarity", NULL);
-	WARN(val, "%s: device-tree property 'polarity' is deprecated!", __func__);
+	WARN(val, "%s: device-tree property 'polarity' is deprecated!",
+	     __func__);
 	if (val)
 		*invert = *val;
 }
@@ -619,6 +727,18 @@ pca953x_get_alt_pdata(struct i2c_client *client, int *gpio_base, u32 *invert)
 static int device_pca953x_init(struct pca953x_chip *chip, u32 invert)
 {
 	int ret;
+
+	if (chip->chip_type == PCAL953X_TYPE) {
+		ret = pca953x_read_reg(chip, PCAL953X_PUPD_EN,
+				       &chip->reg_pupd_en);
+		if (ret)
+			goto out;
+
+		ret = pca953x_read_reg(chip, PCAL953X_PUPD_SEL,
+				       &chip->reg_pupd_sel);
+		if (ret)
+			goto out;
+	}
 
 	ret = pca953x_read_reg(chip, PCA953X_OUTPUT, &chip->reg_output);
 	if (ret)
@@ -688,15 +808,18 @@ static int pca953x_probe(struct i2c_client *client,
 	} else {
 		pca953x_get_alt_pdata(client, &chip->gpio_start, &invert);
 #ifdef CONFIG_OF_GPIO
-		/* If I2C node has no interrupts property, disable GPIO interrupts */
-		if (of_find_property(client->dev.of_node, "interrupts", NULL) == NULL)
+		/* If I2C node has no interrupts property, disable
+		 * GPIO interrupts */
+		if (of_find_property(client->dev.of_node,
+				     "interrupts", NULL) == NULL)
 			irq_base = -1;
 #endif
 	}
 
 	chip->client = client;
 
-	chip->chip_type = id->driver_data & (PCA953X_TYPE | PCA957X_TYPE);
+	chip->chip_type = id->driver_data &
+		(PCAL953X_TYPE | PCA953X_TYPE | PCA957X_TYPE);
 
 	mutex_init(&chip->i2c_lock);
 
@@ -705,7 +828,7 @@ static int pca953x_probe(struct i2c_client *client,
 	 */
 	pca953x_setup_gpio(chip, id->driver_data & PCA_GPIO_MASK);
 
-	if (chip->chip_type == PCA953X_TYPE)
+	if (chip->chip_type & (PCA953X_TYPE | PCAL953X_TYPE))
 		ret = device_pca953x_init(chip, invert);
 	else
 		ret = device_pca957x_init(chip, invert);
@@ -765,6 +888,159 @@ static int pca953x_remove(struct i2c_client *client)
 	return 0;
 }
 
+#ifdef CONFIG_PM
+
+/*
+ * There is nothing to be done before the system goes to S3 - the registers
+ * values are stored in driver's cache.
+ * */
+#define pca953x_suspend	NULL
+
+/**
+ * pca953x_resume - resume PM callback
+ * @dev - pointer to device
+ * Returns 0 if succes, negative value otherwhise
+ *
+ * Restore registers state from driver's cache. If restoring one or more
+ * registers fail, it keeps trying to restore the rest of the registers and
+ * returns only the last error code.
+ */
+static int pca953x_resume(struct device *dev)
+{
+	struct i2c_client *i2c = container_of(dev, struct i2c_client, dev);
+	struct pca953x_chip *chip = i2c_get_clientdata(i2c);
+	struct pca953x_platform_data *pdata;
+	int ret = 0;
+	u32 invert = 0;
+	int err = 0;
+
+	/* Retrieve invert from platform data */
+	pdata = i2c->dev.platform_data;
+	if (pdata)
+		invert = pdata->invert;
+	else
+		pca953x_get_alt_pdata(i2c, &chip->gpio_start, &invert);
+
+	mutex_lock(&chip->i2c_lock);
+
+	switch (chip->chip_type) {
+	case PCAL953X_TYPE:
+		/* Restore the pull-up/pull-down enable & selection registers */
+		ret = pca953x_write_reg(chip, PCAL953X_PUPD_EN,
+				chip->reg_pupd_en);
+		if (ret < 0) {
+			dev_err(&i2c->dev,
+				"Error restoring pull-up enable register: %d\n",
+				ret);
+			err = ret;
+		}
+		ret = pca953x_write_reg(chip, PCAL953X_PUPD_SEL,
+				chip->reg_pupd_sel);
+		if (ret < 0) {
+			dev_err(&i2c->dev,
+				"Error restoring pull-up select register: %d\n",
+				ret);
+			err = ret;
+		}
+		/* Restore latch on interrupt-enabled inputs */
+		ret = pca953x_write_reg(chip, PCAL953X_IN_LATCH,
+				  chip->irq_mask);
+		if (ret < 0) {
+			dev_err(&i2c->dev,
+				"Error restoring input latch register: %d\n",
+				ret);
+			err = ret;
+		}
+		/* Unmask enabled interrupts */
+		ret = pca953x_write_reg(chip, PCAL953X_INT_MASK,
+				  ~chip->irq_mask);
+		if (ret < 0) {
+			dev_err(&i2c->dev,
+				"Error restoring interrupt mask register: %d\n",
+				ret);
+			err = ret;
+		}
+		/* Continue restoring outport and direction port registers */
+	case PCA953X_TYPE:
+		/* Restore platform specific polarity inversion */
+		ret = pca953x_write_reg(chip, PCA953X_INVERT, invert);
+		if (ret < 0) {
+			dev_err(&i2c->dev,
+				"Error restoring polarity inversion: %d\n",
+				ret);
+			err = ret;
+		}
+		/* Restore output port register(s) */
+		ret = pca953x_write_reg(chip, PCA953X_OUTPUT, chip->reg_output);
+		if (ret < 0) {
+			dev_err(&i2c->dev,
+				"Error restoring output port register: %d\n",
+				ret);
+			err = ret;
+		}
+		/* Restore GPIOs directions - configuration register(s) */
+		ret = pca953x_write_reg(chip, PCA953X_DIRECTION,
+				chip->reg_direction);
+		if (ret < 0) {
+			dev_err(&i2c->dev,
+				"Error restoring direction register: %d\n",
+				ret);
+			err = ret;
+		}
+		break;
+	case PCA957X_TYPE:
+		/* Restore platform specific polarity inversion */
+		ret = pca953x_write_reg(chip, PCA957X_INVRT, invert);
+		if (ret < 0) {
+			dev_err(&i2c->dev,
+				"Error restoring polarity inversion: %d\n",
+				ret);
+			err = ret;
+		}
+		/* Restore output port register(s) */
+		ret = pca953x_write_reg(chip, PCA957X_OUT, chip->reg_output);
+		if (ret < 0) {
+			dev_err(&i2c->dev,
+				"Error restoring output port register: %d\n",
+				ret);
+			err = ret;
+		}
+		/* Restore GPIOs directions - configuration register(s) */
+		ret = pca953x_write_reg(chip, PCA957X_CFG, chip->reg_direction);
+		if (ret < 0) {
+			dev_err(&i2c->dev,
+				"Error restoring direction register: %d\n",
+				ret);
+			err = ret;
+		}
+		/* Enable back register 6 and 7 to controll pull-up and
+		 * pull-down */
+		ret = pca953x_write_reg(chip, PCA957X_BKEN, 0x202);
+		if (ret < 0) {
+			dev_err(&i2c->dev,
+				"Error restoring bus-hold register: %d\n",
+				ret);
+			err = ret;
+		}
+
+		break;
+	}
+
+	mutex_unlock(&chip->i2c_lock);
+	return err;
+}
+#else /* !CONFIG_PM */
+
+#define	pca953x_suspend	NULL
+#define	pca953x_resume	NULL
+
+#endif /* CONFIG_PM */
+
+const struct dev_pm_ops pca953x_pm_ops = {
+	.suspend	= pca953x_suspend,
+	.resume		= pca953x_resume,
+};
+
 static const struct of_device_id pca953x_dt_ids[] = {
 	{ .compatible = "nxp,pca9534", },
 	{ .compatible = "nxp,pca9535", },
@@ -797,6 +1073,7 @@ static struct i2c_driver pca953x_driver = {
 	.driver = {
 		.name	= "pca953x",
 		.of_match_table = pca953x_dt_ids,
+		.pm	= &pca953x_pm_ops,
 	},
 	.probe		= pca953x_probe,
 	.remove		= pca953x_remove,

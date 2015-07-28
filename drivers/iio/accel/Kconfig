@@ -13,5 +13,13 @@ config HID_SENSOR_ACCEL_3D
 	help
 	  Say yes here to build support for the HID SENSOR
 	  accelerometers 3D.
+ 
+config IIO_LIS331DLH_INTEL_QRK
+        tristate "STMicroelectronics LIS331DLH accelerometer i2c driver for Intel Quark platform"
+        depends on INTEL_QUARK_X1000_SOC
+	depends on I2C && SYSFS
+	select IIO_ST_SENSORS_CORE
+        help
+          Selects the LIS331DLH accelerometer driver for the Intel Clanton Hill platform
 
 endmenu

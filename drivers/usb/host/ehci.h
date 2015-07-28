@@ -201,6 +201,22 @@ struct ehci_hcd {			/* one per controller */
 	unsigned		has_synopsys_hc_bug:1; /* Synopsys HC */
 	unsigned		frame_index_bug:1; /* MosChip (AKA NetMos) */
 
+	unsigned		has_x1000_phy:1;
+	/* Intel Quark X10xx needs squelch adjustment during HS enumeration
+	 * to eliminate noise at around default power on squelch of 112.5mV
+	 * which causes the noise to look like signalling. We need to adjust
+	 * the squelch to eliminate that false signalling.
+	 * First we adjust it lo and if the false signalling is now damped,
+	 * enumeration works OK. If that fails  we adjust hi and see
+	 * if it enumerates OK, if not we are at the END and will default to
+	 * full speed.  */
+	#define QRK_SQUELCH_DEFAULT	0 /* apply default of 112.5 mV */
+	#define QRK_SQUELCH_LO		1 /* apply low  of 100 mV */
+	#define QRK_SQUELCH_HI		2 /* apply high of 125 mV */
+
+	unsigned		x1000_phy_squelch:2;
+					/*Squelch state during quirk */
+
 	/* required for usb32 quirk */
 	#define OHCI_CTRL_HCFS          (3 << 6)
 	#define OHCI_USB_OPER           (2 << 6)

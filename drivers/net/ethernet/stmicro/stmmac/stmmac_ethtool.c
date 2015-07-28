@@ -31,6 +31,7 @@
 
 #include "stmmac.h"
 #include "dwmac_dma.h"
+#include "dwmac1000.h"
 
 #define REG_SPACE_SIZE	0x1054
 #define MAC100_ETHTOOL_NAME	"st_mac100"
@@ -231,9 +232,7 @@ static int stmmac_ethtool_getsettings(struct net_device *dev,
 		return -EBUSY;
 	}
 	cmd->transceiver = XCVR_INTERNAL;
-	spin_lock_irq(&priv->lock);
 	rc = phy_ethtool_gset(phy, cmd);
-	spin_unlock_irq(&priv->lock);
 	return rc;
 }
 
@@ -244,10 +243,7 @@ static int stmmac_ethtool_setsettings(struct net_device *dev,
 	struct phy_device *phy = priv->phydev;
 	int rc;
 
-	spin_lock(&priv->lock);
 	rc = phy_ethtool_sset(phy, cmd);
-	spin_unlock(&priv->lock);
-
 	return rc;
 }
 
@@ -279,7 +275,7 @@ static int stmmac_ethtool_get_regs_len(struct net_device *dev)
 static void stmmac_ethtool_gregs(struct net_device *dev,
 			  struct ethtool_regs *regs, void *space)
 {
-	int i;
+	int i, offset = 0;
 	u32 *reg_space = (u32 *) space;
 
 	struct stmmac_priv *priv = netdev_priv(dev);
@@ -300,9 +296,21 @@ static void stmmac_ethtool_gregs(struct net_device *dev,
 		/* MAC registers */
 		for (i = 0; i < 55; i++)
 			reg_space[i] = readl(priv->ioaddr + (i * 4));
+
+		/* VLAN registers */
+		offset = i;
+		reg_space[offset++] = readl(priv->ioaddr + GMAC_VLAN_TAG_REP);
+		reg_space[offset++] = readl(priv->ioaddr + GMAC_VLAN_HASH);
+
+		/* 1588 registers */
+		for (i = 0; i < 13; i++)
+			reg_space[i + offset] =
+				readl(priv->ioaddr + (GMAC_TS_CTRL + (i * 4)));
+
 		/* DMA registers */
+		offset += i;
 		for (i = 0; i < 22; i++)
-			reg_space[i + 55] =
+			reg_space[i + offset] =
 			    readl(priv->ioaddr + (DMA_BUS_MODE + (i * 4)));
 	}
 }

@@ -13,6 +13,7 @@
 
 #include <linux/serial_core.h>
 #include <linux/platform_device.h>
+#include <linux/dmaengine.h>
 
 /*
  * This is the platform device platform_data structure
@@ -21,6 +22,7 @@ struct plat_serial8250_port {
 	unsigned long	iobase;		/* io base address */
 	void __iomem	*membase;	/* ioremap cookie or NULL */
 	resource_size_t	mapbase;	/* resource base */
+	resource_size_t	dma_mapbase;	/* DMA internal resource base */
 	unsigned int	irq;		/* interrupt number */
 	unsigned long	irqflags;	/* request_irq flags */
 	unsigned int	uartclk;	/* UART clock rate */
@@ -59,6 +61,36 @@ enum {
 	PLAT8250_DEV_SM501,
 };
 
+struct uart_8250_dma {
+	dma_filter_fn		fn;
+	void			*rx_param;
+	void			*tx_param;
+
+	int			rx_chan_id;
+	int			tx_chan_id;
+
+	struct dma_slave_config	rxconf;
+	struct dma_slave_config	txconf;
+
+	struct dma_chan		*rxchan;
+	struct dma_chan		*txchan;
+
+	dma_addr_t		rx_addr;
+	dma_addr_t		tx_addr;
+
+	dma_cookie_t		rx_cookie;
+	dma_cookie_t		tx_cookie;
+
+	void			*rx_buf;
+
+	size_t			rx_size;
+	size_t			tx_size;
+
+	unsigned char		tx_running:1;
+
+	resource_size_t		mapbase;
+};
+
 /*
  * This should be used by drivers which want to register
  * their own 8250 ports without registering their own
@@ -91,9 +123,20 @@ struct uart_8250_port {
 #define MSR_SAVE_FLAGS UART_MSR_ANY_DELTA
 	unsigned char		msr_saved_flags;
 
+	struct uart_8250_dma	*dma;
+
 	/* 8250 specific callbacks */
 	int			(*dl_read)(struct uart_8250_port *);
 	void			(*dl_write)(struct uart_8250_port *, int);
+
+	/* quark j1708 driver specific */
+	bool			bound_j1708;
+	unsigned int		j1708_idx;
+	struct uart_8250_dma	*j1708_store_dma;
+	/* push one character and its tsc to J1708 char ring buffer */
+	void			(*j1708_push)(unsigned int j1708_idx,
+					      unsigned char ch, u64 tsc,
+					      bool uart_err);
 };
 
 int serial8250_register_8250_port(struct uart_8250_port *);

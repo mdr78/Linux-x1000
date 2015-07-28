@@ -34,6 +34,14 @@
 #define DW_IC_CON_RESTART_EN		0x20
 #define DW_IC_CON_SLAVE_DISABLE		0x40
 
+struct dw_pci_controller {
+	u32 bus_num;
+	u32 bus_cfg;
+	u32 tx_fifo_depth;
+	u32 rx_fifo_depth;
+	u32 clk_khz;
+	u8  explicit_stop;
+};
 
 /**
  * struct dw_i2c_dev - private i2c-designware data
@@ -60,6 +68,8 @@
  * @adapter: i2c subsystem adapter node
  * @tx_fifo_depth: depth of the hardware tx fifo
  * @rx_fifo_depth: depth of the hardware rx fifo
+ * @rx_outstanding: current outstanding master-receiver bytes in TX FIFO
+ * @explicit_stop: set to 1 if hardware requires explicit stop bit transmission
  */
 struct dw_i2c_dev {
 	struct device		*dev;
@@ -88,6 +98,8 @@ struct dw_i2c_dev {
 	u32			master_cfg;
 	unsigned int		tx_fifo_depth;
 	unsigned int		rx_fifo_depth;
+	int			rx_outstanding;
+	u8			explicit_stop;
 };
 
 #define ACCESS_SWAP		0x00000001

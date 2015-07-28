@@ -6,6 +6,7 @@
   This only implements the mac core functions for this chip.
 
   Copyright (C) 2007-2009  STMicroelectronics Ltd
+  Copyright (C) 2013 Intel Corporation
 
   This program is free software; you can redistribute it and/or modify it
   under the terms and conditions of the GNU General Public License,
@@ -30,6 +31,7 @@
 #include <linux/slab.h>
 #include <asm/io.h>
 #include "dwmac1000.h"
+#include "stmmac.h"
 
 static void dwmac1000_core_init(void __iomem *ioaddr)
 {
@@ -38,7 +40,7 @@ static void dwmac1000_core_init(void __iomem *ioaddr)
 	writel(value, ioaddr + GMAC_CONTROL);
 
 	/* Mask GMAC interrupts */
-	writel(0x207, ioaddr + GMAC_INT_MASK);
+	writel(GMAC_INT_MASK_DEFAULT, ioaddr + GMAC_INT_MASK);
 
 #ifdef STMMAC_VLAN_TAG_USED
 	/* Tag detection without filtering */
@@ -46,11 +48,15 @@ static void dwmac1000_core_init(void __iomem *ioaddr)
 #endif
 }
 
-static int dwmac1000_rx_ipc_enable(void __iomem *ioaddr)
+static int dwmac1000_set_rx_ipc(void __iomem *ioaddr, bool on)
 {
 	u32 value = readl(ioaddr + GMAC_CONTROL);
 
-	value |= GMAC_CONTROL_IPC;
+	if (on == true)
+		value |= GMAC_CONTROL_IPC;
+	else
+		value &= ~GMAC_CONTROL_IPC;
+
 	writel(value, ioaddr + GMAC_CONTROL);
 
 	value = readl(ioaddr + GMAC_CONTROL);
@@ -87,6 +93,7 @@ static void dwmac1000_get_umac_addr(void __iomem *ioaddr, unsigned char *addr,
 static void dwmac1000_set_filter(struct net_device *dev, int id)
 {
 	void __iomem *ioaddr = (void __iomem *) dev->base_addr;
+	struct stmmac_priv *priv = netdev_priv(dev);
 	unsigned int value = 0;
 	unsigned int perfect_addr_number;
 
@@ -147,6 +154,10 @@ static void dwmac1000_set_filter(struct net_device *dev, int id)
 	/* Enable Receive all mode (to debug filtering_fail errors) */
 	value |= GMAC_FRAME_FILTER_RA;
 #endif
+	if (priv->active_vlans != 0)
+		/* VLAN hash filtering is active on this interface */
+		value |= GMAC_FRAME_FILTER_VTFE;
+
 	writel(value, ioaddr + GMAC_FRAME_FILTER);
 
 	CHIP_DBG(KERN_INFO "\tFrame Filter reg: 0x%08x\n\tHash regs: "
@@ -194,38 +205,42 @@ static void dwmac1000_pmt(void __iomem *ioaddr, unsigned long mode)
 }
 
 
-static int dwmac1000_irq_status(void __iomem *ioaddr)
+#ifndef CONFIG_STMMAC_PTP
+#define stmmac_ptp_check_pps_event(x) {}
+#endif
+
+static int dwmac1000_irq_status(struct stmmac_priv *priv)
 {
-	u32 intr_status = readl(ioaddr + GMAC_INT_STATUS);
+	u32 intr_status = readl(priv->ioaddr + GMAC_INT_STATUS);
 	int status = 0;
 
 	/* Not used events (e.g. MMC interrupts) are not handled. */
 	if ((intr_status & mmc_tx_irq)) {
 		CHIP_DBG(KERN_INFO "GMAC: MMC tx interrupt: 0x%08x\n",
-		    readl(ioaddr + GMAC_MMC_TX_INTR));
+		    readl(priv->ioaddr + GMAC_MMC_TX_INTR));
 		status |= core_mmc_tx_irq;
 	}
 	if (unlikely(intr_status & mmc_rx_irq)) {
 		CHIP_DBG(KERN_INFO "GMAC: MMC rx interrupt: 0x%08x\n",
-		    readl(ioaddr + GMAC_MMC_RX_INTR));
+		    readl(priv->ioaddr + GMAC_MMC_RX_INTR));
 		status |= core_mmc_rx_irq;
 	}
 	if (unlikely(intr_status & mmc_rx_csum_offload_irq)) {
 		CHIP_DBG(KERN_INFO "GMAC: MMC rx csum offload: 0x%08x\n",
-		    readl(ioaddr + GMAC_MMC_RX_CSUM_OFFLOAD));
+		    readl(priv->ioaddr + GMAC_MMC_RX_CSUM_OFFLOAD));
 		status |= core_mmc_rx_csum_offload_irq;
 	}
 	if (unlikely(intr_status & pmt_irq)) {
 		CHIP_DBG(KERN_INFO "GMAC: received Magic frame\n");
 		/* clear the PMT bits 5 and 6 by reading the PMT
 		 * status register. */
-		readl(ioaddr + GMAC_PMT);
+		readl(priv->ioaddr + GMAC_PMT);
 		status |= core_irq_receive_pmt_irq;
 	}
 	/* MAC trx/rx EEE LPI entry/exit interrupts */
 	if (intr_status & lpiis_irq) {
 		/* Clean LPI interrupt by reading the Reg 12 */
-		u32 lpi_status = readl(ioaddr + LPI_CTRL_STATUS);
+		u32 lpi_status = readl(priv->ioaddr + LPI_CTRL_STATUS);
 
 		if (lpi_status & LPI_CTRL_STATUS_TLPIEN) {
 			CHIP_DBG(KERN_INFO "GMAC TX entered in LPI\n");
@@ -244,8 +259,115 @@ static int dwmac1000_irq_status(void __iomem *ioaddr)
 			status |= core_irq_rx_path_exit_lpi_mode;
 		}
 	}
+	if (unlikely(intr_status & time_stamp_irq))
+		stmmac_ptp_check_pps_event(priv);
 
 	return status;
+}
+
+static unsigned int dwmac1000_calc_vlan_4bit_crc(const char *vlan)
+{
+	int i = 0, j = 0, len = 0, bit = 0;
+	unsigned int crc = 0xFFFFFFFF;
+	unsigned int poly = 0x04C11DB7;
+	unsigned char data;
+
+	if (unlikely(vlan == NULL))
+		return 0;
+
+	for (i = 0; i < 2; i++) {
+		data = vlan[i];
+
+		if (i == 0)
+			len = 8;
+		else
+			len = 4;
+
+		for (bit = 0; bit < len; bit++) {
+			j = ((crc >> 31) ^ data) & 0x1;
+			crc <<= 1;
+
+			if (j != 0)
+				crc ^= poly;
+
+			data >>= 1;
+		}
+	}
+	return crc;
+}
+
+/* DesignWare Cores Ethernet MAC Universal Databook, 6.2.2.35
+ * "The hash value of the destination address
+ * is calculated in the following way:
+ *  1. Calculate the 32-bit CRC for the VLAN tag or ID
+ *  2. Perform bitwise reversal for the value obtained in 1.
+ *  3. Take the upper four bits from the value obtained in 2."
+ *
+ * vlan here being either vlan tag or vlan ID,
+ * since register understands both
+ */
+static inline unsigned int dwmac1000_get_hash_value(const char *vlan) {
+	return (~dwmac1000_calc_vlan_4bit_crc(vlan)) >> 28;
+}
+
+static int dwmac1000_vlan_rx_add_vid(struct stmmac_priv *priv,
+				unsigned short vid)
+{
+	u32 reg = 0;
+	u32 bit_nr = 0;
+
+	if (unlikely(priv == NULL || vid > GMAC_VLAN_HASH_MAXID))
+		return -EINVAL;
+
+	if (priv->active_vlans == 0) {
+
+		/* Flip the VTFE bit in GMAC_FRAME_FILTER */
+		reg = readl(priv->ioaddr + GMAC_FRAME_FILTER);
+		reg |= GMAC_FRAME_FILTER_VTFE;
+		writel(reg, priv->ioaddr + GMAC_FRAME_FILTER);
+
+		/* Enable hash filtering - based on 12 bit vid */
+		reg = readl(priv->ioaddr + GMAC_VLAN_TAG);
+		reg |= GMAC_VLAN_TAG_VTHM | GMAC_VLAN_TAG_ETV | GMAC_VLAN_TAG_VLMASK;
+		writel(reg, priv->ioaddr + GMAC_VLAN_TAG);
+	}
+
+	bit_nr = dwmac1000_get_hash_value((const char *)&vid);
+	priv->active_vlans |= 1 << bit_nr;
+
+	writel(priv->active_vlans, priv->ioaddr + GMAC_VLAN_HASH);
+
+	return 0;
+}
+
+static int dwmac1000_vlan_rx_kill_vid(struct stmmac_priv *priv,
+				unsigned short vid)
+{
+	u32 reg = 0;
+	u32 bit_nr = 0;
+
+	if (unlikely(priv == NULL || vid > GMAC_VLAN_HASH_MAXID))
+		return -EINVAL;
+
+	bit_nr = dwmac1000_get_hash_value((const char *)&vid);
+
+	priv->active_vlans &= ~(1 << bit_nr);
+	writel(priv->active_vlans, priv->ioaddr + GMAC_VLAN_HASH);
+
+	if (priv->active_vlans == 0) {
+
+		/* Disable hash filtering */
+		reg = readl(priv->ioaddr + GMAC_VLAN_TAG);
+		reg &= ~(GMAC_VLAN_TAG_VTHM | GMAC_VLAN_TAG_ETV | 0x00000001);
+		writel(reg, priv->ioaddr + GMAC_VLAN_TAG);
+
+		/* Flip the VTFE bit in GMAC_FRAME_FILTER */
+		reg = readl(priv->ioaddr + GMAC_FRAME_FILTER);
+		reg &= ~GMAC_FRAME_FILTER_VTFE;
+		writel(reg, priv->ioaddr + GMAC_FRAME_FILTER);
+	}
+
+	return 0;
 }
 
 static void  dwmac1000_set_eee_mode(void __iomem *ioaddr)
@@ -297,9 +419,10 @@ static void  dwmac1000_set_eee_timer(void __iomem *ioaddr, int ls, int tw)
 	writel(value, ioaddr + LPI_TIMER_CTRL);
 }
 
+
 static const struct stmmac_ops dwmac1000_ops = {
 	.core_init = dwmac1000_core_init,
-	.rx_ipc = dwmac1000_rx_ipc_enable,
+	.set_rx_ipc = dwmac1000_set_rx_ipc,
 	.dump_regs = dwmac1000_dump_regs,
 	.host_irq_status = dwmac1000_irq_status,
 	.set_filter = dwmac1000_set_filter,
@@ -307,6 +430,8 @@ static const struct stmmac_ops dwmac1000_ops = {
 	.pmt = dwmac1000_pmt,
 	.set_umac_addr = dwmac1000_set_umac_addr,
 	.get_umac_addr = dwmac1000_get_umac_addr,
+	.vlan_rx_add_vid = dwmac1000_vlan_rx_add_vid,
+	.vlan_rx_kill_vid = dwmac1000_vlan_rx_kill_vid,
 	.set_eee_mode =  dwmac1000_set_eee_mode,
 	.reset_eee_mode =  dwmac1000_reset_eee_mode,
 	.set_eee_timer =  dwmac1000_set_eee_timer,

@@ -51,11 +51,13 @@ static struct resource gpio_sch_resource = {
 };
 
 static struct mfd_cell lpc_sch_cells[] = {
+#ifndef CONFIG_INTEL_QUARK_X1000_SOC
 	{
 		.name = "isch_smbus",
 		.num_resources = 1,
 		.resources = &smbus_sch_resource,
 	},
+#endif
 	{
 		.name = "sch_gpio",
 		.num_resources = 1,
@@ -79,6 +81,7 @@ static DEFINE_PCI_DEVICE_TABLE(lpc_sch_ids) = {
 	{ PCI_DEVICE(PCI_VENDOR_ID_INTEL, PCI_DEVICE_ID_INTEL_SCH_LPC) },
 	{ PCI_DEVICE(PCI_VENDOR_ID_INTEL, PCI_DEVICE_ID_INTEL_ITC_LPC) },
 	{ PCI_DEVICE(PCI_VENDOR_ID_INTEL, PCI_DEVICE_ID_INTEL_CENTERTON_ILB) },
+	{ PCI_DEVICE(PCI_VENDOR_ID_INTEL, PCI_DEVICE_ID_INTEL_QUARK_ILB) },
 	{ 0, }
 };
 MODULE_DEVICE_TABLE(pci, lpc_sch_ids);
@@ -91,19 +94,22 @@ static int lpc_sch_probe(struct pci_dev *dev,
 	int i;
 	int ret;
 
-	pci_read_config_dword(dev, SMBASE, &base_addr_cfg);
-	if (!(base_addr_cfg & (1 << 31))) {
-		dev_err(&dev->dev, "Decode of the SMBus I/O range disabled\n");
-		return -ENODEV;
-	}
-	base_addr = (unsigned short)base_addr_cfg;
-	if (base_addr == 0) {
-		dev_err(&dev->dev, "I/O space for SMBus uninitialized\n");
-		return -ENODEV;
-	}
+	/* Quark does not support iLB SMBUS */
+	if (id->device != PCI_DEVICE_ID_INTEL_QUARK_ILB) {
+		pci_read_config_dword(dev, SMBASE, &base_addr_cfg);
+		if (!(base_addr_cfg & (1 << 31))) {
+			dev_err(&dev->dev, "Decode of the SMBus I/O range disabled\n");
+			return -ENODEV;
+		}
+		base_addr = (unsigned short)base_addr_cfg;
+		if (base_addr == 0) {
+			dev_err(&dev->dev, "I/O space for SMBus uninitialized\n");
+			return -ENODEV;
+		}
 
-	smbus_sch_resource.start = base_addr;
-	smbus_sch_resource.end = base_addr + SMBUS_IO_SIZE - 1;
+		smbus_sch_resource.start = base_addr;
+		smbus_sch_resource.end = base_addr + SMBUS_IO_SIZE - 1;
+	}
 
 	pci_read_config_dword(dev, GPIOBASE, &base_addr_cfg);
 	if (!(base_addr_cfg & (1 << 31))) {

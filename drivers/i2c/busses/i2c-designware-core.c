@@ -6,6 +6,7 @@
  * Copyright (C) 2006 Texas Instruments.
  * Copyright (C) 2007 MontaVista Software Inc.
  * Copyright (C) 2009 Provigent Ltd.
+ * Copyright (C) 2013 Intel Corporation
  *
  * ----------------------------------------------------------------------------
  *
@@ -163,6 +164,29 @@ static char *abort_sources[] = {
 	[ARB_LOST] =
 		"lost arbitration",
 };
+
+/*
+ * Bitmask for struct i2c_dw_data_cmd's `cmd' field.
+ * - DW_IC_CMD_READ:  read/~write operation
+ * - DW_IC_CMD_STOP:  stop condition generation (only for devices requiring
+ *   explicit transaction termination)
+ * - DW_IC_CMD_RESTART:  (re)start condition generation (only for devices
+ *   requiring explicit transaction termination)
+ */
+#define DW_IC_CMD_READ			0x01
+#define DW_IC_CMD_STOP			0x02
+#define DW_IC_CMD_RESTART		0x04
+
+/*
+ * Define the IC_DATA_CMD format.
+ */
+static union i2c_dw_data_cmd {
+	struct fields {
+		u8 data;
+		u8 cmd;
+	} fields;
+	u16 value;
+} data_cmd;
 
 u32 dw_readl(struct dw_i2c_dev *dev, int offset)
 {
@@ -344,6 +368,9 @@ static void i2c_dw_xfer_init(struct dw_i2c_dev *dev)
 	struct i2c_msg *msgs = dev->msgs;
 	u32 ic_con;
 
+	/* Disable interrupts */
+	i2c_dw_disable_int(dev);
+
 	/* Disable the adapter */
 	dw_writel(dev, 0, DW_IC_ENABLE);
 
@@ -380,6 +407,7 @@ i2c_dw_xfer_msg(struct dw_i2c_dev *dev)
 	u32 addr = msgs[dev->msg_write_idx].addr;
 	u32 buf_len = dev->tx_buf_len;
 	u8 *buf = dev->tx_buf;
+	int segment_start = 0;
 
 	intr_mask = DW_IC_INTR_DEFAULT_MASK;
 
@@ -403,21 +431,65 @@ i2c_dw_xfer_msg(struct dw_i2c_dev *dev)
 			break;
 		}
 
+		segment_start = 0;
 		if (!(dev->status & STATUS_WRITE_IN_PROGRESS)) {
 			/* new i2c_msg */
 			buf = msgs[dev->msg_write_idx].buf;
 			buf_len = msgs[dev->msg_write_idx].len;
+			segment_start = 1;
 		}
 
 		tx_limit = dev->tx_fifo_depth - dw_readl(dev, DW_IC_TXFLR);
 		rx_limit = dev->rx_fifo_depth - dw_readl(dev, DW_IC_RXFLR);
 
+		/*
+		 * The maximum number of read requests that can be put into TX
+		 * FIFO depends on the number read operations already pending
+		 * in RX FIFO + the number of outstanding read operations still
+		 * queued in the TX FIFO.
+		 * This prevents RX FIFO overrun.
+		 */
+		rx_limit -= dev->rx_outstanding;
+
 		while (buf_len > 0 && tx_limit > 0 && rx_limit > 0) {
+			data_cmd.fields.data = 0x00;
+			data_cmd.fields.cmd = 0x00;
+
 			if (msgs[dev->msg_write_idx].flags & I2C_M_RD) {
-				dw_writel(dev, 0x100, DW_IC_DATA_CMD);
+				/* Master-receiver */
+				data_cmd.fields.cmd = DW_IC_CMD_READ;
 				rx_limit--;
-			} else
-				dw_writel(dev, *buf++, DW_IC_DATA_CMD);
+				dev->rx_outstanding++;
+			} else {
+				/* Master-transmitter */
+				data_cmd.fields.data = *buf;
+				buf++;
+			}
+
+			if (1 == dev->explicit_stop
+			    && 1 == segment_start) {
+				/*
+				 * First byte of a transaction segment for a
+				 * device requiring explicit transaction
+				 * termination: generate (re)start symbol.
+				 */
+				segment_start = 0;
+				data_cmd.fields.cmd |= DW_IC_CMD_RESTART;
+			}
+
+			if (1 == dev->explicit_stop
+			    && dev->msg_write_idx == dev->msgs_num - 1
+			    && 1 == buf_len) {
+				/*
+				 * Last byte of last transction segment for a
+				 * device requiring explicit transaction
+				 * termination: generate stop symbol.
+				 */
+				data_cmd.fields.cmd |= DW_IC_CMD_STOP;
+			}
+
+			dw_writel(dev, data_cmd.value, DW_IC_DATA_CMD);
+
 			tx_limit--; buf_len--;
 		}
 
@@ -468,8 +540,10 @@ i2c_dw_read(struct dw_i2c_dev *dev)
 
 		rx_valid = dw_readl(dev, DW_IC_RXFLR);
 
-		for (; len > 0 && rx_valid > 0; len--, rx_valid--)
+		for (; len > 0 && rx_valid > 0; len--, rx_valid--) {
 			*buf++ = dw_readl(dev, DW_IC_DATA_CMD);
+			dev->rx_outstanding--;
+		}
 
 		if (len > 0) {
 			dev->status |= STATUS_READ_IN_PROGRESS;
@@ -527,6 +601,7 @@ i2c_dw_xfer(struct i2c_adapter *adap, struct i2c_msg msgs[], int num)
 	dev->msg_err = 0;
 	dev->status = STATUS_IDLE;
 	dev->abort_source = 0;
+	dev->rx_outstanding = 0;
 
 	ret = i2c_dw_wait_bus_not_busy(dev);
 	if (ret < 0)
@@ -536,14 +611,13 @@ i2c_dw_xfer(struct i2c_adapter *adap, struct i2c_msg msgs[], int num)
 	i2c_dw_xfer_init(dev);
 
 	/* wait for tx to complete */
-	ret = wait_for_completion_interruptible_timeout(&dev->cmd_complete, HZ);
+	ret = wait_for_completion_timeout(&dev->cmd_complete, HZ);
 	if (ret == 0) {
 		dev_err(dev->dev, "controller timed out\n");
 		i2c_dw_init(dev);
 		ret = -ETIMEDOUT;
 		goto done;
-	} else if (ret < 0)
-		goto done;
+	}
 
 	if (dev->msg_err) {
 		ret = dev->msg_err;
@@ -625,8 +699,6 @@ static u32 i2c_dw_read_clear_intrbits(struct dw_i2c_dev *dev)
 		dw_readl(dev, DW_IC_CLR_RX_DONE);
 	if (stat & DW_IC_INTR_ACTIVITY)
 		dw_readl(dev, DW_IC_CLR_ACTIVITY);
-	if (stat & DW_IC_INTR_STOP_DET)
-		dw_readl(dev, DW_IC_CLR_STOP_DET);
 	if (stat & DW_IC_INTR_START_DET)
 		dw_readl(dev, DW_IC_CLR_START_DET);
 	if (stat & DW_IC_INTR_GEN_CALL)
@@ -677,8 +749,21 @@ irqreturn_t i2c_dw_isr(int this_irq, void *dev_id)
 	 * the current transmit status.
 	 */
 
+	/*
+	 * Process stop condition after the last transaction segment is
+	 * transmitted (and received if appropriate).
+	 */
+	if (dev->msgs_num == dev->msg_write_idx
+		&& (DW_IC_INTR_STOP_DET & dw_readl(dev, DW_IC_INTR_STAT))
+		&& 0 == dw_readl(dev, DW_IC_TXFLR)
+		&& 0 == dw_readl(dev, DW_IC_RXFLR)
+		&& 0 == dev->rx_outstanding) {
+			dw_readl(dev, DW_IC_CLR_STOP_DET);
+			complete(&dev->cmd_complete);
+	}
+
 tx_aborted:
-	if ((stat & (DW_IC_INTR_TX_ABRT | DW_IC_INTR_STOP_DET)) || dev->msg_err)
+	if ((stat & (DW_IC_INTR_TX_ABRT)) || dev->msg_err)
 		complete(&dev->cmd_complete);
 
 	return IRQ_HANDLED;

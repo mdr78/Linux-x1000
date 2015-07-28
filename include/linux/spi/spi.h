@@ -80,6 +80,8 @@ struct spi_device {
 #define	SPI_MODE_2	(SPI_CPOL|0)
 #define	SPI_MODE_3	(SPI_CPOL|SPI_CPHA)
 #define	SPI_CS_HIGH	0x04			/* chipselect active high? */
+#define SPI_MODE_QUAD_IO 0x05                   /* Quad IO mode using 4 wire */
+#define SPI_MODE_DUAL_IO 0x06                   /* Dual IO mode using 2 wire */
 #define	SPI_LSB_FIRST	0x08			/* per-word bits-on-wire */
 #define	SPI_3WIRE	0x10			/* SI/SO signals shared */
 #define	SPI_LOOP	0x20			/* loopback mode */

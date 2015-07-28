@@ -130,23 +130,12 @@ static inline void pxa_free_dma(int dma_ch)
 {
 }
 
-/*
- * The CE4100 does not have the clk framework implemented and SPI clock can
- * not be switched on/off or the divider changed.
- */
-static inline void clk_disable(struct clk *clk)
-{
-}
-
-static inline int clk_enable(struct clk *clk)
-{
-	return 0;
-}
-
+#ifndef CONFIG_GEN3_SPI
 static inline unsigned long clk_get_rate(struct clk *clk)
 {
 	return 3686400;
 }
+#endif
 
 #endif
 #endif

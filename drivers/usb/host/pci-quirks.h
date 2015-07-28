@@ -9,8 +9,12 @@ void usb_amd_dev_put(void);
 void usb_amd_quirk_pll_disable(void);
 void usb_amd_quirk_pll_enable(void);
 bool usb_is_intel_switchable_xhci(struct pci_dev *pdev);
+bool usb_is_intel_qrk(struct pci_dev *pdev);
+void usb_set_qrk_bulk_thresh(struct pci_dev *pdev);
 void usb_enable_xhci_ports(struct pci_dev *xhci_pdev);
 void usb_disable_xhci_ports(struct pci_dev *xhci_pdev);
+#define PCI_DEVICE_ID_INTEL_QUARK_X1000_SOC		0x0939
+void quirk_qrk_usb_phy_set_squelch(u32 threshold);
 #else
 static inline void usb_amd_quirk_pll_disable(void) {}
 static inline void usb_amd_quirk_pll_enable(void) {}

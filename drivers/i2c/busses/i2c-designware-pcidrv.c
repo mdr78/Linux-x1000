@@ -56,14 +56,6 @@ enum dw_pci_ctl_id_t {
 	medfield_5,
 };
 
-struct dw_pci_controller {
-	u32 bus_num;
-	u32 bus_cfg;
-	u32 tx_fifo_depth;
-	u32 rx_fifo_depth;
-	u32 clk_khz;
-};
-
 #define INTEL_MID_STD_CFG  (DW_IC_CON_MASTER |			\
 				DW_IC_CON_SLAVE_DISABLE |	\
 				DW_IC_CON_RESTART_EN)
@@ -75,6 +67,7 @@ static struct  dw_pci_controller  dw_pci_controllers[] = {
 		.tx_fifo_depth = 32,
 		.rx_fifo_depth = 32,
 		.clk_khz      = 25000,
+		.explicit_stop = 0,
 	},
 	[moorestown_1] = {
 		.bus_num     = 1,
@@ -82,6 +75,7 @@ static struct  dw_pci_controller  dw_pci_controllers[] = {
 		.tx_fifo_depth = 32,
 		.rx_fifo_depth = 32,
 		.clk_khz      = 25000,
+		.explicit_stop = 0,
 	},
 	[moorestown_2] = {
 		.bus_num     = 2,
@@ -89,6 +83,7 @@ static struct  dw_pci_controller  dw_pci_controllers[] = {
 		.tx_fifo_depth = 32,
 		.rx_fifo_depth = 32,
 		.clk_khz      = 25000,
+		.explicit_stop = 0,
 	},
 	[medfield_0] = {
 		.bus_num     = 0,
@@ -96,6 +91,7 @@ static struct  dw_pci_controller  dw_pci_controllers[] = {
 		.tx_fifo_depth = 32,
 		.rx_fifo_depth = 32,
 		.clk_khz      = 25000,
+		.explicit_stop = 0,
 	},
 	[medfield_1] = {
 		.bus_num     = 1,
@@ -103,6 +99,7 @@ static struct  dw_pci_controller  dw_pci_controllers[] = {
 		.tx_fifo_depth = 32,
 		.rx_fifo_depth = 32,
 		.clk_khz      = 25000,
+		.explicit_stop = 0,
 	},
 	[medfield_2] = {
 		.bus_num     = 2,
@@ -110,6 +107,7 @@ static struct  dw_pci_controller  dw_pci_controllers[] = {
 		.tx_fifo_depth = 32,
 		.rx_fifo_depth = 32,
 		.clk_khz      = 25000,
+		.explicit_stop = 0,
 	},
 	[medfield_3] = {
 		.bus_num     = 3,
@@ -117,6 +115,7 @@ static struct  dw_pci_controller  dw_pci_controllers[] = {
 		.tx_fifo_depth = 32,
 		.rx_fifo_depth = 32,
 		.clk_khz      = 25000,
+		.explicit_stop = 0,
 	},
 	[medfield_4] = {
 		.bus_num     = 4,
@@ -124,6 +123,7 @@ static struct  dw_pci_controller  dw_pci_controllers[] = {
 		.tx_fifo_depth = 32,
 		.rx_fifo_depth = 32,
 		.clk_khz      = 25000,
+		.explicit_stop = 0,
 	},
 	[medfield_5] = {
 		.bus_num     = 5,
@@ -131,6 +131,7 @@ static struct  dw_pci_controller  dw_pci_controllers[] = {
 		.tx_fifo_depth = 32,
 		.rx_fifo_depth = 32,
 		.clk_khz      = 25000,
+		.explicit_stop = 0,
 	},
 };
 static struct i2c_algorithm i2c_dw_algo = {
@@ -282,6 +283,7 @@ const struct pci_device_id *id)
 
 	dev->tx_fifo_depth = controller->tx_fifo_depth;
 	dev->rx_fifo_depth = controller->rx_fifo_depth;
+	dev->explicit_stop = controller->explicit_stop;
 	r = i2c_dw_init(dev);
 	if (r)
 		goto err_iounmap;

@@ -137,4 +137,16 @@ config SPEAR_ADC
 	  Say yes here to build support for the integrated ADC inside the
 	  ST SPEAr SoC. Provides direct access via sysfs.
 
+config MAX78M6610_LMU
+	tristate "Maxim 78M6610+LMU driver"
+	depends on SPI
+	select IIO_BUFFER
+	select IIO_TRIGGERED_BUFFER
+	help
+	  Say yes here to build support for Maxim Energy Measurement Processor
+	  for Load Monitoring Units.
+
+	  To compile this driver as a module, choose M here: the
+	  module will be called max78m6610_lmu.
+
 endmenu
