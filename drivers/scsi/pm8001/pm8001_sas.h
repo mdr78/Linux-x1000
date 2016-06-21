@@ -58,7 +58,7 @@
 #include "pm8001_defs.h"
 
 #define DRV_NAME		"pm80xx"
-#define DRV_VERSION		"0.1.38"
+#define DRV_VERSION		"0.1.37"
 #define PM8001_FAIL_LOGGING	0x01 /* Error message logging */
 #define PM8001_INIT_LOGGING	0x02 /* driver init logging */
 #define PM8001_DISC_LOGGING	0x04 /* discovery layer logging */
@@ -106,9 +106,7 @@ do {						\
 #define DEV_IS_EXPANDER(type)	((type == SAS_EDGE_EXPANDER_DEVICE) || (type == SAS_FANOUT_EXPANDER_DEVICE))
 #define IS_SPCV_12G(dev)	((dev->device == 0X8074)		\
 				|| (dev->device == 0X8076)		\
-				|| (dev->device == 0X8077)		\
-				|| (dev->device == 0X8070)		\
-				|| (dev->device == 0X8072))
+				|| (dev->device == 0X8077))
 
 #define PM8001_NAME_LENGTH		32/* generic length of strings */
 extern struct list_head hba_list;
@@ -243,7 +241,7 @@ struct pm8001_chip_info {
 struct pm8001_port {
 	struct asd_sas_port	sas_port;
 	u8			port_attached;
-	u16			wide_port_phymap;
+	u8			wide_port_phymap;
 	u8			port_state;
 	struct list_head	list;
 };
@@ -477,7 +475,6 @@ struct pm8001_hba_info {
 	struct list_head	list;
 	unsigned long		flags;
 	spinlock_t		lock;/* host-wide lock */
-	spinlock_t		bitmap_lock;
 	struct pci_dev		*pdev;/* our device */
 	struct device		*dev;
 	struct pm8001_hba_memspace io_mem[6];
@@ -571,14 +568,6 @@ struct pm8001_fw_image_header {
 #define	NCQ_READ_LOG_FLAG			0x80000000
 #define	NCQ_ABORT_ALL_FLAG			0x40000000
 #define	NCQ_2ND_RLE_FLAG			0x20000000
-
-/* Device states */
-#define DS_OPERATIONAL				0x01
-#define DS_PORT_IN_RESET			0x02
-#define DS_IN_RECOVERY				0x03
-#define DS_IN_ERROR				0x04
-#define DS_NON_OPERATIONAL			0x07
-
 /**
  * brief param structure for firmware flash update.
  */
@@ -627,13 +616,15 @@ extern struct workqueue_struct *pm8001_wq;
 int pm8001_tag_alloc(struct pm8001_hba_info *pm8001_ha, u32 *tag_out);
 void pm8001_tag_init(struct pm8001_hba_info *pm8001_ha);
 u32 pm8001_get_ncq_tag(struct sas_task *task, u32 *tag);
+void pm8001_ccb_free(struct pm8001_hba_info *pm8001_ha, u32 ccb_idx);
 void pm8001_ccb_task_free(struct pm8001_hba_info *pm8001_ha,
 	struct sas_task *task, struct pm8001_ccb_info *ccb, u32 ccb_idx);
 int pm8001_phy_control(struct asd_sas_phy *sas_phy, enum phy_func func,
 	void *funcdata);
 void pm8001_scan_start(struct Scsi_Host *shost);
 int pm8001_scan_finished(struct Scsi_Host *shost, unsigned long time);
-int pm8001_queue_command(struct sas_task *task, gfp_t gfp_flags);
+int pm8001_queue_command(struct sas_task *task, const int num,
+	gfp_t gfp_flags);
 int pm8001_abort_task(struct sas_task *task);
 int pm8001_abort_task_set(struct domain_device *dev, u8 *lun);
 int pm8001_clear_aca(struct domain_device *dev, u8 *lun);
@@ -710,26 +701,12 @@ int pm80xx_set_thermal_config(struct pm8001_hba_info *pm8001_ha);
 int pm8001_bar4_shift(struct pm8001_hba_info *pm8001_ha, u32 shiftValue);
 void pm8001_set_phy_profile(struct pm8001_hba_info *pm8001_ha,
 	u32 length, u8 *buf);
-void pm8001_set_phy_profile_single(struct pm8001_hba_info *pm8001_ha,
-		u32 phy, u32 length, u32 *buf);
 int pm80xx_bar4_shift(struct pm8001_hba_info *pm8001_ha, u32 shiftValue);
 ssize_t pm80xx_get_fatal_dump(struct device *cdev,
 		struct device_attribute *attr, char *buf);
 ssize_t pm8001_get_gsm_dump(struct device *cdev, u32, char *buf);
 /* ctl shared API */
 extern struct device_attribute *pm8001_host_attrs[];
-
-static inline void
-pm8001_ccb_task_free_done(struct pm8001_hba_info *pm8001_ha,
-			struct sas_task *task, struct pm8001_ccb_info *ccb,
-			u32 ccb_idx)
-{
-	pm8001_ccb_task_free(pm8001_ha, task, ccb, ccb_idx);
-	smp_mb(); /*in order to force CPU ordering*/
-	spin_unlock(&pm8001_ha->lock);
-	task->task_done(task);
-	spin_lock(&pm8001_ha->lock);
-}
 
 #endif
 

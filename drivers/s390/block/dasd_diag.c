@@ -21,7 +21,6 @@
 
 #include <asm/dasd.h>
 #include <asm/debug.h>
-#include <asm/diag.h>
 #include <asm/ebcdic.h>
 #include <asm/io.h>
 #include <asm/irq.h>
@@ -77,7 +76,6 @@ static inline int dia250(void *iob, int cmd)
 	int rc;
 
 	rc = 3;
-	diag_stat_inc(DIAG_STAT_X250);
 	asm volatile(
 		"	diag	2,%2,0x250\n"
 		"0:	ipm	%0\n"
@@ -648,7 +646,7 @@ dasd_diag_init(void)
 	ASCEBC(dasd_diag_discipline.ebcname, 4);
 
 	irq_subclass_register(IRQ_SUBCLASS_SERVICE_SIGNAL);
-	register_external_irq(EXT_IRQ_CP_SERVICE, dasd_ext_handler);
+	register_external_interrupt(0x2603, dasd_ext_handler);
 	dasd_diag_discipline_pointer = &dasd_diag_discipline;
 	return 0;
 }
@@ -656,7 +654,7 @@ dasd_diag_init(void)
 static void __exit
 dasd_diag_cleanup(void)
 {
-	unregister_external_irq(EXT_IRQ_CP_SERVICE, dasd_ext_handler);
+	unregister_external_interrupt(0x2603, dasd_ext_handler);
 	irq_subclass_unregister(IRQ_SUBCLASS_SERVICE_SIGNAL);
 	dasd_diag_discipline_pointer = NULL;
 }

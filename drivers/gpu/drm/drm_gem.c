@@ -38,8 +38,6 @@
 #include <linux/dma-buf.h>
 #include <drm/drmP.h>
 #include <drm/drm_vma_manager.h>
-#include <drm/drm_gem.h>
-#include "drm_internal.h"
 
 /** @file drm_gem.c
  *
@@ -87,9 +85,9 @@
 #endif
 
 /**
- * drm_gem_init - Initialize the GEM device fields
- * @dev: drm_devic structure to initialize
+ * Initialize the GEM device fields
  */
+
 int
 drm_gem_init(struct drm_device *dev)
 {
@@ -122,11 +120,6 @@ drm_gem_destroy(struct drm_device *dev)
 }
 
 /**
- * drm_gem_object_init - initialize an allocated shmem-backed GEM object
- * @dev: drm_device the object should be initialized for
- * @obj: drm_gem_object to initialize
- * @size: object size
- *
  * Initialize an already allocated GEM object of the specified size with
  * shmfs backing store.
  */
@@ -148,11 +141,6 @@ int drm_gem_object_init(struct drm_device *dev,
 EXPORT_SYMBOL(drm_gem_object_init);
 
 /**
- * drm_gem_private_object_init - initialize an allocated private GEM object
- * @dev: drm_device the object should be initialized for
- * @obj: drm_gem_object to initialize
- * @size: object size
- *
  * Initialize an already allocated GEM object of the specified size with
  * no GEM provided backing store. Instead the caller is responsible for
  * backing the object and handling it.
@@ -188,9 +176,6 @@ drm_gem_remove_prime_handles(struct drm_gem_object *obj, struct drm_file *filp)
 }
 
 /**
- * drm_gem_object_handle_free - release resources bound to userspace handles
- * @obj: GEM object to clean up.
- *
  * Called after the last handle to the object has been closed
  *
  * Removes any name for the object. Note that this must be
@@ -240,12 +225,7 @@ drm_gem_object_handle_unreference_unlocked(struct drm_gem_object *obj)
 }
 
 /**
- * drm_gem_handle_delete - deletes the given file-private handle
- * @filp: drm file-private structure to use for the handle look up
- * @handle: userspace handle to delete
- *
- * Removes the GEM handle from the @filp lookup table and if this is the last
- * handle also cleans up linked resources like GEM names.
+ * Removes the mapping from handle to filp for this object.
  */
 int
 drm_gem_handle_delete(struct drm_file *filp, u32 handle)
@@ -290,9 +270,6 @@ EXPORT_SYMBOL(drm_gem_handle_delete);
 
 /**
  * drm_gem_dumb_destroy - dumb fb callback helper for gem based drivers
- * @file: drm file-private structure to remove the dumb handle from
- * @dev: corresponding drm_device
- * @handle: the dumb handle to remove
  * 
  * This implements the ->dumb_destroy kms driver callback for drivers which use
  * gem to manage their backing storage.
@@ -307,9 +284,6 @@ EXPORT_SYMBOL(drm_gem_dumb_destroy);
 
 /**
  * drm_gem_handle_create_tail - internal functions to create a handle
- * @file_priv: drm file-private structure to register the handle for
- * @obj: object to register
- * @handlep: pointer to return the created handle to the caller
  * 
  * This expects the dev->object_name_lock to be held already and will drop it
  * before returning. Used to avoid races in establishing new handles when
@@ -362,18 +336,14 @@ drm_gem_handle_create_tail(struct drm_file *file_priv,
 }
 
 /**
- * drm_gem_handle_create - create a gem handle for an object
- * @file_priv: drm file-private structure to register the handle for
- * @obj: object to register
- * @handlep: pionter to return the created handle to the caller
- *
  * Create a handle for this object. This adds a handle reference
  * to the object, which includes a regular reference count. Callers
  * will likely want to dereference the object afterwards.
  */
-int drm_gem_handle_create(struct drm_file *file_priv,
-			  struct drm_gem_object *obj,
-			  u32 *handlep)
+int
+drm_gem_handle_create(struct drm_file *file_priv,
+		       struct drm_gem_object *obj,
+		       u32 *handlep)
 {
 	mutex_lock(&obj->dev->object_name_lock);
 
@@ -442,31 +412,18 @@ EXPORT_SYMBOL(drm_gem_create_mmap_offset);
  * drm_gem_get_pages - helper to allocate backing pages for a GEM object
  * from shmem
  * @obj: obj in question
- *
- * This reads the page-array of the shmem-backing storage of the given gem
- * object. An array of pages is returned. If a page is not allocated or
- * swapped-out, this will allocate/swap-in the required pages. Note that the
- * whole object is covered by the page-array and pinned in memory.
- *
- * Use drm_gem_put_pages() to release the array and unpin all pages.
- *
- * This uses the GFP-mask set on the shmem-mapping (see mapping_set_gfp_mask()).
- * If you require other GFP-masks, you have to do those allocations yourself.
- *
- * Note that you are not allowed to change gfp-zones during runtime. That is,
- * shmem_read_mapping_page_gfp() must be called with the same gfp_zone(gfp) as
- * set during initialization. If you have special zone constraints, set them
- * after drm_gem_init_object() via mapping_set_gfp_mask(). shmem-core takes care
- * to keep pages in the required zone during swap-in.
+ * @gfpmask: gfp mask of requested pages
  */
-struct page **drm_gem_get_pages(struct drm_gem_object *obj)
+struct page **drm_gem_get_pages(struct drm_gem_object *obj, gfp_t gfpmask)
 {
+	struct inode *inode;
 	struct address_space *mapping;
 	struct page *p, **pages;
 	int i, npages;
 
 	/* This is the shared memory object that backs the GEM resource */
-	mapping = file_inode(obj->filp)->i_mapping;
+	inode = file_inode(obj->filp);
+	mapping = inode->i_mapping;
 
 	/* We already BUG_ON() for non-page-aligned sizes in
 	 * drm_gem_object_init(), so we should never hit this unless
@@ -480,18 +437,31 @@ struct page **drm_gem_get_pages(struct drm_gem_object *obj)
 	if (pages == NULL)
 		return ERR_PTR(-ENOMEM);
 
+	gfpmask |= mapping_gfp_mask(mapping);
+
 	for (i = 0; i < npages; i++) {
-		p = shmem_read_mapping_page(mapping, i);
+		p = shmem_read_mapping_page_gfp(mapping, i, gfpmask);
 		if (IS_ERR(p))
 			goto fail;
 		pages[i] = p;
 
-		/* Make sure shmem keeps __GFP_DMA32 allocated pages in the
-		 * correct region during swapin. Note that this requires
-		 * __GFP_DMA32 to be set in mapping_gfp_mask(inode->i_mapping)
-		 * so shmem can relocate pages during swapin if required.
+		/* There is a hypothetical issue w/ drivers that require
+		 * buffer memory in the low 4GB.. if the pages are un-
+		 * pinned, and swapped out, they can end up swapped back
+		 * in above 4GB.  If pages are already in memory, then
+		 * shmem_read_mapping_page_gfp will ignore the gfpmask,
+		 * even if the already in-memory page disobeys the mask.
+		 *
+		 * It is only a theoretical issue today, because none of
+		 * the devices with this limitation can be populated with
+		 * enough memory to trigger the issue.  But this BUG_ON()
+		 * is here as a reminder in case the problem with
+		 * shmem_read_mapping_page_gfp() isn't solved by the time
+		 * it does become a real issue.
+		 *
+		 * See this thread: http://lkml.org/lkml/2011/7/11/238
 		 */
-		BUG_ON(mapping_gfp_constraint(mapping, __GFP_DMA32) &&
+		BUG_ON((gfpmask & __GFP_DMA32) &&
 				(page_to_pfn(p) >= 0x00100000UL));
 	}
 
@@ -566,11 +536,6 @@ drm_gem_object_lookup(struct drm_device *dev, struct drm_file *filp,
 EXPORT_SYMBOL(drm_gem_object_lookup);
 
 /**
- * drm_gem_close_ioctl - implementation of the GEM_CLOSE ioctl
- * @dev: drm_device
- * @data: ioctl data
- * @file_priv: drm file-private structure
- *
  * Releases the handle to an mm object.
  */
 int
@@ -580,7 +545,7 @@ drm_gem_close_ioctl(struct drm_device *dev, void *data,
 	struct drm_gem_close *args = data;
 	int ret;
 
-	if (!drm_core_check_feature(dev, DRIVER_GEM))
+	if (!(dev->driver->driver_features & DRIVER_GEM))
 		return -ENODEV;
 
 	ret = drm_gem_handle_delete(file_priv, args->handle);
@@ -589,11 +554,6 @@ drm_gem_close_ioctl(struct drm_device *dev, void *data,
 }
 
 /**
- * drm_gem_flink_ioctl - implementation of the GEM_FLINK ioctl
- * @dev: drm_device
- * @data: ioctl data
- * @file_priv: drm file-private structure
- *
  * Create a global name for an object, returning the name.
  *
  * Note that the name does not hold a reference; when the object
@@ -607,7 +567,7 @@ drm_gem_flink_ioctl(struct drm_device *dev, void *data,
 	struct drm_gem_object *obj;
 	int ret;
 
-	if (!drm_core_check_feature(dev, DRIVER_GEM))
+	if (!(dev->driver->driver_features & DRIVER_GEM))
 		return -ENODEV;
 
 	obj = drm_gem_object_lookup(dev, file_priv, args->handle);
@@ -641,11 +601,6 @@ err:
 }
 
 /**
- * drm_gem_open - implementation of the GEM_OPEN ioctl
- * @dev: drm_device
- * @data: ioctl data
- * @file_priv: drm file-private structure
- *
  * Open an object using the global name, returning a handle and the size.
  *
  * This handle (of course) holds a reference to the object, so the object
@@ -660,7 +615,7 @@ drm_gem_open_ioctl(struct drm_device *dev, void *data,
 	int ret;
 	u32 handle;
 
-	if (!drm_core_check_feature(dev, DRIVER_GEM))
+	if (!(dev->driver->driver_features & DRIVER_GEM))
 		return -ENODEV;
 
 	mutex_lock(&dev->object_name_lock);
@@ -685,10 +640,6 @@ drm_gem_open_ioctl(struct drm_device *dev, void *data,
 }
 
 /**
- * gem_gem_open - initalizes GEM file-private structures at devnode open time
- * @dev: drm_device which is being opened by userspace
- * @file_private: drm file-private structure to set up
- *
  * Called at device open time, sets up the structure for handling refcounting
  * of mm objects.
  */
@@ -699,7 +650,7 @@ drm_gem_open(struct drm_device *dev, struct drm_file *file_private)
 	spin_lock_init(&file_private->table_lock);
 }
 
-/*
+/**
  * Called at device close to release the file's
  * handle references on objects.
  */
@@ -723,10 +674,6 @@ drm_gem_object_release_handle(int id, void *ptr, void *data)
 }
 
 /**
- * drm_gem_release - release file-private GEM resources
- * @dev: drm_device which is being closed by userspace
- * @file_private: drm file-private structure to clean up
- *
  * Called at close time when the filp is going away.
  *
  * Releases any remaining references on objects by this filp.
@@ -745,16 +692,11 @@ drm_gem_object_release(struct drm_gem_object *obj)
 	WARN_ON(obj->dma_buf);
 
 	if (obj->filp)
-		fput(obj->filp);
-
-	drm_gem_free_mmap_offset(obj);
+	    fput(obj->filp);
 }
 EXPORT_SYMBOL(drm_gem_object_release);
 
 /**
- * drm_gem_object_free - free a GEM object
- * @kref: kref of the object to free
- *
  * Called after the last reference to the object has been lost.
  * Must be called holding struct_ mutex
  *
@@ -763,11 +705,10 @@ EXPORT_SYMBOL(drm_gem_object_release);
 void
 drm_gem_object_free(struct kref *kref)
 {
-	struct drm_gem_object *obj =
-		container_of(kref, struct drm_gem_object, refcount);
+	struct drm_gem_object *obj = (struct drm_gem_object *) kref;
 	struct drm_device *dev = obj->dev;
 
-	WARN_ON(!mutex_is_locked(&dev->struct_mutex));
+	BUG_ON(!mutex_is_locked(&dev->struct_mutex));
 
 	if (dev->driver->gem_free_object != NULL)
 		dev->driver->gem_free_object(obj);
@@ -779,14 +720,22 @@ void drm_gem_vm_open(struct vm_area_struct *vma)
 	struct drm_gem_object *obj = vma->vm_private_data;
 
 	drm_gem_object_reference(obj);
+
+	mutex_lock(&obj->dev->struct_mutex);
+	drm_vm_open_locked(obj->dev, vma);
+	mutex_unlock(&obj->dev->struct_mutex);
 }
 EXPORT_SYMBOL(drm_gem_vm_open);
 
 void drm_gem_vm_close(struct vm_area_struct *vma)
 {
 	struct drm_gem_object *obj = vma->vm_private_data;
+	struct drm_device *dev = obj->dev;
 
-	drm_gem_object_unreference_unlocked(obj);
+	mutex_lock(&dev->struct_mutex);
+	drm_vm_close_locked(obj->dev, vma);
+	drm_gem_object_unreference(obj);
+	mutex_unlock(&dev->struct_mutex);
 }
 EXPORT_SYMBOL(drm_gem_vm_close);
 
@@ -811,6 +760,8 @@ EXPORT_SYMBOL(drm_gem_vm_close);
  * drm_gem_mmap() prevents unprivileged users from mapping random objects. So
  * callers must verify access restrictions before calling this helper.
  *
+ * NOTE: This function has to be protected with dev->struct_mutex
+ *
  * Return 0 or success or -EINVAL if the object size is smaller than the VMA
  * size, or if no gem_vm_ops are provided.
  */
@@ -818,6 +769,8 @@ int drm_gem_mmap_obj(struct drm_gem_object *obj, unsigned long obj_size,
 		     struct vm_area_struct *vma)
 {
 	struct drm_device *dev = obj->dev;
+
+	lockdep_assert_held(&dev->struct_mutex);
 
 	/* Check for valid size. */
 	if (obj_size < vma->vm_end - vma->vm_start)
@@ -829,7 +782,7 @@ int drm_gem_mmap_obj(struct drm_gem_object *obj, unsigned long obj_size,
 	vma->vm_flags |= VM_IO | VM_PFNMAP | VM_DONTEXPAND | VM_DONTDUMP;
 	vma->vm_ops = dev->driver->gem_vm_ops;
 	vma->vm_private_data = obj;
-	vma->vm_page_prot = pgprot_writecombine(vm_get_page_prot(vma->vm_flags));
+	vma->vm_page_prot =  pgprot_writecombine(vm_get_page_prot(vma->vm_flags));
 
 	/* Take a ref for this mapping of the object, so that the fault
 	 * handler can dereference the mmap offset's pointer to the object.
@@ -839,6 +792,7 @@ int drm_gem_mmap_obj(struct drm_gem_object *obj, unsigned long obj_size,
 	 */
 	drm_gem_object_reference(obj);
 
+	drm_vm_open_locked(dev, vma);
 	return 0;
 }
 EXPORT_SYMBOL(drm_gem_mmap_obj);
@@ -862,46 +816,30 @@ int drm_gem_mmap(struct file *filp, struct vm_area_struct *vma)
 {
 	struct drm_file *priv = filp->private_data;
 	struct drm_device *dev = priv->minor->dev;
-	struct drm_gem_object *obj = NULL;
+	struct drm_gem_object *obj;
 	struct drm_vma_offset_node *node;
-	int ret;
+	int ret = 0;
 
 	if (drm_device_is_unplugged(dev))
 		return -ENODEV;
 
-	drm_vma_offset_lock_lookup(dev->vma_offset_manager);
-	node = drm_vma_offset_exact_lookup_locked(dev->vma_offset_manager,
-						  vma->vm_pgoff,
-						  vma_pages(vma));
-	if (likely(node)) {
-		obj = container_of(node, struct drm_gem_object, vma_node);
-		/*
-		 * When the object is being freed, after it hits 0-refcnt it
-		 * proceeds to tear down the object. In the process it will
-		 * attempt to remove the VMA offset and so acquire this
-		 * mgr->vm_lock.  Therefore if we find an object with a 0-refcnt
-		 * that matches our range, we know it is in the process of being
-		 * destroyed and will be freed as soon as we release the lock -
-		 * so we have to check for the 0-refcnted object and treat it as
-		 * invalid.
-		 */
-		if (!kref_get_unless_zero(&obj->refcount))
-			obj = NULL;
-	}
-	drm_vma_offset_unlock_lookup(dev->vma_offset_manager);
+	mutex_lock(&dev->struct_mutex);
 
-	if (!obj)
-		return -EINVAL;
-
-	if (!drm_vma_node_is_allowed(node, filp)) {
-		drm_gem_object_unreference_unlocked(obj);
+	node = drm_vma_offset_exact_lookup(dev->vma_offset_manager,
+					   vma->vm_pgoff,
+					   vma_pages(vma));
+	if (!node) {
+		mutex_unlock(&dev->struct_mutex);
+		return drm_mmap(filp, vma);
+	} else if (!drm_vma_node_is_allowed(node, filp)) {
+		mutex_unlock(&dev->struct_mutex);
 		return -EACCES;
 	}
 
-	ret = drm_gem_mmap_obj(obj, drm_vma_node_size(node) << PAGE_SHIFT,
-			       vma);
+	obj = container_of(node, struct drm_gem_object, vma_node);
+	ret = drm_gem_mmap_obj(obj, drm_vma_node_size(node) << PAGE_SHIFT, vma);
 
-	drm_gem_object_unreference_unlocked(obj);
+	mutex_unlock(&dev->struct_mutex);
 
 	return ret;
 }

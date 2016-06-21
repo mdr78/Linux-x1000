@@ -32,10 +32,16 @@
 #include <linux/rculist.h>
 #include <linux/kref.h>
 #include <asm/unaligned.h>
+#include <scsi/scsi.h>
+#include <scsi/scsi_host.h>
+#include <scsi/scsi_device.h>
+#include <scsi/scsi_cmnd.h>
 #include <scsi/libfc.h>
 
 #include <target/target_core_base.h>
 #include <target/target_core_fabric.h>
+#include <target/target_core_configfs.h>
+#include <target/configfs_macros.h>
 
 #include "tcm_fc.h"
 
@@ -45,7 +51,7 @@ static void ft_sess_delete_all(struct ft_tport *);
  * Lookup or allocate target local port.
  * Caller holds ft_lport_lock.
  */
-static struct ft_tport *ft_tport_get(struct fc_lport *lport)
+static struct ft_tport *ft_tport_create(struct fc_lport *lport)
 {
 	struct ft_tpg *tpg;
 	struct ft_tport *tport;
@@ -92,7 +98,7 @@ static void ft_tport_delete(struct ft_tport *tport)
 	ft_sess_delete_all(tport);
 	lport = tport->lport;
 	BUG_ON(tport != lport->prov[FC_TYPE_FCP]);
-	RCU_INIT_POINTER(lport->prov[FC_TYPE_FCP], NULL);
+	rcu_assign_pointer(lport->prov[FC_TYPE_FCP], NULL);
 
 	tpg = tport->tpg;
 	if (tpg) {
@@ -109,7 +115,7 @@ static void ft_tport_delete(struct ft_tport *tport)
 void ft_lport_add(struct fc_lport *lport, void *arg)
 {
 	mutex_lock(&ft_lport_lock);
-	ft_tport_get(lport);
+	ft_tport_create(lport);
 	mutex_unlock(&ft_lport_lock);
 }
 
@@ -206,8 +212,7 @@ static struct ft_sess *ft_sess_create(struct ft_tport *tport, u32 port_id,
 		return NULL;
 
 	sess->se_sess = transport_init_session_tags(TCM_FC_DEFAULT_TAGS,
-						    sizeof(struct ft_cmd),
-						    TARGET_PROT_NORMAL);
+						    sizeof(struct ft_cmd));
 	if (IS_ERR(sess->se_sess)) {
 		kfree(sess);
 		return NULL;
@@ -346,7 +351,7 @@ static int ft_prli_locked(struct fc_rport_priv *rdata, u32 spp_len,
 	struct ft_node_acl *acl;
 	u32 fcp_parm;
 
-	tport = ft_tport_get(rdata->local_port);
+	tport = ft_tport_create(rdata->local_port);
 	if (!tport)
 		goto not_target;	/* not a target for this local port */
 

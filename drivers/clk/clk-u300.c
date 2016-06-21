@@ -5,14 +5,13 @@
  * Author: Linus Walleij <linus.walleij@stericsson.com>
  * Author: Jonas Aaberg <jonas.aberg@stericsson.com>
  */
+#include <linux/clk.h>
 #include <linux/clkdev.h>
-#include <linux/slab.h>
 #include <linux/err.h>
 #include <linux/io.h>
 #include <linux/clk-provider.h>
 #include <linux/spinlock.h>
 #include <linux/of.h>
-#include <linux/platform_data/clk-u300.h>
 
 /* APP side SYSCON registers */
 /* CLK Control Register 16bit (R/W) */
@@ -1169,7 +1168,6 @@ static const struct of_device_id u300_clk_match[] __initconst = {
 		.compatible = "stericsson,u300-syscon-mclk",
 		.data = of_u300_syscon_mclk_init,
 	},
-	{}
 };
 
 

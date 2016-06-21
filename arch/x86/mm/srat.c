@@ -52,18 +52,12 @@ void __init acpi_numa_slit_init(struct acpi_table_slit *slit)
 	int i, j;
 
 	for (i = 0; i < slit->locality_count; i++) {
-		const int from_node = pxm_to_node(i);
-
-		if (from_node == NUMA_NO_NODE)
+		if (pxm_to_node(i) == NUMA_NO_NODE)
 			continue;
-
 		for (j = 0; j < slit->locality_count; j++) {
-			const int to_node = pxm_to_node(j);
-
-			if (to_node == NUMA_NO_NODE)
+			if (pxm_to_node(j) == NUMA_NO_NODE)
 				continue;
-
-			numa_set_distance(from_node, to_node,
+			numa_set_distance(pxm_to_node(i), pxm_to_node(j),
 				slit->entry[slit->locality_count * i + j]);
 		}
 	}
@@ -192,11 +186,10 @@ acpi_numa_memory_affinity_init(struct acpi_srat_mem_affinity *ma)
 
 	node_set(node, numa_nodes_parsed);
 
-	pr_info("SRAT: Node %u PXM %u [mem %#010Lx-%#010Lx]%s%s\n",
+	pr_info("SRAT: Node %u PXM %u [mem %#010Lx-%#010Lx]%s\n",
 		node, pxm,
 		(unsigned long long) start, (unsigned long long) end - 1,
-		hotpluggable ? " hotplug" : "",
-		ma->flags & ACPI_SRAT_MEM_NON_VOLATILE ? " non-volatile" : "");
+		hotpluggable ? " hotplug" : "");
 
 	/* Mark hotplug range in memblock. */
 	if (hotpluggable && memblock_mark_hotplug(start, ma->length))

@@ -27,6 +27,8 @@ config ACER_WMI
 	depends on ACPI_WMI
 	select INPUT_SPARSEKMAP
 	# Acer WMI depends on ACPI_VIDEO when ACPI is enabled
+	# but for select to work, need to select ACPI_VIDEO's dependencies, ick
+        select VIDEO_OUTPUT_CONTROL if ACPI
         select ACPI_VIDEO if ACPI
 	---help---
 	  This is a driver for newer Acer (and Wistron) laptops. It adds
@@ -38,8 +40,7 @@ config ACER_WMI
 
 config ACERHDF
 	tristate "Acer Aspire One temperature and fan driver"
-	depends on ACPI && THERMAL
-	select THERMAL_GOV_BANG_BANG
+	depends on THERMAL && ACPI
 	---help---
 	  This is a driver for Acer Aspire One netbooks. It allows to access
 	  the temperature sensor and to control the fan.
@@ -54,27 +55,14 @@ config ACERHDF
 	  If you have an Acer Aspire One netbook, say Y or M
 	  here.
 
-config ALIENWARE_WMI
-	tristate "Alienware Special feature control"
-	depends on ACPI
-	depends on LEDS_CLASS
-	depends on NEW_LEDS
-	depends on ACPI_WMI
-	---help---
-	 This is a driver for controlling Alienware BIOS driven
-	 features.  It exposes an interface for controlling the AlienFX
-	 zones on Alienware machines that don't contain a dedicated AlienFX
-	 USB MCU such as the X51 and X51-R2.
-
 config ASUS_LAPTOP
 	tristate "Asus Laptop Extras"
 	depends on ACPI
 	select LEDS_CLASS
 	select NEW_LEDS
-	depends on BACKLIGHT_CLASS_DEVICE
+	select BACKLIGHT_CLASS_DEVICE
 	depends on INPUT
 	depends on RFKILL || RFKILL = n
-	depends on ACPI_VIDEO || ACPI_VIDEO = n
 	select INPUT_SPARSEKMAP
 	select INPUT_POLLDEV
 	---help---
@@ -96,7 +84,6 @@ config DELL_LAPTOP
 	depends on X86
 	depends on DCDBAS
 	depends on BACKLIGHT_CLASS_DEVICE
-	depends on ACPI_VIDEO || ACPI_VIDEO = n
 	depends on RFKILL || RFKILL = n
 	depends on SERIO_I8042
 	select POWER_SUPPLY
@@ -105,13 +92,12 @@ config DELL_LAPTOP
 	default n
 	---help---
 	This driver adds support for rfkill and backlight control to Dell
-	laptops (except for some models covered by the Compal driver).
+	laptops.
 
 config DELL_WMI
 	tristate "Dell WMI extras"
 	depends on ACPI_WMI
 	depends on INPUT
-	depends on ACPI_VIDEO || ACPI_VIDEO = n
 	select INPUT_SPARSEKMAP
 	---help---
 	  Say Y here if you want to support WMI-based hotkeys on Dell laptops.
@@ -131,39 +117,12 @@ config DELL_WMI_AIO
 	  To compile this driver as a module, choose M here: the module will
 	  be called dell-wmi-aio.
 
-config DELL_SMO8800
-	tristate "Dell Latitude freefall driver (ACPI SMO88XX)"
-	depends on ACPI
-	---help---
-	  Say Y here if you want to support SMO88XX freefall devices
-	  on Dell Latitude laptops.
-
-	  To compile this driver as a module, choose M here: the module will
-	  be called dell-smo8800.
-
-config DELL_RBTN
-	tristate "Dell Airplane Mode Switch driver"
-	depends on ACPI
-	depends on INPUT
-	depends on RFKILL
-	---help---
-	  Say Y here if you want to support Dell Airplane Mode Switch ACPI
-	  device on Dell laptops. Sometimes it has names: DELLABCE or DELRBTN.
-	  This driver register rfkill device or input hotkey device depending
-	  on hardware type (hw switch slider or keyboard toggle button). For
-	  rfkill devices it receive HW switch events and set correct hard
-	  rfkill state.
-
-	  To compile this driver as a module, choose M here: the module will
-	  be called dell-rbtn.
-
 
 config FUJITSU_LAPTOP
 	tristate "Fujitsu Laptop Extras"
 	depends on ACPI
 	depends on INPUT
 	depends on BACKLIGHT_CLASS_DEVICE
-	depends on ACPI_VIDEO || ACPI_VIDEO = n
 	depends on LEDS_CLASS || LEDS_CLASS=n
 	---help---
 	  This is a driver for laptops built by Fujitsu:
@@ -223,7 +182,6 @@ config TC1100_WMI
 config HP_ACCEL
 	tristate "HP laptop accelerometer"
 	depends on INPUT && ACPI
-	depends on SERIO_I8042
 	select SENSORS_LIS3LV02D
 	select NEW_LEDS
 	select LEDS_CLASS
@@ -240,7 +198,7 @@ config HP_ACCEL
 	  be called hp_accel.
 
 config HP_WIRELESS
-	tristate "HP wireless button"
+	tristate "HP WIRELESS"
 	depends on ACPI
 	depends on INPUT
 	help
@@ -267,7 +225,6 @@ config MSI_LAPTOP
 	tristate "MSI Laptop Extras"
 	depends on ACPI
 	depends on BACKLIGHT_CLASS_DEVICE
-	depends on ACPI_VIDEO || ACPI_VIDEO = n
 	depends on RFKILL
 	depends on INPUT && SERIO_I8042
 	select INPUT_SPARSEKMAP
@@ -298,28 +255,28 @@ config PANASONIC_LAPTOP
 	  R2, R3, R5, T2, W2 and Y2 series), say Y.
 
 config COMPAL_LAPTOP
-	tristate "Compal (and others) Laptop Extras"
+	tristate "Compal Laptop Extras"
 	depends on ACPI
 	depends on BACKLIGHT_CLASS_DEVICE
-	depends on ACPI_VIDEO || ACPI_VIDEO = n
 	depends on RFKILL
 	depends on HWMON
 	depends on POWER_SUPPLY
 	---help---
-	  This is a driver for laptops built by Compal, and some models by
-	  other brands (e.g. Dell, Toshiba).
+	  This is a driver for laptops built by Compal:
 
-	  It adds support for rfkill, Bluetooth, WLAN, LCD brightness, hwmon
-	  and battery charging level control.
+	  Compal FL90/IFL90
+	  Compal FL91/IFL91
+	  Compal FL92/JFL92
+	  Compal FT00/IFT00
 
-	  For a (possibly incomplete) list of supported laptops, please refer
-	  to: Documentation/platform/x86-laptop-drivers.txt
+	  It adds support for Bluetooth, WLAN and LCD brightness control.
+
+	  If you have an Compal FL9x/IFL9x/FT00 laptop, say Y or M here.
 
 config SONY_LAPTOP
 	tristate "Sony Laptop Extras"
 	depends on ACPI
-	depends on ACPI_VIDEO || ACPI_VIDEO = n
-	depends on BACKLIGHT_CLASS_DEVICE
+	select BACKLIGHT_CLASS_DEVICE
 	depends on INPUT
 	depends on RFKILL
 	  ---help---
@@ -344,8 +301,6 @@ config IDEAPAD_LAPTOP
 	depends on RFKILL && INPUT
 	depends on SERIO_I8042
 	depends on BACKLIGHT_CLASS_DEVICE
-	depends on ACPI_VIDEO || ACPI_VIDEO = n
-	depends on ACPI_WMI || ACPI_WMI = n
 	select INPUT_SPARSEKMAP
 	help
 	  This is a driver for Lenovo IdeaPad netbooks contains drivers for
@@ -356,8 +311,8 @@ config THINKPAD_ACPI
 	depends on ACPI
 	depends on INPUT
 	depends on RFKILL || RFKILL = n
-	depends on ACPI_VIDEO || ACPI_VIDEO = n
-	depends on BACKLIGHT_CLASS_DEVICE
+	select BACKLIGHT_LCD_SUPPORT
+	select BACKLIGHT_CLASS_DEVICE
 	select HWMON
 	select NVRAM
 	select NEW_LEDS
@@ -525,9 +480,8 @@ config EEEPC_LAPTOP
 	depends on ACPI
 	depends on INPUT
 	depends on RFKILL || RFKILL = n
-	depends on ACPI_VIDEO || ACPI_VIDEO = n
 	depends on HOTPLUG_PCI
-	depends on BACKLIGHT_CLASS_DEVICE
+	select BACKLIGHT_CLASS_DEVICE
 	select HWMON
 	select LEDS_CLASS
 	select NEW_LEDS
@@ -568,7 +522,7 @@ config ASUS_NB_WMI
 	  This is a driver for newer Asus notebooks. It adds extra features
 	  like wireless radio and bluetooth control, leds, hotkeys, backlight...
 
-	  For more information, see
+	  For more informations, see
 	  <file:Documentation/ABI/testing/sysfs-platform-asus-wmi>
 
 	  If you have an ACPI-WMI compatible Asus Notebook, say Y or M
@@ -581,7 +535,7 @@ config EEEPC_WMI
 	  This is a driver for newer Eee PC laptops. It adds extra features
 	  like wireless radio and bluetooth control, leds, hotkeys, backlight...
 
-	  For more information, see
+	  For more informations, see
 	  <file:Documentation/ABI/testing/sysfs-platform-asus-wmi>
 
 	  If you have an ACPI-WMI compatible Eee PC laptop (>= 1000), say Y or M
@@ -613,7 +567,6 @@ config MSI_WMI
 	depends on ACPI_WMI
 	depends on INPUT
 	depends on BACKLIGHT_CLASS_DEVICE
-	depends on ACPI_VIDEO || ACPI_VIDEO = n
 	select INPUT_SPARSEKMAP
 	help
 	 Say Y here if you want to support WMI-based hotkeys on MSI laptops.
@@ -639,8 +592,8 @@ config ACPI_TOSHIBA
 	select NEW_LEDS
 	depends on BACKLIGHT_CLASS_DEVICE
 	depends on INPUT
+	depends on RFKILL || RFKILL = n
 	depends on SERIO_I8042 || SERIO_I8042 = n
-	depends on ACPI_VIDEO || ACPI_VIDEO = n
 	select INPUT_POLLDEV
 	select INPUT_SPARSEKMAP
 	---help---
@@ -669,7 +622,6 @@ config ACPI_TOSHIBA
 config TOSHIBA_BT_RFKILL
 	tristate "Toshiba Bluetooth RFKill switch support"
 	depends on ACPI
-	depends on RFKILL || RFKILL = n
 	---help---
 	  This driver adds support for Bluetooth events for the RFKill
 	  switch on modern Toshiba laptops with full ACPI support and
@@ -681,43 +633,6 @@ config TOSHIBA_BT_RFKILL
 
 	  If you have a modern Toshiba laptop with a Bluetooth and an
 	  RFKill switch (such as the Portege R500), say Y.
-
-config TOSHIBA_HAPS
-	tristate "Toshiba HDD Active Protection Sensor"
-	depends on ACPI
-	---help---
-	  This driver adds support for the built-in accelerometer
-	  found on recent Toshiba laptops equipped with HID TOS620A
-	  device.
-
-	  This driver receives ACPI notify events 0x80 when the sensor
-	  detects a sudden move or a harsh vibration, as well as an
-	  ACPI notify event 0x81 whenever the movement or vibration has
-	  been stabilized.
-
-	  Also provides sysfs entries to get/set the desired protection
-	  level and resetting the HDD protection interface.
-
-	  If you have a recent Toshiba laptop with a built-in accelerometer
-	  device, say Y.
-
-config TOSHIBA_WMI
-	tristate "Toshiba WMI Hotkeys Driver (EXPERIMENTAL)"
-	default n
-	depends on ACPI_WMI
-	depends on INPUT
-	select INPUT_SPARSEKMAP
-	---help---
-	  This driver adds hotkey monitoring support to some Toshiba models
-	  that manage the hotkeys via WMI events.
-
-	  WARNING: This driver is incomplete as it lacks a proper keymap and the
-	  *notify function only prints the ACPI event type value. Be warned that
-	  you will need to provide some information if you have a Toshiba model
-	  with WMI event hotkeys and want to help with the develpment of this
-	  driver.
-
-	  If you have a WMI-based hotkeys Toshiba laptop, say Y or M here.
 
 config ACPI_CMPC
 	tristate "CMPC Laptop Extras"
@@ -771,6 +686,28 @@ config INTEL_MFLD_THERMAL
          Say Y here to enable thermal driver support for the  Intel Medfield
          platform.
 
+config INTEL_QRK_THERMAL
+	tristate "Thermal driver for Intel Quark platform"
+	depends on X86_INTEL_QUARK && THERMAL
+	help
+	  Say Y here to enable Quark's Thermal driver plus the MSI's
+	  that can be hooked from the thermal sub-system
+
+config INTEL_QRK_AUDIO_CTRL
+	tristate "Audio sub-system control driver for Intel Quark platform"
+	depends on X86_INTEL_QUARK
+	help
+	  Say Y here to enable Quark's audio control driver
+
+config INTEL_QRK_J1708
+	tristate "SAE J1708 receiver driver for Intel Quark platform"
+	depends on SERIAL_8250
+	help
+	  Select to enable Quark's J1708 receiver driver. This driver works
+	  as SAE J1708 protocol receiver. This driver co-works with the 8250
+	  uart driver, the chosen uart port will be connected to this driver
+	  once the module is loaded and J1708 device file is opened & started.
+
 config INTEL_IPS
 	tristate "Intel Intelligent Power Sharing"
 	depends on ACPI
@@ -806,6 +743,17 @@ config INTEL_IMR
 
 	  If you are running on a Galileo/Quark say Y here.
 
+config INTEL_QRK_ESRAM
+	bool "eSRAM - embedded SRAM driver for Intel Quark platform"
+	depends on X86_INTEL_QUARK && PM
+	select KALLSYMS
+	select CRC16
+	help
+	  Say Y here to enable eSRAM overlay.eSRAM overlaying allows for
+	  code/data structures to be mapped into eSRAM thus providing
+	  far faster access to code/data than ordinary DRAM. Slower
+	  than cache RAM faster than DRAM.
+
 config IBM_RTL
 	tristate "Device driver to enable PRTL support"
 	depends on X86 && PCI
@@ -824,7 +772,7 @@ config IBM_RTL
 
 config XO1_RFKILL
 	tristate "OLPC XO-1 software RF kill switch"
-	depends on OLPC || COMPILE_TEST
+	depends on OLPC
 	depends on RFKILL
 	---help---
 	  Support for enabling/disabling the WLAN interface on the OLPC XO-1
@@ -832,7 +780,6 @@ config XO1_RFKILL
 
 config XO15_EBOOK
 	tristate "OLPC XO-1.5 ebook switch"
-	depends on OLPC || COMPILE_TEST
 	depends on ACPI && INPUT
 	---help---
 	  Support for the ebook switch on the OLPC XO-1.5 laptop.
@@ -869,7 +816,6 @@ config MXM_WMI
 config INTEL_OAKTRAIL
 	tristate "Intel Oaktrail Platform Extras"
 	depends on ACPI
-	depends on ACPI_VIDEO || ACPI_VIDEO = n
 	depends on RFKILL && BACKLIGHT_CLASS_DEVICE && ACPI
 	---help---
 	  Intel Oaktrail platform need this driver to provide interfaces to
@@ -931,34 +877,12 @@ config PVPANIC
 	  a paravirtualized device provided by QEMU; it lets a virtual machine
 	  (guest) communicate panic events to the host.
 
-config INTEL_PMC_IPC
-	tristate "Intel PMC IPC Driver"
-	depends on ACPI
+config INTEL_BAYTRAIL_MBI
+	tristate
+	depends on PCI
 	---help---
-	This driver provides support for PMC control on some Intel platforms.
-	The PMC is an ARC processor which defines IPC commands for communication
-	with other entities in the CPU.
+	  Needed on Baytrail platforms for access to the IOSF Sideband Mailbox
+	  Interface. This is a requirement for systems that need to configure
+	  the PUNIT for power management features such as RAPL.
 
-config SURFACE_PRO3_BUTTON
-	tristate "Power/home/volume buttons driver for Microsoft Surface Pro 3 tablet"
-	depends on ACPI && INPUT
-	---help---
-	  This driver handles the power/home/volume buttons on the Microsoft Surface Pro 3 tablet.
-
-config INTEL_PUNIT_IPC
-	tristate "Intel P-Unit IPC Driver"
-	---help---
-	  This driver provides support for Intel P-Unit Mailbox IPC mechanism,
-	  which is used to bridge the communications between kernel and P-Unit.
-
-config INTEL_TELEMETRY
-	tristate "Intel SoC Telemetry Driver"
-	default n
-	depends on INTEL_PMC_IPC && INTEL_PUNIT_IPC && X86_64
-	---help---
-	  This driver provides interfaces to configure and use
-	  telemetry for INTEL SoC from APL onwards. It is also
-	  used to get various SoC events and parameters
-	  directly via debugfs files. Various tools may use
-	  this interface for SoC state monitoring.
 endif # X86_PLATFORM_DEVICES

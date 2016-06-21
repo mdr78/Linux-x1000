@@ -15,7 +15,6 @@
 #include <linux/module.h>
 #include <linux/init.h>
 #include <linux/irq.h>
-#include <linux/irqchip.h>
 #include <linux/irqdomain.h>
 #include <linux/io.h>
 #include <linux/ioport.h>
@@ -23,7 +22,9 @@
 #include <linux/of_irq.h>
 
 #include <asm/exception.h>
-#include <asm/hardirq.h>
+#include <asm/mach/irq.h>
+
+#include "irqchip.h"
 
 #define MAX_ICU_NR		16
 
@@ -129,9 +130,8 @@ struct irq_chip icu_irq_chip = {
 	.irq_unmask	= icu_unmask_irq,
 };
 
-static void icu_mux_irq_demux(struct irq_desc *desc)
+static void icu_mux_irq_demux(unsigned int irq, struct irq_desc *desc)
 {
-	unsigned int irq = irq_desc_get_irq(desc);
 	struct irq_domain *domain;
 	struct icu_chip_data *data;
 	int i;
@@ -164,6 +164,7 @@ static int mmp_irq_domain_map(struct irq_domain *d, unsigned int irq,
 			      irq_hw_number_t hw)
 {
 	irq_set_chip_and_handler(irq, &icu_irq_chip, handle_level_irq);
+	set_irq_flags(irq, IRQF_VALID);
 	return 0;
 }
 
@@ -193,26 +194,30 @@ static struct mmp_intc_conf mmp2_conf = {
 	.conf_mask	= 0x7f,
 };
 
-static void __exception_irq_entry mmp_handle_irq(struct pt_regs *regs)
+static asmlinkage void __exception_irq_entry
+mmp_handle_irq(struct pt_regs *regs)
 {
-	int hwirq;
+	int irq, hwirq;
 
 	hwirq = readl_relaxed(mmp_icu_base + PJ1_INT_SEL);
 	if (!(hwirq & SEL_INT_PENDING))
 		return;
 	hwirq &= SEL_INT_NUM_MASK;
-	handle_domain_irq(icu_data[0].domain, hwirq, regs);
+	irq = irq_find_mapping(icu_data[0].domain, hwirq);
+	handle_IRQ(irq, regs);
 }
 
-static void __exception_irq_entry mmp2_handle_irq(struct pt_regs *regs)
+static asmlinkage void __exception_irq_entry
+mmp2_handle_irq(struct pt_regs *regs)
 {
-	int hwirq;
+	int irq, hwirq;
 
 	hwirq = readl_relaxed(mmp_icu_base + PJ4_INT_SEL);
 	if (!(hwirq & SEL_INT_PENDING))
 		return;
 	hwirq &= SEL_INT_NUM_MASK;
-	handle_domain_irq(icu_data[0].domain, hwirq, regs);
+	irq = irq_find_mapping(icu_data[0].domain, hwirq);
+	handle_IRQ(irq, regs);
 }
 
 /* MMP (ARMv5) */
@@ -233,6 +238,7 @@ void __init icu_init_irq(void)
 	for (irq = 0; irq < 64; irq++) {
 		icu_mask_irq(irq_get_irq_data(irq));
 		irq_set_chip_and_handler(irq, &icu_irq_chip, handle_level_irq);
+		set_irq_flags(irq, IRQF_VALID);
 	}
 	irq_set_default_host(icu_data[0].domain);
 	set_handle_irq(mmp_handle_irq);
@@ -335,6 +341,7 @@ void __init mmp2_init_icu(void)
 			irq_set_chip_and_handler(irq, &icu_irq_chip,
 						 handle_level_irq);
 		}
+		set_irq_flags(irq, IRQF_VALID);
 	}
 	irq_set_default_host(icu_data[0].domain);
 	set_handle_irq(mmp2_handle_irq);

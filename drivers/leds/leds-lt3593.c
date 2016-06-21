@@ -17,6 +17,7 @@
  */
 
 #include <linux/kernel.h>
+#include <linux/init.h>
 #include <linux/platform_device.h>
 #include <linux/leds.h>
 #include <linux/workqueue.h>
@@ -184,6 +185,7 @@ static struct platform_driver lt3593_led_driver = {
 	.remove		= lt3593_led_remove,
 	.driver		= {
 		.name	= "leds-lt3593",
+		.owner	= THIS_MODULE,
 	},
 };
 

@@ -1,17 +1,15 @@
-/* bnx2i.c: QLogic NetXtreme II iSCSI driver.
+/* bnx2i.c: Broadcom NetXtreme II iSCSI driver.
  *
  * Copyright (c) 2006 - 2013 Broadcom Corporation
  * Copyright (c) 2007, 2008 Red Hat, Inc.  All rights reserved.
  * Copyright (c) 2007, 2008 Mike Christie
- * Copyright (c) 2014, QLogic Corporation
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
  * the Free Software Foundation.
  *
  * Written by: Anil Veerabhadrappa (anilgv@broadcom.com)
- * Previously Maintained by: Eddie Wai (eddie.wai@broadcom.com)
- * Maintained by: QLogic-Storage-Upstream@qlogic.com
+ * Maintained by: Eddie Wai (eddie.wai@broadcom.com)
  */
 
 #include "bnx2i.h"
@@ -20,18 +18,18 @@ static struct list_head adapter_list = LIST_HEAD_INIT(adapter_list);
 static u32 adapter_count;
 
 #define DRV_MODULE_NAME		"bnx2i"
-#define DRV_MODULE_VERSION	"2.7.10.1"
-#define DRV_MODULE_RELDATE	"Jul 16, 2014"
+#define DRV_MODULE_VERSION	"2.7.6.2"
+#define DRV_MODULE_RELDATE	"Jun 06, 2013"
 
 static char version[] =
-		"QLogic NetXtreme II iSCSI Driver " DRV_MODULE_NAME \
+		"Broadcom NetXtreme II iSCSI Driver " DRV_MODULE_NAME \
 		" v" DRV_MODULE_VERSION " (" DRV_MODULE_RELDATE ")\n";
 
 
 MODULE_AUTHOR("Anil Veerabhadrappa <anilgv@broadcom.com> and "
 	      "Eddie Wai <eddie.wai@broadcom.com>");
 
-MODULE_DESCRIPTION("QLogic NetXtreme II BCM5706/5708/5709/57710/57711/57712"
+MODULE_DESCRIPTION("Broadcom NetXtreme II BCM5706/5708/5709/57710/57711/57712"
 		   "/57800/57810/57840 iSCSI Driver");
 MODULE_LICENSE("GPL");
 MODULE_VERSION(DRV_MODULE_VERSION);
@@ -539,15 +537,11 @@ static int __init bnx2i_mod_init(void)
 		p->iothread = NULL;
 	}
 
-	cpu_notifier_register_begin();
-
 	for_each_online_cpu(cpu)
 		bnx2i_percpu_thread_create(cpu);
 
 	/* Initialize per CPU interrupt thread */
-	__register_hotcpu_notifier(&bnx2i_cpu_notifier);
-
-	cpu_notifier_register_done();
+	register_hotcpu_notifier(&bnx2i_cpu_notifier);
 
 	return 0;
 
@@ -587,14 +581,10 @@ static void __exit bnx2i_mod_exit(void)
 	}
 	mutex_unlock(&bnx2i_dev_lock);
 
-	cpu_notifier_register_begin();
+	unregister_hotcpu_notifier(&bnx2i_cpu_notifier);
 
 	for_each_online_cpu(cpu)
 		bnx2i_percpu_thread_destroy(cpu);
-
-	__unregister_hotcpu_notifier(&bnx2i_cpu_notifier);
-
-	cpu_notifier_register_done();
 
 	iscsi_unregister_transport(&bnx2i_iscsi_transport);
 	cnic_unregister_driver(CNIC_ULP_ISCSI);

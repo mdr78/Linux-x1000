@@ -16,6 +16,10 @@
  *  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
  *  General Public License for more details.
  *
+ *  You should have received a copy of the GNU General Public License along
+ *  with this program; if not, write to the Free Software Foundation, Inc.,
+ *  59 Temple Place, Suite 330, Boston, MA 02111-1307 USA.
+ *
  * ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
  *
  *  This driver fully implements the ACPI thermal policy as described in the
@@ -39,7 +43,6 @@
 #include <linux/device.h>
 #include <linux/thermal.h>
 #include <linux/acpi.h>
-#include <linux/workqueue.h>
 #include <asm/uaccess.h>
 
 #define PREFIX "ACPI: "
@@ -87,8 +90,6 @@ static int psv;
 module_param(psv, int, 0644);
 MODULE_PARM_DESC(psv, "Disable or override all passive trip points.");
 
-static struct workqueue_struct *acpi_thermal_pm_queue;
-
 static int acpi_thermal_add(struct acpi_device *device);
 static int acpi_thermal_remove(struct acpi_device *device);
 static void acpi_thermal_notify(struct acpi_device *device, u32 event);
@@ -100,13 +101,11 @@ static const struct acpi_device_id  thermal_device_ids[] = {
 MODULE_DEVICE_TABLE(acpi, thermal_device_ids);
 
 #ifdef CONFIG_PM_SLEEP
-static int acpi_thermal_suspend(struct device *dev);
 static int acpi_thermal_resume(struct device *dev);
 #else
-#define acpi_thermal_suspend NULL
 #define acpi_thermal_resume NULL
 #endif
-static SIMPLE_DEV_PM_OPS(acpi_thermal_pm, acpi_thermal_suspend, acpi_thermal_resume);
+static SIMPLE_DEV_PM_OPS(acpi_thermal_pm, NULL, acpi_thermal_resume);
 
 static struct acpi_driver acpi_thermal_driver = {
 	.name = "thermal",
@@ -187,7 +186,6 @@ struct acpi_thermal {
 	struct thermal_zone_device *thermal_zone;
 	int tz_enabled;
 	int kelvin_offset;
-	struct work_struct thermal_check_work;
 };
 
 /* --------------------------------------------------------------------------
@@ -315,7 +313,7 @@ static int acpi_thermal_trips_update(struct acpi_thermal *tz, int flag)
 			if (crt == -1) {
 				tz->trips.critical.flags.valid = 0;
 			} else if (crt > 0) {
-				unsigned long crt_k = CELSIUS_TO_DECI_KELVIN(crt);
+				unsigned long crt_k = CELSIUS_TO_KELVIN(crt);
 				/*
 				 * Allow override critical threshold
 				 */
@@ -340,7 +338,7 @@ static int acpi_thermal_trips_update(struct acpi_thermal *tz, int flag)
 			tz->trips.hot.flags.valid = 1;
 			ACPI_DEBUG_PRINT((ACPI_DB_INFO,
 					"Found hot threshold [%lu]\n",
-					tz->trips.hot.temperature));
+					tz->trips.critical.temperature));
 		}
 	}
 
@@ -351,7 +349,7 @@ static int acpi_thermal_trips_update(struct acpi_thermal *tz, int flag)
 		if (psv == -1) {
 			status = AE_SUPPORT;
 		} else if (psv > 0) {
-			tmp = CELSIUS_TO_DECI_KELVIN(psv);
+			tmp = CELSIUS_TO_KELVIN(psv);
 			status = AE_OK;
 		} else {
 			status = acpi_evaluate_integer(tz->device->handle,
@@ -431,7 +429,7 @@ static int acpi_thermal_trips_update(struct acpi_thermal *tz, int flag)
 					break;
 				if (i == 1)
 					tz->trips.active[0].temperature =
-						CELSIUS_TO_DECI_KELVIN(act);
+						CELSIUS_TO_KELVIN(act);
 				else
 					/*
 					 * Don't allow override higher than
@@ -439,9 +437,9 @@ static int acpi_thermal_trips_update(struct acpi_thermal *tz, int flag)
 					 */
 					tz->trips.active[i - 1].temperature =
 						(tz->trips.active[i - 2].temperature <
-						CELSIUS_TO_DECI_KELVIN(act) ?
+						CELSIUS_TO_KELVIN(act) ?
 						tz->trips.active[i - 2].temperature :
-						CELSIUS_TO_DECI_KELVIN(act));
+						CELSIUS_TO_KELVIN(act));
 				break;
 			} else {
 				tz->trips.active[i].temperature = tmp;
@@ -524,8 +522,10 @@ static void acpi_thermal_check(void *data)
 }
 
 /* sys I/F for generic thermal sysfs support */
+#define KELVIN_TO_MILLICELSIUS(t, off) (((t) - (off)) * 100)
 
-static int thermal_get_temp(struct thermal_zone_device *thermal, int *temp)
+static int thermal_get_temp(struct thermal_zone_device *thermal,
+			    unsigned long *temp)
 {
 	struct acpi_thermal *tz = thermal->devdata;
 	int result;
@@ -537,8 +537,7 @@ static int thermal_get_temp(struct thermal_zone_device *thermal, int *temp)
 	if (result)
 		return result;
 
-	*temp = DECI_KELVIN_TO_MILLICELSIUS_WITH_OFFSET(tz->temperature,
-							tz->kelvin_offset);
+	*temp = KELVIN_TO_MILLICELSIUS(tz->temperature, tz->kelvin_offset);
 	return 0;
 }
 
@@ -632,7 +631,7 @@ static int thermal_get_trip_type(struct thermal_zone_device *thermal,
 }
 
 static int thermal_get_trip_temp(struct thermal_zone_device *thermal,
-				 int trip, int *temp)
+				 int trip, unsigned long *temp)
 {
 	struct acpi_thermal *tz = thermal->devdata;
 	int i;
@@ -642,7 +641,7 @@ static int thermal_get_trip_temp(struct thermal_zone_device *thermal,
 
 	if (tz->trips.critical.flags.valid) {
 		if (!trip) {
-			*temp = DECI_KELVIN_TO_MILLICELSIUS_WITH_OFFSET(
+			*temp = KELVIN_TO_MILLICELSIUS(
 				tz->trips.critical.temperature,
 				tz->kelvin_offset);
 			return 0;
@@ -652,7 +651,7 @@ static int thermal_get_trip_temp(struct thermal_zone_device *thermal,
 
 	if (tz->trips.hot.flags.valid) {
 		if (!trip) {
-			*temp = DECI_KELVIN_TO_MILLICELSIUS_WITH_OFFSET(
+			*temp = KELVIN_TO_MILLICELSIUS(
 				tz->trips.hot.temperature,
 				tz->kelvin_offset);
 			return 0;
@@ -662,7 +661,7 @@ static int thermal_get_trip_temp(struct thermal_zone_device *thermal,
 
 	if (tz->trips.passive.flags.valid) {
 		if (!trip) {
-			*temp = DECI_KELVIN_TO_MILLICELSIUS_WITH_OFFSET(
+			*temp = KELVIN_TO_MILLICELSIUS(
 				tz->trips.passive.temperature,
 				tz->kelvin_offset);
 			return 0;
@@ -673,7 +672,7 @@ static int thermal_get_trip_temp(struct thermal_zone_device *thermal,
 	for (i = 0; i < ACPI_THERMAL_MAX_ACTIVE &&
 		tz->trips.active[i].flags.valid; i++) {
 		if (!trip) {
-			*temp = DECI_KELVIN_TO_MILLICELSIUS_WITH_OFFSET(
+			*temp = KELVIN_TO_MILLICELSIUS(
 				tz->trips.active[i].temperature,
 				tz->kelvin_offset);
 			return 0;
@@ -685,12 +684,11 @@ static int thermal_get_trip_temp(struct thermal_zone_device *thermal,
 }
 
 static int thermal_get_crit_temp(struct thermal_zone_device *thermal,
-				int *temperature)
-{
+				unsigned long *temperature) {
 	struct acpi_thermal *tz = thermal->devdata;
 
 	if (tz->trips.critical.flags.valid) {
-		*temperature = DECI_KELVIN_TO_MILLICELSIUS_WITH_OFFSET(
+		*temperature = KELVIN_TO_MILLICELSIUS(
 				tz->trips.critical.temperature,
 				tz->kelvin_offset);
 		return 0;
@@ -709,9 +707,9 @@ static int thermal_get_trend(struct thermal_zone_device *thermal,
 		return -EINVAL;
 
 	if (type == THERMAL_TRIP_ACTIVE) {
-		int trip_temp;
-		int temp = DECI_KELVIN_TO_MILLICELSIUS_WITH_OFFSET(
-					tz->temperature, tz->kelvin_offset);
+		unsigned long trip_temp;
+		unsigned long temp = KELVIN_TO_MILLICELSIUS(tz->temperature,
+							tz->kelvin_offset);
 		if (thermal_get_trip_temp(thermal, trip, &trip_temp))
 			return -EINVAL;
 
@@ -796,8 +794,7 @@ static int acpi_thermal_cooling_device_cb(struct thermal_zone_device *thermal,
 				result =
 					thermal_zone_bind_cooling_device
 					(thermal, trip, cdev,
-					 THERMAL_NO_LIMIT, THERMAL_NO_LIMIT,
-					 THERMAL_WEIGHT_DEFAULT);
+					 THERMAL_NO_LIMIT, THERMAL_NO_LIMIT);
 			else
 				result =
 					thermal_zone_unbind_cooling_device
@@ -821,8 +818,7 @@ static int acpi_thermal_cooling_device_cb(struct thermal_zone_device *thermal,
 			if (bind)
 				result = thermal_zone_bind_cooling_device
 					(thermal, trip, cdev,
-					 THERMAL_NO_LIMIT, THERMAL_NO_LIMIT,
-					 THERMAL_WEIGHT_DEFAULT);
+					 THERMAL_NO_LIMIT, THERMAL_NO_LIMIT);
 			else
 				result = thermal_zone_unbind_cooling_device
 					(thermal, trip, cdev);
@@ -839,8 +835,7 @@ static int acpi_thermal_cooling_device_cb(struct thermal_zone_device *thermal,
 				result = thermal_zone_bind_cooling_device
 						(thermal, THERMAL_TRIPS_NONE,
 						 cdev, THERMAL_NO_LIMIT,
-						 THERMAL_NO_LIMIT,
-						 THERMAL_WEIGHT_DEFAULT);
+						 THERMAL_NO_LIMIT);
 			else
 				result = thermal_zone_unbind_cooling_device
 						(thermal, THERMAL_TRIPS_NONE,
@@ -924,10 +919,13 @@ static int acpi_thermal_register_thermal_zone(struct acpi_thermal *tz)
 	if (result)
 		return result;
 
-	status =  acpi_bus_attach_private_data(tz->device->handle,
-					       tz->thermal_zone);
-	if (ACPI_FAILURE(status))
+	status = acpi_attach_data(tz->device->handle,
+				  acpi_bus_private_data_handler,
+				  tz->thermal_zone);
+	if (ACPI_FAILURE(status)) {
+		pr_err(PREFIX "Error attaching device data\n");
 		return -ENODEV;
+	}
 
 	tz->tz_enabled = 1;
 
@@ -942,7 +940,7 @@ static void acpi_thermal_unregister_thermal_zone(struct acpi_thermal *tz)
 	sysfs_remove_link(&tz->thermal_zone->device.kobj, "device");
 	thermal_zone_device_unregister(tz->thermal_zone);
 	tz->thermal_zone = NULL;
-	acpi_bus_detach_private_data(tz->device->handle);
+	acpi_detach_data(tz->device->handle, acpi_bus_private_data_handler);
 }
 
 
@@ -1066,13 +1064,6 @@ static void acpi_thermal_guess_offset(struct acpi_thermal *tz)
 		tz->kelvin_offset = 2732;
 }
 
-static void acpi_thermal_check_fn(struct work_struct *work)
-{
-	struct acpi_thermal *tz = container_of(work, struct acpi_thermal,
-					       thermal_check_work);
-	acpi_thermal_check(tz);
-}
-
 static int acpi_thermal_add(struct acpi_device *device)
 {
 	int result = 0;
@@ -1102,10 +1093,8 @@ static int acpi_thermal_add(struct acpi_device *device)
 	if (result)
 		goto free_memory;
 
-	INIT_WORK(&tz->thermal_check_work, acpi_thermal_check_fn);
-
 	pr_info(PREFIX "%s [%s] (%ld C)\n", acpi_device_name(device),
-		acpi_device_bid(device), DECI_KELVIN_TO_CELSIUS(tz->temperature));
+		acpi_device_bid(device), KELVIN_TO_CELSIUS(tz->temperature));
 	goto end;
 
 free_memory:
@@ -1121,7 +1110,6 @@ static int acpi_thermal_remove(struct acpi_device *device)
 	if (!device || !acpi_driver_data(device))
 		return -EINVAL;
 
-	flush_workqueue(acpi_thermal_pm_queue);
 	tz = acpi_driver_data(device);
 
 	acpi_thermal_unregister_thermal_zone(tz);
@@ -1130,13 +1118,6 @@ static int acpi_thermal_remove(struct acpi_device *device)
 }
 
 #ifdef CONFIG_PM_SLEEP
-static int acpi_thermal_suspend(struct device *dev)
-{
-	/* Make sure the previously queued thermal check work has been done */
-	flush_workqueue(acpi_thermal_pm_queue);
-	return 0;
-}
-
 static int acpi_thermal_resume(struct device *dev)
 {
 	struct acpi_thermal *tz;
@@ -1167,7 +1148,7 @@ static int acpi_thermal_resume(struct device *dev)
 		tz->state.active |= tz->trips.active[i].flags.enabled;
 	}
 
-	queue_work(acpi_thermal_pm_queue, &tz->thermal_check_work);
+	acpi_thermal_check(tz);
 
 	return AE_OK;
 }
@@ -1259,23 +1240,17 @@ static int __init acpi_thermal_init(void)
 		return -ENODEV;
 	}
 
-	acpi_thermal_pm_queue = create_workqueue("acpi_thermal_pm");
-	if (!acpi_thermal_pm_queue)
-		return -ENODEV;
-
 	result = acpi_bus_register_driver(&acpi_thermal_driver);
-	if (result < 0) {
-		destroy_workqueue(acpi_thermal_pm_queue);
+	if (result < 0)
 		return -ENODEV;
-	}
 
 	return 0;
 }
 
 static void __exit acpi_thermal_exit(void)
 {
+
 	acpi_bus_unregister_driver(&acpi_thermal_driver);
-	destroy_workqueue(acpi_thermal_pm_queue);
 
 	return;
 }

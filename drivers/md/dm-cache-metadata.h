@@ -9,17 +9,19 @@
 
 #include "dm-cache-block-types.h"
 #include "dm-cache-policy-internal.h"
-#include "persistent-data/dm-space-map-metadata.h"
 
 /*----------------------------------------------------------------*/
 
-#define DM_CACHE_METADATA_BLOCK_SIZE DM_SM_METADATA_BLOCK_SIZE
+#define DM_CACHE_METADATA_BLOCK_SIZE 4096
 
 /* FIXME: remove this restriction */
 /*
  * The metadata device is currently limited in size.
+ *
+ * We have one block of index, which can hold 255 index entries.  Each
+ * index entry contains allocation info about 16k metadata blocks.
  */
-#define DM_CACHE_METADATA_MAX_SECTORS DM_SM_METADATA_MAX_SECTORS
+#define DM_CACHE_METADATA_MAX_SECTORS (255 * (1 << 14) * (DM_CACHE_METADATA_BLOCK_SIZE / (1 << SECTOR_SHIFT)))
 
 /*
  * A metadata device larger than 16GB triggers a warning.
@@ -102,10 +104,6 @@ struct dm_cache_statistics {
 
 void dm_cache_metadata_get_stats(struct dm_cache_metadata *cmd,
 				 struct dm_cache_statistics *stats);
-
-/*
- * 'void' because it's no big deal if it fails.
- */
 void dm_cache_metadata_set_stats(struct dm_cache_metadata *cmd,
 				 struct dm_cache_statistics *stats);
 
@@ -136,12 +134,6 @@ int dm_cache_write_hints(struct dm_cache_metadata *cmd, struct dm_cache_policy *
  * Query method.  Are all the blocks in the cache clean?
  */
 int dm_cache_metadata_all_clean(struct dm_cache_metadata *cmd, bool *result);
-
-bool dm_cache_metadata_needs_check(struct dm_cache_metadata *cmd);
-int dm_cache_metadata_set_needs_check(struct dm_cache_metadata *cmd);
-void dm_cache_metadata_set_read_only(struct dm_cache_metadata *cmd);
-void dm_cache_metadata_set_read_write(struct dm_cache_metadata *cmd);
-int dm_cache_metadata_abort(struct dm_cache_metadata *cmd);
 
 /*----------------------------------------------------------------*/
 

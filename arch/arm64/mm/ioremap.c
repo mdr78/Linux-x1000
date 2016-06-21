@@ -25,10 +25,6 @@
 #include <linux/vmalloc.h>
 #include <linux/io.h>
 
-#include <asm/fixmap.h>
-#include <asm/tlbflush.h>
-#include <asm/pgalloc.h>
-
 static void __iomem *__ioremap_caller(phys_addr_t phys_addr, size_t size,
 				      pgprot_t prot, void *caller)
 {
@@ -62,7 +58,6 @@ static void __iomem *__ioremap_caller(phys_addr_t phys_addr, size_t size,
 	if (!area)
 		return NULL;
 	addr = (unsigned long)area->addr;
-	area->phys_addr = phys_addr;
 
 	err = ioremap_page_range(addr, addr + size, phys_addr, prot);
 	if (err) {
@@ -103,11 +98,3 @@ void __iomem *ioremap_cache(phys_addr_t phys_addr, size_t size)
 				__builtin_return_address(0));
 }
 EXPORT_SYMBOL(ioremap_cache);
-
-/*
- * Must be called after early_fixmap_init
- */
-void __init early_ioremap_init(void)
-{
-	early_ioremap_setup();
-}

@@ -185,13 +185,25 @@ int __init numa_add_memblk(int nid, u64 start, u64 end)
 	return numa_add_memblk_to(nid, start, end, &numa_meminfo);
 }
 
-/* Allocate NODE_DATA for a node on the local memory */
-static void __init alloc_node_data(int nid)
+/* Initialize NODE_DATA for a node on the local memory */
+static void __init setup_node_data(int nid, u64 start, u64 end)
 {
 	const size_t nd_size = roundup(sizeof(pg_data_t), PAGE_SIZE);
 	u64 nd_pa;
 	void *nd;
 	int tnid;
+
+	/*
+	 * Don't confuse VM with a node that doesn't have the
+	 * minimum amount of memory:
+	 */
+	if (end && (end - start) < NODE_MIN_SIZE)
+		return;
+
+	start = roundup(start, ZONE_ALIGN);
+
+	printk(KERN_INFO "Initmem setup node %d [mem %#010Lx-%#010Lx]\n",
+	       nid, start, end - 1);
 
 	/*
 	 * Allocate node data.  Try node-local memory and then any node.
@@ -210,7 +222,7 @@ static void __init alloc_node_data(int nid)
 	nd = __va(nd_pa);
 
 	/* report and initialize */
-	printk(KERN_INFO "NODE_DATA(%d) allocated [mem %#010Lx-%#010Lx]\n", nid,
+	printk(KERN_INFO "  NODE_DATA [mem %#010Lx-%#010Lx]\n",
 	       nd_pa, nd_pa + nd_size - 1);
 	tnid = early_pfn_to_nid(nd_pa >> PAGE_SHIFT);
 	if (tnid != nid)
@@ -218,6 +230,9 @@ static void __init alloc_node_data(int nid)
 
 	node_data[nid] = nd;
 	memset(NODE_DATA(nid), 0, sizeof(pg_data_t));
+	NODE_DATA(nid)->node_id = nid;
+	NODE_DATA(nid)->node_start_pfn = start >> PAGE_SHIFT;
+	NODE_DATA(nid)->node_spanned_pages = (end - start) >> PAGE_SHIFT;
 
 	node_set_online(nid);
 }
@@ -246,10 +261,8 @@ int __init numa_cleanup_meminfo(struct numa_meminfo *mi)
 		bi->start = max(bi->start, low);
 		bi->end = min(bi->end, high);
 
-		/* and there's no empty or non-exist block */
-		if (bi->start >= bi->end ||
-		    !memblock_overlaps_region(&memblock.memory,
-			bi->start, bi->end - bi->start))
+		/* and there's no empty block */
+		if (bi->start >= bi->end)
 			numa_remove_memblk_from(i--, mi);
 	}
 
@@ -465,49 +478,6 @@ static bool __init numa_meminfo_cover_memory(const struct numa_meminfo *mi)
 	return true;
 }
 
-static void __init numa_clear_kernel_node_hotplug(void)
-{
-	int i, nid;
-	nodemask_t numa_kernel_nodes = NODE_MASK_NONE;
-	unsigned long start, end;
-	struct memblock_region *r;
-
-	/*
-	 * At this time, all memory regions reserved by memblock are
-	 * used by the kernel. Set the nid in memblock.reserved will
-	 * mark out all the nodes the kernel resides in.
-	 */
-	for (i = 0; i < numa_meminfo.nr_blks; i++) {
-		struct numa_memblk *mb = &numa_meminfo.blk[i];
-
-		memblock_set_node(mb->start, mb->end - mb->start,
-				  &memblock.reserved, mb->nid);
-	}
-
-	/*
-	 * Mark all kernel nodes.
-	 *
-	 * When booting with mem=nn[kMG] or in a kdump kernel, numa_meminfo
-	 * may not include all the memblock.reserved memory ranges because
-	 * trim_snb_memory() reserves specific pages for Sandy Bridge graphics.
-	 */
-	for_each_memblock(reserved, r)
-		if (r->nid != MAX_NUMNODES)
-			node_set(r->nid, numa_kernel_nodes);
-
-	/* Clear MEMBLOCK_HOTPLUG flag for memory in kernel nodes. */
-	for (i = 0; i < numa_meminfo.nr_blks; i++) {
-		nid = numa_meminfo.blk[i].nid;
-		if (!node_isset(nid, numa_kernel_nodes))
-			continue;
-
-		start = numa_meminfo.blk[i].start;
-		end = numa_meminfo.blk[i].end;
-
-		memblock_clear_hotplug(start, end - start);
-	}
-}
-
 static int __init numa_register_memblks(struct numa_meminfo *mi)
 {
 	unsigned long uninitialized_var(pfn_align);
@@ -524,15 +494,6 @@ static int __init numa_register_memblks(struct numa_meminfo *mi)
 		memblock_set_node(mb->start, mb->end - mb->start,
 				  &memblock.memory, mb->nid);
 	}
-
-	/*
-	 * At very early time, the kernel have to use some memory such as
-	 * loading the kernel image. We cannot prevent this anyway. So any
-	 * node the kernel resides in should be un-hotpluggable.
-	 *
-	 * And when we come here, alloc node data won't fail.
-	 */
-	numa_clear_kernel_node_hotplug();
 
 	/*
 	 * If sections array is gonna be used for pfn -> nid mapping, check
@@ -562,17 +523,8 @@ static int __init numa_register_memblks(struct numa_meminfo *mi)
 			end = max(mi->blk[i].end, end);
 		}
 
-		if (start >= end)
-			continue;
-
-		/*
-		 * Don't confuse VM with a node that doesn't have the
-		 * minimum amount of memory:
-		 */
-		if (end && (end - start) < NODE_MIN_SIZE)
-			continue;
-
-		alloc_node_data(nid);
+		if (start < end)
+			setup_node_data(nid, start, end);
 	}
 
 	/* Dump memblock with node info and return. */
@@ -599,6 +551,41 @@ static void __init numa_init_array(void)
 		rr = next_node(rr, node_online_map);
 		if (rr == MAX_NUMNODES)
 			rr = first_node(node_online_map);
+	}
+}
+
+static void __init numa_clear_kernel_node_hotplug(void)
+{
+	int i, nid;
+	nodemask_t numa_kernel_nodes = NODE_MASK_NONE;
+	unsigned long start, end;
+	struct memblock_type *type = &memblock.reserved;
+
+	/*
+	 * At this time, all memory regions reserved by memblock are
+	 * used by the kernel. Set the nid in memblock.reserved will
+	 * mark out all the nodes the kernel resides in.
+	 */
+	for (i = 0; i < numa_meminfo.nr_blks; i++) {
+		struct numa_memblk *mb = &numa_meminfo.blk[i];
+		memblock_set_node(mb->start, mb->end - mb->start,
+				  &memblock.reserved, mb->nid);
+	}
+
+	/* Mark all kernel nodes. */
+	for (i = 0; i < type->cnt; i++)
+		node_set(type->regions[i].nid, numa_kernel_nodes);
+
+	/* Clear MEMBLOCK_HOTPLUG flag for memory in kernel nodes. */
+	for (i = 0; i < numa_meminfo.nr_blks; i++) {
+		nid = numa_meminfo.blk[i].nid;
+		if (!node_isset(nid, numa_kernel_nodes))
+			continue;
+
+		start = numa_meminfo.blk[i].start;
+		end = numa_meminfo.blk[i].end;
+
+		memblock_clear_hotplug(start, end - start);
 	}
 }
 
@@ -656,6 +643,15 @@ static int __init numa_init(int (*init_func)(void))
 	}
 	numa_init_array();
 
+	/*
+	 * At very early time, the kernel have to use some memory such as
+	 * loading the kernel image. We cannot prevent this anyway. So any
+	 * node the kernel resides in should be un-hotpluggable.
+	 *
+	 * And when we come here, numa_init() won't fail.
+	 */
+	numa_clear_kernel_node_hotplug();
+
 	return 0;
 }
 
@@ -691,6 +687,10 @@ static int __init dummy_numa_init(void)
 void __init x86_numa_init(void)
 {
 	if (!numa_off) {
+#ifdef CONFIG_X86_NUMAQ
+		if (!numa_init(numaq_numa_init))
+			return;
+#endif
 #ifdef CONFIG_ACPI_NUMA
 		if (!numa_init(x86_acpi_numa_init))
 			return;
@@ -803,6 +803,7 @@ int early_cpu_to_node(int cpu)
 void debug_cpumask_set_cpu(int cpu, int node, bool enable)
 {
 	struct cpumask *mask;
+	char buf[64];
 
 	if (node == NUMA_NO_NODE) {
 		/* early_cpu_to_node() already emits a warning and trace */
@@ -820,9 +821,10 @@ void debug_cpumask_set_cpu(int cpu, int node, bool enable)
 	else
 		cpumask_clear_cpu(cpu, mask);
 
-	printk(KERN_DEBUG "%s cpu %d node %d: mask now %*pbl\n",
+	cpulist_scnprintf(buf, sizeof(buf), mask);
+	printk(KERN_DEBUG "%s cpu %d node %d: mask now %s\n",
 		enable ? "numa_add_cpu" : "numa_remove_cpu",
-		cpu, node, cpumask_pr_args(mask));
+		cpu, node, buf);
 	return;
 }
 

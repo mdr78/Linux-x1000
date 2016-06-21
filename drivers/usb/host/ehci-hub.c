@@ -1,5 +1,6 @@
 /*
  * Copyright (C) 2001-2004 by David Brownell
+ * Portions Copyright (C) 2015 Intel Corporation
  *
  * This program is free software; you can redistribute it and/or modify it
  * under the terms of the GNU General Public License as published by the
@@ -32,6 +33,15 @@
 #define	PORT_WAKE_BITS	(PORT_WKOC_E|PORT_WKDISC_E|PORT_WKCONN_E)
 
 #ifdef	CONFIG_PM
+
+static int ehci_hub_control(
+	struct usb_hcd	*hcd,
+	u16		typeReq,
+	u16		wValue,
+	u16		wIndex,
+	char		*buf,
+	u16		wLength
+);
 
 static int persist_enabled_on_companion(struct usb_device *udev, void *unused)
 {
@@ -69,8 +79,10 @@ static void ehci_handover_companion_ports(struct ehci_hcd *ehci)
 		if (test_bit(port, &ehci->owned_ports)) {
 			reg = &ehci->regs->port_status[port];
 			status = ehci_readl(ehci, reg) & ~PORT_RWC_BITS;
-			if (!(status & PORT_POWER))
-				ehci_port_power(ehci, port, true);
+			if (!(status & PORT_POWER)) {
+				status |= PORT_POWER;
+				ehci_writel(ehci, status, reg);
+			}
 		}
 	}
 
@@ -155,7 +167,7 @@ static int ehci_port_change(struct ehci_hcd *ehci)
 	return 0;
 }
 
-void ehci_adjust_port_wakeup_flags(struct ehci_hcd *ehci,
+static void ehci_adjust_port_wakeup_flags(struct ehci_hcd *ehci,
 		bool suspending, bool do_wakeup)
 {
 	int		port;
@@ -220,7 +232,6 @@ void ehci_adjust_port_wakeup_flags(struct ehci_hcd *ehci,
 
 	spin_unlock_irq(&ehci->lock);
 }
-EXPORT_SYMBOL_GPL(ehci_adjust_port_wakeup_flags);
 
 static int ehci_bus_suspend (struct usb_hcd *hcd)
 {
@@ -472,13 +483,10 @@ static int ehci_bus_resume (struct usb_hcd *hcd)
 		ehci_writel(ehci, temp, &ehci->regs->port_status [i]);
 	}
 
-	/*
-	 * msleep for USB_RESUME_TIMEOUT ms only if code is trying to resume
-	 * port
-	 */
+	/* msleep for 20ms only if code is trying to resume port */
 	if (resume_needed) {
 		spin_unlock_irq(&ehci->lock);
-		msleep(USB_RESUME_TIMEOUT);
+		msleep(20);
 		spin_lock_irq(&ehci->lock);
 		if (ehci->shutdown)
 			goto shutdown;
@@ -592,6 +600,11 @@ static int check_reset_complete (
 	} else {
 		ehci_dbg(ehci, "port %d reset complete, port enabled\n",
 			index + 1);
+		if (ehci->has_x1000_phy && ehci->x1000_phy_squelch) {
+			/* If squelch was adjusted, then reset back to normal */
+			quirk_qrk_usb_phy_set_squelch(QRK_SQUELCH_DEFAULT);
+			ehci->x1000_phy_squelch = QRK_SQUELCH_DEFAULT;
+		}
 		/* ensure 440EPx ohci controller state is suspended */
 		if (ehci->has_amcc_usb23)
 			set_ohci_hcfs(ehci, 0);
@@ -658,7 +671,7 @@ ehci_hub_status_data (struct usb_hcd *hcd, char *buf)
 
 		/*
 		 * Return status information even for ports with OWNER set.
-		 * Otherwise hub_wq wouldn't see the disconnect event when a
+		 * Otherwise khubd wouldn't see the disconnect event when a
 		 * high-speed device is switched over to the companion
 		 * controller by the user.
 		 */
@@ -684,6 +697,62 @@ ehci_hub_status_data (struct usb_hcd *hcd, char *buf)
 
 /*-------------------------------------------------------------------------*/
 
+/*
+ * __ehci_adjust_x1000_squelch
+ *
+ * Adjust the squelch on PHY for Intel Quark X1000
+ *
+ * Feature on X1000 SOC where squelch of on SOC PHY may need to be adjusted
+ * during enumeration of HS, trying a number of different levels.
+ * The adjustment is followed by a port repower to enable
+ * the state machine realign and a RESET to restart the
+ * enumeration process. This will result in succesful HS enumeration instead
+ * of cycling through waits and resets which were not solving the issue and
+ * ultimately ending up with no enumeration.
+ */
+
+static void
+__ehci_adjust_x1000_squelch(
+	struct ehci_hcd	*ehci,
+	u32 __iomem	*status_reg,
+	u16		windex
+) {
+	u32		temp;
+	temp = ehci_readl(ehci, status_reg);
+
+	switch (ehci->x1000_phy_squelch) {
+	case QRK_SQUELCH_DEFAULT:   /* No squelch yet done now put it low */
+		ehci->x1000_phy_squelch = QRK_SQUELCH_LO;
+		break;
+	case QRK_SQUELCH_LO: /* Low squelch done now put it high */
+		ehci->x1000_phy_squelch = QRK_SQUELCH_HI;
+		break;
+	case QRK_SQUELCH_HI:
+			/* High done now put it back to default and
+			   reset state for for next time */
+		ehci->x1000_phy_squelch = QRK_SQUELCH_DEFAULT;
+		break;
+	}
+	temp = ehci_readl(ehci, status_reg);
+	ehci_writel(ehci, temp & ~PORT_POWER, status_reg);
+	quirk_qrk_usb_phy_set_squelch(ehci->x1000_phy_squelch);
+	temp = ehci_readl(ehci, status_reg);
+	ehci_writel(ehci, temp | PORT_POWER, status_reg);
+	ehci_handshake(ehci, status_reg, PORT_CONNECT, 1, 2000);
+			/*  allow time for repower to work */
+	if (ehci->x1000_phy_squelch == QRK_SQUELCH_DEFAULT)
+		return;	/* do not reset port when finished
+			   as we are OK with enum. Just set
+			   back to default for next device */
+	temp = ehci_readl(ehci, status_reg);
+	temp |= PORT_RESET;
+	temp &= ~PORT_PE;
+	ehci->reset_done[windex] = jiffies + msecs_to_jiffies(50);
+	ehci_writel(ehci, temp, status_reg);
+}
+
+/*-------------------------------------------------------------------------*/
+
 static void
 ehci_hub_descriptor (
 	struct ehci_hcd			*ehci,
@@ -692,7 +761,7 @@ ehci_hub_descriptor (
 	int		ports = HCS_N_PORTS (ehci->hcs_params);
 	u16		temp;
 
-	desc->bDescriptorType = USB_DT_HUB;
+	desc->bDescriptorType = 0x29;
 	desc->bPwrOn2PwrGood = 10;	/* ehci 1.0, 2.3.9 says 20ms max */
 	desc->bHubContrCurrent = 0;
 
@@ -704,15 +773,15 @@ ehci_hub_descriptor (
 	memset(&desc->u.hs.DeviceRemovable[0], 0, temp);
 	memset(&desc->u.hs.DeviceRemovable[temp], 0xff, temp);
 
-	temp = HUB_CHAR_INDV_PORT_OCPM;	/* per-port overcurrent reporting */
+	temp = 0x0008;			/* per-port overcurrent reporting */
 	if (HCS_PPC (ehci->hcs_params))
-		temp |= HUB_CHAR_INDV_PORT_LPSM; /* per-port power control */
+		temp |= 0x0001;		/* per-port power control */
 	else
-		temp |= HUB_CHAR_NO_LPSM; /* no power switching */
+		temp |= 0x0002;		/* no power switching */
 #if 0
 // re-enable when we support USB_PORT_FEAT_INDICATOR below.
 	if (HCS_INDICATOR (ehci->hcs_params))
-		temp |= HUB_CHAR_PORTIND; /* per-port indicators (LEDs) */
+		temp |= 0x0080;		/* per-port indicators (LEDs) */
 #endif
 	desc->wHubCharacteristics = cpu_to_le16(temp);
 }
@@ -858,7 +927,7 @@ cleanup:
 #endif /* CONFIG_USB_HCD_TEST_MODE */
 /*-------------------------------------------------------------------------*/
 
-int ehci_hub_control(
+static int ehci_hub_control (
 	struct usb_hcd	*hcd,
 	u16		typeReq,
 	u16		wValue,
@@ -904,7 +973,7 @@ int ehci_hub_control(
 
 		/*
 		 * Even if OWNER is set, so the port is owned by the
-		 * companion controller, hub_wq needs to be able to clear
+		 * companion controller, khubd needs to be able to clear
 		 * the port-change status bits (especially
 		 * USB_PORT_STAT_C_CONNECTION).
 		 */
@@ -924,7 +993,7 @@ int ehci_hub_control(
 #ifdef CONFIG_USB_OTG
 			if ((hcd->self.otg_port == (wIndex + 1))
 			    && hcd->self.b_hnp_enable) {
-				otg_start_hnp(hcd->usb_phy->otg);
+				otg_start_hnp(hcd->phy->otg);
 				break;
 			}
 #endif
@@ -946,7 +1015,7 @@ int ehci_hub_control(
 			temp &= ~PORT_WAKE_BITS;
 			ehci_writel(ehci, temp | PORT_RESUME, status_reg);
 			ehci->reset_done[wIndex] = jiffies
-					+ msecs_to_jiffies(USB_RESUME_TIMEOUT);
+					+ msecs_to_jiffies(20);
 			set_bit(wIndex, &ehci->resuming_ports);
 			usb_hcd_start_port_resume(&hcd->self, wIndex);
 			break;
@@ -954,11 +1023,9 @@ int ehci_hub_control(
 			clear_bit(wIndex, &ehci->port_c_suspend);
 			break;
 		case USB_PORT_FEAT_POWER:
-			if (HCS_PPC(ehci->hcs_params)) {
-				spin_unlock_irqrestore(&ehci->lock, flags);
-				ehci_port_power(ehci, wIndex, false);
-				spin_lock_irqsave(&ehci->lock, flags);
-			}
+			if (HCS_PPC (ehci->hcs_params))
+				ehci_writel(ehci, temp & ~PORT_POWER,
+						status_reg);
 			break;
 		case USB_PORT_FEAT_C_CONNECTION:
 			ehci_writel(ehci, temp | PORT_CSC, status_reg);
@@ -1004,13 +1071,13 @@ int ehci_hub_control(
 			 * However, not all EHCI implementations do this
 			 * automatically, even if they _do_ support per-port
 			 * power switching; they're allowed to just limit the
-			 * current.  hub_wq will turn the power back on.
+			 * current.  khubd will turn the power back on.
 			 */
 			if (((temp & PORT_OC) || (ehci->need_oc_pp_cycle))
 					&& HCS_PPC(ehci->hcs_params)) {
-				spin_unlock_irqrestore(&ehci->lock, flags);
-				ehci_port_power(ehci, wIndex, false);
-				spin_lock_irqsave(&ehci->lock, flags);
+				ehci_writel(ehci,
+					temp & ~(PORT_RWC_BITS | PORT_POWER),
+					status_reg);
 				temp = ehci_readl(ehci, status_reg);
 			}
 		}
@@ -1067,7 +1134,16 @@ int ehci_hub_control(
 			 */
 			retval = ehci_handshake(ehci, status_reg,
 					PORT_RESET, 0, 1000);
-			if (retval != 0) {
+			if (retval == -ETIMEDOUT && ehci->has_x1000_phy) {
+				/* Quark, squelch adjust and RESET needed */
+				__ehci_adjust_x1000_squelch(ehci, status_reg,
+								wIndex);
+				if (ehci->x1000_phy_squelch)
+					/* If squelch adjusted */
+					goto error;
+				/* else squelch is back at default allow enum
+					to continue */
+			} else if (retval != 0) {
 				ehci_err (ehci, "port %d reset error %d\n",
 					wIndex + 1, retval);
 				goto error;
@@ -1089,7 +1165,7 @@ int ehci_hub_control(
 		}
 
 		/*
-		 * Even if OWNER is set, there's no harm letting hub_wq
+		 * Even if OWNER is set, there's no harm letting khubd
 		 * see the wPortStatus values (they should all be 0 except
 		 * for PORT_POWER anyway).
 		 */
@@ -1191,11 +1267,9 @@ int ehci_hub_control(
 			set_bit(wIndex, &ehci->suspended_ports);
 			break;
 		case USB_PORT_FEAT_POWER:
-			if (HCS_PPC(ehci->hcs_params)) {
-				spin_unlock_irqrestore(&ehci->lock, flags);
-				ehci_port_power(ehci, wIndex, true);
-				spin_lock_irqsave(&ehci->lock, flags);
-			}
+			if (HCS_PPC (ehci->hcs_params))
+				ehci_writel(ehci, temp | PORT_POWER,
+						status_reg);
 			break;
 		case USB_PORT_FEAT_RESET:
 			if (temp & (PORT_SUSPEND|PORT_RESUME))
@@ -1214,20 +1288,16 @@ int ehci_hub_control(
 			} else {
 				temp |= PORT_RESET;
 				temp &= ~PORT_PE;
-
+				if (ehci->has_x1000_phy
+						&& ehci->x1000_phy_squelch)
+					ehci->x1000_phy_squelch
+						= QRK_SQUELCH_DEFAULT;
 				/*
 				 * caller must wait, then call GetPortStatus
 				 * usb 2.0 spec says 50 ms resets on root
 				 */
 				ehci->reset_done [wIndex] = jiffies
 						+ msecs_to_jiffies (50);
-
-				/*
-				 * Force full-speed connect for FSL high-speed
-				 * erratum; disable HS Chirp by setting PFSC bit
-				 */
-				if (ehci_has_fsl_hs_errata(ehci))
-					temp |= (1 << PORTSC_FSL_PFSC);
 			}
 			ehci_writel(ehci, temp, status_reg);
 			break;
@@ -1289,7 +1359,6 @@ error_exit:
 	spin_unlock_irqrestore (&ehci->lock, flags);
 	return retval;
 }
-EXPORT_SYMBOL_GPL(ehci_hub_control);
 
 static void ehci_relinquish_port(struct usb_hcd *hcd, int portnum)
 {
@@ -1309,21 +1378,4 @@ static int ehci_port_handed_over(struct usb_hcd *hcd, int portnum)
 		return 0;
 	reg = &ehci->regs->port_status[portnum - 1];
 	return ehci_readl(ehci, reg) & PORT_OWNER;
-}
-
-static int ehci_port_power(struct ehci_hcd *ehci, int portnum, bool enable)
-{
-	struct usb_hcd *hcd = ehci_to_hcd(ehci);
-	u32 __iomem *status_reg = &ehci->regs->port_status[portnum];
-	u32 temp = ehci_readl(ehci, status_reg) & ~PORT_RWC_BITS;
-
-	if (enable)
-		ehci_writel(ehci, temp | PORT_POWER, status_reg);
-	else
-		ehci_writel(ehci, temp & ~PORT_POWER, status_reg);
-
-	if (hcd->driver->port_power)
-		hcd->driver->port_power(hcd, portnum, enable);
-
-	return 0;
 }

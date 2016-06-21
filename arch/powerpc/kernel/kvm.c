@@ -74,7 +74,7 @@
 #define KVM_INST_MTSRIN		0x7c0001e4
 
 static bool kvm_patching_worked = true;
-char kvm_tmp[1024 * 1024];
+static char kvm_tmp[1024 * 1024];
 static int kvm_tmp_index;
 
 static inline void kvm_patch_ins(u32 *inst, u32 new_inst)
@@ -417,7 +417,7 @@ static void kvm_map_magic_page(void *data)
 	ulong out[8];
 
 	in[0] = KVM_MAGIC_PAGE;
-	in[1] = KVM_MAGIC_PAGE | MAGIC_PAGE_FLAG_NOT_MAPPED_NX;
+	in[1] = KVM_MAGIC_PAGE;
 
 	epapr_hypercall(in, out, KVM_HCALL_TOKEN(KVM_HC_PPC_MAP_MAGIC_PAGE));
 
@@ -648,6 +648,7 @@ static void kvm_check_ins(u32 *inst, u32 features)
 			u32 inst_rb = _inst & KVM_MASK_RB;
 			kvm_patch_ins_mtsrin(inst, inst_rt, inst_rb);
 		}
+		break;
 		break;
 #endif
 	}

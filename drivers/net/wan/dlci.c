@@ -192,10 +192,8 @@ static netdev_tx_t dlci_transmit(struct sk_buff *skb, struct net_device *dev)
 {
 	struct dlci_local *dlp = netdev_priv(dev);
 
-	if (skb) {
-		struct netdev_queue *txq = skb_get_tx_queue(dev, skb);
-		netdev_start_xmit(skb, dlp->slave, txq, false);
-	}
+	if (skb)
+		dlp->slave->netdev_ops->ndo_start_xmit(skb, dlp->slave);
 	return NETDEV_TX_OK;
 }
 
@@ -257,6 +255,7 @@ static int dlci_dev_ioctl(struct net_device *dev, struct ifreq *ifr, int cmd)
 				return -EINVAL;
 
 			return dlci_config(dev, ifr->ifr_data, cmd == DLCI_GET_CONF);
+			break;
 
 		default: 
 			return -EOPNOTSUPP;
@@ -328,8 +327,8 @@ static int dlci_add(struct dlci_add *dlci)
 		goto err1;
 
 	/* create device name */
-	master = alloc_netdev(sizeof(struct dlci_local), "dlci%d",
-			      NET_NAME_UNKNOWN, dlci_setup);
+	master = alloc_netdev( sizeof(struct dlci_local), "dlci%d",
+			      dlci_setup);
 	if (!master) {
 		err = -ENOMEM;
 		goto err1;

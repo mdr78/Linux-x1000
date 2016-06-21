@@ -555,18 +555,8 @@ static void pm121_create_sys_fans(int loop_id)
 	pid_param.interval	= PM121_SYS_INTERVAL;
 	pid_param.history_len	= PM121_SYS_HISTORY_SIZE;
 	pid_param.itarget	= param->itarget;
-	if(control)
-	{
-		pid_param.min		= control->ops->get_min(control);
-		pid_param.max		= control->ops->get_max(control);
-	} else {
-		/*
-		 * This is probably not the right!?
-		 * Perhaps goto fail  if control == NULL  above?
-		 */
-		pid_param.min		= 0;
-		pid_param.max		= 0;
-	}
+	pid_param.min		= control->ops->get_min(control);
+	pid_param.max		= control->ops->get_max(control);
 
 	wf_pid_init(&pm121_sys_state[loop_id]->pid, &pid_param);
 
@@ -581,7 +571,7 @@ static void pm121_create_sys_fans(int loop_id)
 	   control the same control */
 	printk(KERN_WARNING "pm121: failed to set up %s loop "
 	       "setting \"%s\" to max speed.\n",
-	       loop_names[loop_id], control ? control->name : "uninitialized value");
+	       loop_names[loop_id], control->name);
 
 	if (control)
 		wf_control_set_max(control);

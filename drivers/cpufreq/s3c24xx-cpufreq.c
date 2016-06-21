@@ -27,6 +27,7 @@
 #include <asm/mach/map.h>
 
 #include <plat/cpu.h>
+#include <plat/clock.h>
 #include <plat/cpu-freq-core.h>
 
 #include <mach/regs-clock.h>
@@ -140,8 +141,12 @@ static int s3c_cpufreq_calcdivs(struct s3c_cpufreq_config *cfg)
 
 static void s3c_cpufreq_setfvco(struct s3c_cpufreq_config *cfg)
 {
-	cfg->mpll = _clk_mpll;
 	(cfg->info->set_fvco)(cfg);
+}
+
+static inline void s3c_cpufreq_resume_clocks(void)
+{
+	cpu_cur.info->resume_clocks();
 }
 
 static inline void s3c_cpufreq_updateclk(struct clk *clk,
@@ -212,7 +217,7 @@ static int s3c_cpufreq_settarget(struct cpufreq_policy *policy,
 	s3c_cpufreq_updateclk(clk_pclk, cpu_new.freq.pclk);
 
 	/* start the frequency change */
-	cpufreq_freq_transition_begin(policy, &freqs.freqs);
+	cpufreq_notify_transition(policy, &freqs.freqs, CPUFREQ_PRECHANGE);
 
 	/* If hclk is staying the same, then we do not need to
 	 * re-write the IO or the refresh timings whilst we are changing
@@ -256,7 +261,7 @@ static int s3c_cpufreq_settarget(struct cpufreq_policy *policy,
 	local_irq_restore(flags);
 
 	/* notify everyone we've done this */
-	cpufreq_freq_transition_end(policy, &freqs.freqs, 0);
+	cpufreq_notify_transition(policy, &freqs.freqs, CPUFREQ_POSTCHANGE);
 
 	s3c_freq_dbg("%s: finished\n", __func__);
 	return 0;
@@ -412,6 +417,9 @@ static int s3c_cpufreq_resume(struct cpufreq_policy *policy)
 
 	last_target = ~0;	/* invalidate last_target setting */
 
+	/* first, find out what speed we resumed at. */
+	s3c_cpufreq_resume_clocks();
+
 	/* whilst we will be called later on, we try and re-set the
 	 * cpu frequencies as soon as possible so that we do not end
 	 * up resuming devices and then immediately having to re-set
@@ -446,7 +454,7 @@ static struct cpufreq_driver s3c24xx_driver = {
 };
 
 
-int s3c_cpufreq_register(struct s3c_cpufreq_info *info)
+int __init s3c_cpufreq_register(struct s3c_cpufreq_info *info)
 {
 	if (!info || !info->name) {
 		printk(KERN_ERR "%s: failed to pass valid information\n",
@@ -578,7 +586,7 @@ static int s3c_cpufreq_build_freq(void)
 	size = cpu_cur.info->calc_freqtable(&cpu_cur, NULL, 0);
 	size++;
 
-	ftab = kzalloc(sizeof(*ftab) * size, GFP_KERNEL);
+	ftab = kmalloc(sizeof(*ftab) * size, GFP_KERNEL);
 	if (!ftab) {
 		printk(KERN_ERR "%s: no memory for tables\n", __func__);
 		return -ENOMEM;
@@ -648,7 +656,7 @@ late_initcall(s3c_cpufreq_initcall);
  *
  * Register the given set of PLLs with the system.
  */
-int s3c_plltab_register(struct cpufreq_frequency_table *plls,
+int __init s3c_plltab_register(struct cpufreq_frequency_table *plls,
 			       unsigned int plls_no)
 {
 	struct cpufreq_frequency_table *vals;
@@ -656,7 +664,7 @@ int s3c_plltab_register(struct cpufreq_frequency_table *plls,
 
 	size = sizeof(*vals) * (plls_no + 1);
 
-	vals = kzalloc(size, GFP_KERNEL);
+	vals = kmalloc(size, GFP_KERNEL);
 	if (vals) {
 		memcpy(vals, plls, size);
 		pll_reg = vals;

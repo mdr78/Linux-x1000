@@ -93,7 +93,7 @@ bool kern_addr_valid(unsigned long addr);
 #define PTRS_PER_PGD	(1UL << PGDIR_BITS)
 
 /* Kernel has a separate 44bit address space. */
-#define FIRST_USER_ADDRESS	0UL
+#define FIRST_USER_ADDRESS	0
 
 #define pmd_ERROR(e)							\
 	pr_err("%s:%d: bad pmd %p(%016lx) seen at (%pS)\n",		\
@@ -137,6 +137,7 @@ bool kern_addr_valid(unsigned long addr);
 #define _PAGE_SOFT_4U	  _AC(0x0000000000001F80,UL) /* Software bits:       */
 #define _PAGE_EXEC_4U	  _AC(0x0000000000001000,UL) /* Executable SW bit    */
 #define _PAGE_MODIFIED_4U _AC(0x0000000000000800,UL) /* Modified (dirty)     */
+#define _PAGE_FILE_4U	  _AC(0x0000000000000800,UL) /* Pagecache page       */
 #define _PAGE_ACCESSED_4U _AC(0x0000000000000400,UL) /* Accessed (ref'd)     */
 #define _PAGE_READ_4U	  _AC(0x0000000000000200,UL) /* Readable SW Bit      */
 #define _PAGE_WRITE_4U	  _AC(0x0000000000000100,UL) /* Writable SW Bit      */
@@ -166,6 +167,7 @@ bool kern_addr_valid(unsigned long addr);
 #define _PAGE_EXEC_4V	  _AC(0x0000000000000080,UL) /* Executable Page      */
 #define _PAGE_W_4V	  _AC(0x0000000000000040,UL) /* Writable             */
 #define _PAGE_SOFT_4V	  _AC(0x0000000000000030,UL) /* Software bits        */
+#define _PAGE_FILE_4V	  _AC(0x0000000000000020,UL) /* Pagecache page       */
 #define _PAGE_PRESENT_4V  _AC(0x0000000000000010,UL) /* Present              */
 #define _PAGE_RESV_4V	  _AC(0x0000000000000008,UL) /* Reserved             */
 #define _PAGE_SZ16GB_4V	  _AC(0x0000000000000007,UL) /* 16GB Page            */
@@ -209,9 +211,9 @@ bool kern_addr_valid(unsigned long addr);
 
 #ifndef __ASSEMBLY__
 
-pte_t mk_pte_io(unsigned long, pgprot_t, int, unsigned long);
+extern pte_t mk_pte_io(unsigned long, pgprot_t, int, unsigned long);
 
-unsigned long pte_sz_bits(unsigned long size);
+extern unsigned long pte_sz_bits(unsigned long size);
 
 extern pgprot_t PAGE_KERNEL;
 extern pgprot_t PAGE_KERNEL_LOCKED;
@@ -308,26 +310,12 @@ static inline pte_t pte_modify(pte_t pte, pgprot_t prot)
 	"	sllx		%1, 32, %1\n"
 	"	or		%0, %1, %0\n"
 	"	.previous\n"
-	"	.section	.sun_m7_2insn_patch, \"ax\"\n"
-	"	.word		661b\n"
-	"	sethi		%%uhi(%4), %1\n"
-	"	sethi		%%hi(%4), %0\n"
-	"	.word		662b\n"
-	"	or		%1, %%ulo(%4), %1\n"
-	"	or		%0, %%lo(%4), %0\n"
-	"	.word		663b\n"
-	"	sllx		%1, 32, %1\n"
-	"	or		%0, %1, %0\n"
-	"	.previous\n"
 	: "=r" (mask), "=r" (tmp)
 	: "i" (_PAGE_PADDR_4U | _PAGE_MODIFIED_4U | _PAGE_ACCESSED_4U |
 	       _PAGE_CP_4U | _PAGE_CV_4U | _PAGE_E_4U |
 	       _PAGE_SPECIAL | _PAGE_PMD_HUGE | _PAGE_SZALL_4U),
 	  "i" (_PAGE_PADDR_4V | _PAGE_MODIFIED_4V | _PAGE_ACCESSED_4V |
 	       _PAGE_CP_4V | _PAGE_CV_4V | _PAGE_E_4V |
-	       _PAGE_SPECIAL | _PAGE_PMD_HUGE | _PAGE_SZALL_4V),
-	  "i" (_PAGE_PADDR_4V | _PAGE_MODIFIED_4V | _PAGE_ACCESSED_4V |
-	       _PAGE_CP_4V | _PAGE_E_4V |
 	       _PAGE_SPECIAL | _PAGE_PMD_HUGE | _PAGE_SZALL_4V));
 
 	return __pte((pte_val(pte) & mask) | (pgprot_val(prot) & ~mask));
@@ -344,6 +332,22 @@ static inline pmd_t pmd_modify(pmd_t pmd, pgprot_t newprot)
 }
 #endif
 
+static inline pte_t pgoff_to_pte(unsigned long off)
+{
+	off <<= PAGE_SHIFT;
+
+	__asm__ __volatile__(
+	"\n661:	or		%0, %2, %0\n"
+	"	.section	.sun4v_1insn_patch, \"ax\"\n"
+	"	.word		661b\n"
+	"	or		%0, %3, %0\n"
+	"	.previous\n"
+	: "=r" (off)
+	: "0" (off), "i" (_PAGE_FILE_4U), "i" (_PAGE_FILE_4V));
+
+	return __pte(off);
+}
+
 static inline pgprot_t pgprot_noncached(pgprot_t prot)
 {
 	unsigned long val = pgprot_val(prot);
@@ -356,15 +360,9 @@ static inline pgprot_t pgprot_noncached(pgprot_t prot)
 	"	andn		%0, %4, %0\n"
 	"	or		%0, %5, %0\n"
 	"	.previous\n"
-	"	.section	.sun_m7_2insn_patch, \"ax\"\n"
-	"	.word		661b\n"
-	"	andn		%0, %6, %0\n"
-	"	or		%0, %5, %0\n"
-	"	.previous\n"
 	: "=r" (val)
 	: "0" (val), "i" (_PAGE_CP_4U | _PAGE_CV_4U), "i" (_PAGE_E_4U),
-	             "i" (_PAGE_CP_4V | _PAGE_CV_4V), "i" (_PAGE_E_4V),
-	             "i" (_PAGE_CP_4V));
+	             "i" (_PAGE_CP_4V | _PAGE_CV_4V), "i" (_PAGE_E_4V));
 
 	return __pgprot(val);
 }
@@ -611,6 +609,22 @@ static inline unsigned long pte_exec(pte_t pte)
 	return (pte_val(pte) & mask);
 }
 
+static inline unsigned long pte_file(pte_t pte)
+{
+	unsigned long val = pte_val(pte);
+
+	__asm__ __volatile__(
+	"\n661:	and		%0, %2, %0\n"
+	"	.section	.sun4v_1insn_patch, \"ax\"\n"
+	"	.word		661b\n"
+	"	and		%0, %3, %0\n"
+	"	.previous\n"
+	: "=r" (val)
+	: "0" (val), "i" (_PAGE_FILE_4U), "i" (_PAGE_FILE_4V));
+
+	return val;
+}
+
 static inline unsigned long pte_present(pte_t pte)
 {
 	unsigned long val = pte_val(pte);
@@ -653,13 +667,6 @@ static inline unsigned long pmd_pfn(pmd_t pmd)
 }
 
 #ifdef CONFIG_TRANSPARENT_HUGEPAGE
-static inline unsigned long pmd_dirty(pmd_t pmd)
-{
-	pte_t pte = __pte(pmd_val(pmd));
-
-	return pte_dirty(pte);
-}
-
 static inline unsigned long pmd_young(pmd_t pmd)
 {
 	pte_t pte = __pte(pmd_val(pmd));
@@ -776,8 +783,8 @@ static inline int pmd_present(pmd_t pmd)
 #define pgd_bad(pgd)			(pgd_val(pgd) & ~PAGE_MASK)
 
 #ifdef CONFIG_TRANSPARENT_HUGEPAGE
-void set_pmd_at(struct mm_struct *mm, unsigned long addr,
-		pmd_t *pmdp, pmd_t pmd);
+extern void set_pmd_at(struct mm_struct *mm, unsigned long addr,
+		       pmd_t *pmdp, pmd_t pmd);
 #else
 static inline void set_pmd_at(struct mm_struct *mm, unsigned long addr,
 			      pmd_t *pmdp, pmd_t pmd)
@@ -862,13 +869,13 @@ static inline unsigned long pud_pfn(pud_t pud)
 #define pte_unmap(pte)			do { } while (0)
 
 /* Actual page table PTE updates.  */
-void tlb_batch_add(struct mm_struct *mm, unsigned long vaddr,
-		   pte_t *ptep, pte_t orig, int fullmm);
+extern void tlb_batch_add(struct mm_struct *mm, unsigned long vaddr,
+			  pte_t *ptep, pte_t orig, int fullmm);
 
-#define __HAVE_ARCH_PMDP_HUGE_GET_AND_CLEAR
-static inline pmd_t pmdp_huge_get_and_clear(struct mm_struct *mm,
-					    unsigned long addr,
-					    pmd_t *pmdp)
+#define __HAVE_ARCH_PMDP_GET_AND_CLEAR
+static inline pmd_t pmdp_get_and_clear(struct mm_struct *mm,
+				       unsigned long addr,
+				       pmd_t *pmdp)
 {
 	pmd_t pmd = *pmdp;
 	set_pmd_at(mm, addr, pmdp, __pmd(0UL));
@@ -921,28 +928,28 @@ static inline void __set_pte_at(struct mm_struct *mm, unsigned long addr,
 
 extern pgd_t swapper_pg_dir[PTRS_PER_PGD];
 
-void paging_init(void);
-unsigned long find_ecache_flush_span(unsigned long size);
+extern void paging_init(void);
+extern unsigned long find_ecache_flush_span(unsigned long size);
 
 struct seq_file;
-void mmu_info(struct seq_file *);
+extern void mmu_info(struct seq_file *);
 
 struct vm_area_struct;
-void update_mmu_cache(struct vm_area_struct *, unsigned long, pte_t *);
+extern void update_mmu_cache(struct vm_area_struct *, unsigned long, pte_t *);
 #ifdef CONFIG_TRANSPARENT_HUGEPAGE
-void update_mmu_cache_pmd(struct vm_area_struct *vma, unsigned long addr,
-			  pmd_t *pmd);
+extern void update_mmu_cache_pmd(struct vm_area_struct *vma, unsigned long addr,
+				 pmd_t *pmd);
 
 #define __HAVE_ARCH_PMDP_INVALIDATE
 extern void pmdp_invalidate(struct vm_area_struct *vma, unsigned long address,
 			    pmd_t *pmdp);
 
 #define __HAVE_ARCH_PGTABLE_DEPOSIT
-void pgtable_trans_huge_deposit(struct mm_struct *mm, pmd_t *pmdp,
-				pgtable_t pgtable);
+extern void pgtable_trans_huge_deposit(struct mm_struct *mm, pmd_t *pmdp,
+				       pgtable_t pgtable);
 
 #define __HAVE_ARCH_PGTABLE_WITHDRAW
-pgtable_t pgtable_trans_huge_withdraw(struct mm_struct *mm, pmd_t *pmdp);
+extern pgtable_t pgtable_trans_huge_withdraw(struct mm_struct *mm, pmd_t *pmdp);
 #endif
 
 /* Encode and de-code a swap entry */
@@ -957,7 +964,13 @@ pgtable_t pgtable_trans_huge_withdraw(struct mm_struct *mm, pmd_t *pmdp);
 #define __pte_to_swp_entry(pte)		((swp_entry_t) { pte_val(pte) })
 #define __swp_entry_to_pte(x)		((pte_t) { (x).val })
 
-int page_in_phys_avail(unsigned long paddr);
+/* File offset in PTE support. */
+extern unsigned long pte_file(pte_t);
+#define pte_to_pgoff(pte)	(pte_val(pte) >> PAGE_SHIFT)
+extern pte_t pgoff_to_pte(unsigned long);
+#define PTE_FILE_MAX_BITS	(64UL - PAGE_SHIFT - 1UL)
+
+extern int page_in_phys_avail(unsigned long paddr);
 
 /*
  * For sparc32&64, the pfn in io_remap_pfn_range() carries <iospace> in
@@ -967,8 +980,8 @@ int page_in_phys_avail(unsigned long paddr);
 #define GET_IOSPACE(pfn)		(pfn >> (BITS_PER_LONG - 4))
 #define GET_PFN(pfn)			(pfn & 0x0fffffffffffffffUL)
 
-int remap_pfn_range(struct vm_area_struct *, unsigned long, unsigned long,
-		    unsigned long, pgprot_t);
+extern int remap_pfn_range(struct vm_area_struct *, unsigned long, unsigned long,
+			   unsigned long, pgprot_t);
 
 static inline int io_remap_pfn_range(struct vm_area_struct *vma,
 				     unsigned long from, unsigned long pfn,
@@ -996,20 +1009,20 @@ static inline int io_remap_pfn_range(struct vm_area_struct *vma,
 /* We provide a special get_unmapped_area for framebuffer mmaps to try and use
  * the largest alignment possible such that larget PTEs can be used.
  */
-unsigned long get_fb_unmapped_area(struct file *filp, unsigned long,
-				   unsigned long, unsigned long,
-				   unsigned long);
+extern unsigned long get_fb_unmapped_area(struct file *filp, unsigned long,
+					  unsigned long, unsigned long,
+					  unsigned long);
 #define HAVE_ARCH_FB_UNMAPPED_AREA
 
-void pgtable_cache_init(void);
-void sun4v_register_fault_status(void);
-void sun4v_ktsb_register(void);
-void __init cheetah_ecache_flush_init(void);
-void sun4v_patch_tlb_handlers(void);
+extern void pgtable_cache_init(void);
+extern void sun4v_register_fault_status(void);
+extern void sun4v_ktsb_register(void);
+extern void __init cheetah_ecache_flush_init(void);
+extern void sun4v_patch_tlb_handlers(void);
 
 extern unsigned long cmdline_memory_size;
 
-asmlinkage void do_sparc64_fault(struct pt_regs *regs);
+extern asmlinkage void do_sparc64_fault(struct pt_regs *regs);
 
 #endif /* !(__ASSEMBLY__) */
 

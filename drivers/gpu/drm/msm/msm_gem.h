@@ -21,9 +21,6 @@
 #include <linux/reservation.h>
 #include "msm_drv.h"
 
-/* Additional internal-use only BO flags: */
-#define MSM_BO_STOLEN        0x10000000    /* try to use stolen/splash memory */
-
 struct msm_gem_object {
 	struct drm_gem_object base;
 
@@ -62,7 +59,7 @@ struct msm_gem_object {
 	struct reservation_object _resv;
 
 	/* For physically contiguous buffers.  Used when we don't have
-	 * an IOMMU.  Also used for stolen/splashscreen buffer.
+	 * an IOMMU.
 	 */
 	struct drm_mm_node *vram_node;
 };
@@ -71,19 +68,6 @@ struct msm_gem_object {
 static inline bool is_active(struct msm_gem_object *msm_obj)
 {
 	return msm_obj->gpu != NULL;
-}
-
-static inline uint32_t msm_gem_fence(struct msm_gem_object *msm_obj,
-		uint32_t op)
-{
-	uint32_t fence = 0;
-
-	if (op & MSM_PREP_READ)
-		fence = msm_obj->write_fence;
-	if (op & MSM_PREP_WRITE)
-		fence = max(fence, msm_obj->read_fence);
-
-	return fence;
 }
 
 #define MAX_CMDS 4
@@ -96,7 +80,6 @@ static inline uint32_t msm_gem_fence(struct msm_gem_object *msm_obj,
 struct msm_gem_submit {
 	struct drm_device *dev;
 	struct msm_gpu *gpu;
-	struct list_head node;   /* node in gpu submit_list */
 	struct list_head bo_list;
 	struct ww_acquire_ctx ticket;
 	uint32_t fence;
@@ -107,7 +90,6 @@ struct msm_gem_submit {
 		uint32_t type;
 		uint32_t size;  /* in dwords */
 		uint32_t iova;
-		uint32_t idx;   /* cmdstream buffer idx in bos[] */
 	} cmd[MAX_CMDS];
 	struct {
 		uint32_t flags;

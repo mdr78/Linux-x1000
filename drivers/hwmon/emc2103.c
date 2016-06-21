@@ -66,8 +66,7 @@ struct temperature {
 };
 
 struct emc2103_data {
-	struct i2c_client	*client;
-	const struct		attribute_group *groups[4];
+	struct device		*hwmon_dev;
 	struct mutex		update_lock;
 	bool			valid;		/* registers are valid */
 	bool			fan_rpm_control;
@@ -147,8 +146,8 @@ static void read_fan_config_from_i2c(struct i2c_client *client)
 
 static struct emc2103_data *emc2103_update_device(struct device *dev)
 {
-	struct emc2103_data *data = dev_get_drvdata(dev);
-	struct i2c_client *client = data->client;
+	struct i2c_client *client = to_i2c_client(dev);
+	struct emc2103_data *data = i2c_get_clientdata(client);
 
 	mutex_lock(&data->update_lock);
 
@@ -243,8 +242,8 @@ static ssize_t set_temp_min(struct device *dev, struct device_attribute *da,
 			    const char *buf, size_t count)
 {
 	int nr = to_sensor_dev_attr(da)->index;
-	struct emc2103_data *data = dev_get_drvdata(dev);
-	struct i2c_client *client = data->client;
+	struct i2c_client *client = to_i2c_client(dev);
+	struct emc2103_data *data = i2c_get_clientdata(client);
 	long val;
 
 	int result = kstrtol(buf, 10, &val);
@@ -265,8 +264,8 @@ static ssize_t set_temp_max(struct device *dev, struct device_attribute *da,
 			    const char *buf, size_t count)
 {
 	int nr = to_sensor_dev_attr(da)->index;
-	struct emc2103_data *data = dev_get_drvdata(dev);
-	struct i2c_client *client = data->client;
+	struct i2c_client *client = to_i2c_client(dev);
+	struct emc2103_data *data = i2c_get_clientdata(client);
 	long val;
 
 	int result = kstrtol(buf, 10, &val);
@@ -311,7 +310,7 @@ static ssize_t set_fan_div(struct device *dev, struct device_attribute *da,
 			   const char *buf, size_t count)
 {
 	struct emc2103_data *data = emc2103_update_device(dev);
-	struct i2c_client *client = data->client;
+	struct i2c_client *client = to_i2c_client(dev);
 	int new_range_bits, old_div = 8 / data->fan_multiplier;
 	long new_div;
 
@@ -346,7 +345,7 @@ static ssize_t set_fan_div(struct device *dev, struct device_attribute *da,
 		dev_dbg(&client->dev, "reg 0x%02x, err %d\n",
 			REG_FAN_CONF1, status);
 		mutex_unlock(&data->update_lock);
-		return status;
+		return -EIO;
 	}
 	status &= 0x9F;
 	status |= (new_range_bits << 5);
@@ -386,7 +385,7 @@ static ssize_t set_fan_target(struct device *dev, struct device_attribute *da,
 			      const char *buf, size_t count)
 {
 	struct emc2103_data *data = emc2103_update_device(dev);
-	struct i2c_client *client = data->client;
+	struct i2c_client *client = to_i2c_client(dev);
 	unsigned long rpm_target;
 
 	int result = kstrtoul(buf, 10, &rpm_target);
@@ -429,8 +428,8 @@ show_pwm_enable(struct device *dev, struct device_attribute *da, char *buf)
 static ssize_t set_pwm_enable(struct device *dev, struct device_attribute *da,
 			      const char *buf, size_t count)
 {
-	struct emc2103_data *data = dev_get_drvdata(dev);
-	struct i2c_client *client = data->client;
+	struct i2c_client *client = to_i2c_client(dev);
+	struct emc2103_data *data = i2c_get_clientdata(client);
 	long new_value;
 	u8 conf_reg;
 
@@ -581,8 +580,7 @@ static int
 emc2103_probe(struct i2c_client *client, const struct i2c_device_id *id)
 {
 	struct emc2103_data *data;
-	struct device *hwmon_dev;
-	int status, idx = 0;
+	int status;
 
 	if (!i2c_check_functionality(client->adapter, I2C_FUNC_SMBUS_BYTE_DATA))
 		return -EIO;
@@ -593,7 +591,6 @@ emc2103_probe(struct i2c_client *client, const struct i2c_device_id *id)
 		return -ENOMEM;
 
 	i2c_set_clientdata(client, data);
-	data->client = client;
 	mutex_init(&data->update_lock);
 
 	/* 2103-2 and 2103-4 have 3 external diodes, 2103-1 has 1 */
@@ -627,21 +624,60 @@ emc2103_probe(struct i2c_client *client, const struct i2c_device_id *id)
 		}
 	}
 
-	/* sysfs hooks */
-	data->groups[idx++] = &emc2103_group;
-	if (data->temp_count >= 3)
-		data->groups[idx++] = &emc2103_temp3_group;
-	if (data->temp_count == 4)
-		data->groups[idx++] = &emc2103_temp4_group;
+	/* Register sysfs hooks */
+	status = sysfs_create_group(&client->dev.kobj, &emc2103_group);
+	if (status)
+		return status;
 
-	hwmon_dev = devm_hwmon_device_register_with_groups(&client->dev,
-							   client->name, data,
-							   data->groups);
-	if (IS_ERR(hwmon_dev))
-		return PTR_ERR(hwmon_dev);
+	if (data->temp_count >= 3) {
+		status = sysfs_create_group(&client->dev.kobj,
+			&emc2103_temp3_group);
+		if (status)
+			goto exit_remove;
+	}
+
+	if (data->temp_count == 4) {
+		status = sysfs_create_group(&client->dev.kobj,
+			&emc2103_temp4_group);
+		if (status)
+			goto exit_remove_temp3;
+	}
+
+	data->hwmon_dev = hwmon_device_register(&client->dev);
+	if (IS_ERR(data->hwmon_dev)) {
+		status = PTR_ERR(data->hwmon_dev);
+		goto exit_remove_temp4;
+	}
 
 	dev_info(&client->dev, "%s: sensor '%s'\n",
-		 dev_name(hwmon_dev), client->name);
+		 dev_name(data->hwmon_dev), client->name);
+
+	return 0;
+
+exit_remove_temp4:
+	if (data->temp_count == 4)
+		sysfs_remove_group(&client->dev.kobj, &emc2103_temp4_group);
+exit_remove_temp3:
+	if (data->temp_count >= 3)
+		sysfs_remove_group(&client->dev.kobj, &emc2103_temp3_group);
+exit_remove:
+	sysfs_remove_group(&client->dev.kobj, &emc2103_group);
+	return status;
+}
+
+static int emc2103_remove(struct i2c_client *client)
+{
+	struct emc2103_data *data = i2c_get_clientdata(client);
+
+	hwmon_device_unregister(data->hwmon_dev);
+
+	if (data->temp_count == 4)
+		sysfs_remove_group(&client->dev.kobj, &emc2103_temp4_group);
+
+	if (data->temp_count >= 3)
+		sysfs_remove_group(&client->dev.kobj, &emc2103_temp3_group);
+
+	sysfs_remove_group(&client->dev.kobj, &emc2103_group);
 
 	return 0;
 }
@@ -681,6 +717,7 @@ static struct i2c_driver emc2103_driver = {
 		.name	= "emc2103",
 	},
 	.probe		= emc2103_probe,
+	.remove		= emc2103_remove,
 	.id_table	= emc2103_ids,
 	.detect		= emc2103_detect,
 	.address_list	= normal_i2c,

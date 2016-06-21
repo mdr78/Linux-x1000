@@ -642,7 +642,10 @@ static int max16065_probe(struct i2c_client *client,
 
 	hwmon_dev = devm_hwmon_device_register_with_groups(dev, client->name,
 							   data, data->groups);
-	return PTR_ERR_OR_ZERO(hwmon_dev);
+	if (unlikely(IS_ERR(hwmon_dev)))
+		return PTR_ERR(hwmon_dev);
+
+	return 0;
 }
 
 static const struct i2c_device_id max16065_id[] = {

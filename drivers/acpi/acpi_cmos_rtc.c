@@ -18,6 +18,8 @@
 
 #include "internal.h"
 
+#define PREFIX "ACPI: "
+
 ACPI_MODULE_NAME("cmos rtc");
 
 static const struct acpi_device_id acpi_cmos_rtc_ids[] = {
@@ -68,7 +70,7 @@ static int acpi_install_cmos_rtc_space_handler(struct acpi_device *adev,
 		return -ENODEV;
 	}
 
-	return 1;
+	return 0;
 }
 
 static void acpi_remove_cmos_rtc_space_handler(struct acpi_device *adev)

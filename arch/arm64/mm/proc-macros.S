@@ -52,25 +52,3 @@
 	mov	\reg, #4			// bytes per word
 	lsl	\reg, \reg, \tmp		// actual cache line size
 	.endm
-
-/*
- * tcr_set_idmap_t0sz - update TCR.T0SZ so that we can load the ID map
- */
-	.macro	tcr_set_idmap_t0sz, valreg, tmpreg
-#ifndef CONFIG_ARM64_VA_BITS_48
-	ldr_l	\tmpreg, idmap_t0sz
-	bfi	\valreg, \tmpreg, #TCR_T0SZ_OFFSET, #TCR_TxSZ_WIDTH
-#endif
-	.endm
-
-/*
- * reset_pmuserenr_el0 - reset PMUSERENR_EL0 if PMUv3 present
- */
-	.macro	reset_pmuserenr_el0, tmpreg
-	mrs	\tmpreg, id_aa64dfr0_el1	// Check ID_AA64DFR0_EL1 PMUVer
-	sbfx	\tmpreg, \tmpreg, #8, #4
-	cmp	\tmpreg, #1			// Skip if no PMU present
-	b.lt	9000f
-	msr	pmuserenr_el0, xzr		// Disable PMU access from EL0
-9000:
-	.endm

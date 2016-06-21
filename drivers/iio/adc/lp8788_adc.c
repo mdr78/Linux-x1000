@@ -244,6 +244,7 @@ static struct platform_driver lp8788_adc_driver = {
 	.remove = lp8788_adc_remove,
 	.driver = {
 		.name = LP8788_DEV_ADC,
+		.owner = THIS_MODULE,
 	},
 };
 module_platform_driver(lp8788_adc_driver);

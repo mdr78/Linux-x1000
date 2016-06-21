@@ -3,6 +3,9 @@
  * Released under GPL v2.
  */
 
+#include <linux/module.h>
+#include <linux/fs.h>
+#include <linux/msdos_fs.h>
 #include <linux/blkdev.h>
 #include "fat.h"
 

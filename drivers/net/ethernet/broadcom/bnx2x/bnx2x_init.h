@@ -1,17 +1,15 @@
-/* bnx2x_init.h: Qlogic Everest network driver.
+/* bnx2x_init.h: Broadcom Everest network driver.
  *               Structures and macroes needed during the initialization.
  *
  * Copyright (c) 2007-2013 Broadcom Corporation
- * Copyright (c) 2014 QLogic Corporation
- All rights reserved
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
  * the Free Software Foundation.
  *
- * Maintained by: Ariel Elior <ariel.elior@qlogic.com>
+ * Maintained by: Eilon Greenstein <eilong@broadcom.com>
  * Written by: Eliezer Tamir
- * Modified by: Vladislav Zolotarov
+ * Modified by: Vladislav Zolotarov <vladz@broadcom.com>
  */
 
 #ifndef BNX2X_INIT_H
@@ -280,7 +278,7 @@ static inline void bnx2x_dcb_config_qm(struct bnx2x *bp, enum cos_mode mode,
 }
 
 
-/* congestion management port init api description
+/* congestion managment port init api description
  * the api works as follows:
  * the driver should pass the cmng_init_input struct, the port_init function
  * will prepare the required internal ram structure which will be passed back

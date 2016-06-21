@@ -22,7 +22,6 @@
 #include <linux/srcu.h>
 #include <linux/rculist.h>
 #include <linux/wait.h>
-#include <linux/module.h>
 
 #include <linux/fsnotify_backend.h>
 #include "fsnotify.h"
@@ -32,7 +31,7 @@
 /*
  * Final freeing of a group
  */
-static void fsnotify_final_destroy_group(struct fsnotify_group *group)
+void fsnotify_final_destroy_group(struct fsnotify_group *group)
 {
 	if (group->ops->free_group_priv)
 		group->ops->free_group_priv(group);
@@ -73,7 +72,6 @@ void fsnotify_get_group(struct fsnotify_group *group)
 {
 	atomic_inc(&group->refcnt);
 }
-EXPORT_SYMBOL_GPL(fsnotify_get_group);
 
 /*
  * Drop a reference to a group.  Free it if it's through.
@@ -83,7 +81,6 @@ void fsnotify_put_group(struct fsnotify_group *group)
 	if (atomic_dec_and_test(&group->refcnt))
 		fsnotify_final_destroy_group(group);
 }
-EXPORT_SYMBOL_GPL(fsnotify_put_group);
 
 /*
  * Create a new fsnotify_group and hold a reference for the group returned.
@@ -112,7 +109,6 @@ struct fsnotify_group *fsnotify_alloc_group(const struct fsnotify_ops *ops)
 
 	return group;
 }
-EXPORT_SYMBOL_GPL(fsnotify_alloc_group);
 
 int fsnotify_fasync(int fd, struct file *file, int on)
 {

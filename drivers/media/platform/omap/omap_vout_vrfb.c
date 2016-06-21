@@ -21,7 +21,6 @@
 
 #include "omap_voutdef.h"
 #include "omap_voutlib.h"
-#include "omap_vout_vrfb.h"
 
 #define OMAP_DMA_NO_DEVICE	0
 
@@ -149,7 +148,7 @@ int omap_vout_setup_vrfb_bufs(struct platform_device *pdev, int vid_num,
 			ret =  -ENOMEM;
 			goto release_vrfb_ctx;
 		}
-		vout->vrfb_static_allocation = true;
+		vout->vrfb_static_allocation = 1;
 	}
 	return 0;
 
@@ -271,8 +270,7 @@ int omap_vout_prepare_vrfb(struct omap_vout_device *vout,
 	omap_dma_set_global_params(DMA_DEFAULT_ARB_RATE, 0x20, 0);
 
 	omap_start_dma(tx->dma_ch);
-	wait_event_interruptible_timeout(tx->wait, tx->tx_status == 1,
-					 VRFB_TX_TIMEOUT);
+	interruptible_sleep_on_timeout(&tx->wait, VRFB_TX_TIMEOUT);
 
 	if (tx->tx_status == 0) {
 		omap_stop_dma(tx->dma_ch);
@@ -337,7 +335,7 @@ void omap_vout_calculate_vrfb_offset(struct omap_vout_device *vout)
 		offset = vout->vrfb_context[0].yoffset *
 			vout->vrfb_context[0].bytespp;
 		temp_ps = ps / vr_ps;
-		if (!mirroring) {
+		if (mirroring == 0) {
 			*cropped_offset = offset + line_length *
 				temp_ps * cleft + crop->top * temp_ps;
 		} else {
@@ -351,7 +349,7 @@ void omap_vout_calculate_vrfb_offset(struct omap_vout_device *vout)
 			vout->vrfb_context[0].bytespp) +
 			(vout->vrfb_context[0].xoffset *
 			vout->vrfb_context[0].bytespp));
-		if (!mirroring) {
+		if (mirroring == 0) {
 			*cropped_offset = offset + (line_length * ps * ctop) +
 				(cleft / vr_ps) * ps;
 
@@ -365,7 +363,7 @@ void omap_vout_calculate_vrfb_offset(struct omap_vout_device *vout)
 		offset = MAX_PIXELS_PER_LINE * vout->vrfb_context[0].xoffset *
 			vout->vrfb_context[0].bytespp;
 		temp_ps = ps / vr_ps;
-		if (!mirroring) {
+		if (mirroring == 0) {
 			*cropped_offset = offset + line_length *
 			    temp_ps * crop->left + ctop * ps;
 		} else {
@@ -376,7 +374,7 @@ void omap_vout_calculate_vrfb_offset(struct omap_vout_device *vout)
 		}
 		break;
 	case dss_rotation_0_degree:
-		if (!mirroring) {
+		if (mirroring == 0) {
 			*cropped_offset = (line_length * ps) *
 				crop->top + (crop->left / vr_ps) * ps;
 		} else {

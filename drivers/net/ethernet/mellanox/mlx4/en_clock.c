@@ -32,9 +32,54 @@
  */
 
 #include <linux/mlx4/device.h>
-#include <linux/clocksource.h>
 
 #include "mlx4_en.h"
+
+int mlx4_en_timestamp_config(struct net_device *dev, int tx_type, int rx_filter)
+{
+	struct mlx4_en_priv *priv = netdev_priv(dev);
+	struct mlx4_en_dev *mdev = priv->mdev;
+	int port_up = 0;
+	int err = 0;
+
+	if (priv->hwtstamp_config.tx_type == tx_type &&
+	    priv->hwtstamp_config.rx_filter == rx_filter)
+		return 0;
+
+	mutex_lock(&mdev->state_lock);
+	if (priv->port_up) {
+		port_up = 1;
+		mlx4_en_stop_port(dev, 1);
+	}
+
+	mlx4_en_free_resources(priv);
+
+	en_warn(priv, "Changing Time Stamp configuration\n");
+
+	priv->hwtstamp_config.tx_type = tx_type;
+	priv->hwtstamp_config.rx_filter = rx_filter;
+
+	if (rx_filter != HWTSTAMP_FILTER_NONE)
+		dev->features &= ~NETIF_F_HW_VLAN_CTAG_RX;
+	else
+		dev->features |= NETIF_F_HW_VLAN_CTAG_RX;
+
+	err = mlx4_en_alloc_resources(priv);
+	if (err) {
+		en_err(priv, "Failed reallocating port resources\n");
+		goto out;
+	}
+	if (port_up) {
+		err = mlx4_en_start_port(dev);
+		if (err)
+			en_err(priv, "Failed starting port\n");
+	}
+
+out:
+	mutex_unlock(&mdev->state_lock);
+	netdev_features_change(dev);
+	return err;
+}
 
 /* mlx4_en_read_clock - read raw cycle counter (to be used by time counter)
  */
@@ -148,9 +193,12 @@ static int mlx4_en_phc_adjtime(struct ptp_clock_info *ptp, s64 delta)
 	struct mlx4_en_dev *mdev = container_of(ptp, struct mlx4_en_dev,
 						ptp_clock_info);
 	unsigned long flags;
+	s64 now;
 
 	write_lock_irqsave(&mdev->clock_lock, flags);
-	timecounter_adjtime(&mdev->clock, delta);
+	now = timecounter_read(&mdev->clock);
+	now += delta;
+	timecounter_init(&mdev->clock, &mdev->cycles, now);
 	write_unlock_irqrestore(&mdev->clock_lock, flags);
 
 	return 0;
@@ -164,19 +212,20 @@ static int mlx4_en_phc_adjtime(struct ptp_clock_info *ptp, s64 delta)
  * Read the timecounter and return the correct value in ns after converting
  * it into a struct timespec.
  **/
-static int mlx4_en_phc_gettime(struct ptp_clock_info *ptp,
-			       struct timespec64 *ts)
+static int mlx4_en_phc_gettime(struct ptp_clock_info *ptp, struct timespec *ts)
 {
 	struct mlx4_en_dev *mdev = container_of(ptp, struct mlx4_en_dev,
 						ptp_clock_info);
 	unsigned long flags;
+	u32 remainder;
 	u64 ns;
 
 	write_lock_irqsave(&mdev->clock_lock, flags);
 	ns = timecounter_read(&mdev->clock);
 	write_unlock_irqrestore(&mdev->clock_lock, flags);
 
-	*ts = ns_to_timespec64(ns);
+	ts->tv_sec = div_u64_rem(ns, NSEC_PER_SEC, &remainder);
+	ts->tv_nsec = remainder;
 
 	return 0;
 }
@@ -190,11 +239,11 @@ static int mlx4_en_phc_gettime(struct ptp_clock_info *ptp,
  * wall timer value.
  **/
 static int mlx4_en_phc_settime(struct ptp_clock_info *ptp,
-			       const struct timespec64 *ts)
+			       const struct timespec *ts)
 {
 	struct mlx4_en_dev *mdev = container_of(ptp, struct mlx4_en_dev,
 						ptp_clock_info);
-	u64 ns = timespec64_to_ns(ts);
+	u64 ns = timespec_to_ns(ts);
 	unsigned long flags;
 
 	/* reset the timecounter */
@@ -231,8 +280,8 @@ static const struct ptp_clock_info mlx4_en_ptp_clock_info = {
 	.pps		= 0,
 	.adjfreq	= mlx4_en_phc_adjfreq,
 	.adjtime	= mlx4_en_phc_adjtime,
-	.gettime64	= mlx4_en_phc_gettime,
-	.settime64	= mlx4_en_phc_settime,
+	.gettime	= mlx4_en_phc_gettime,
+	.settime	= mlx4_en_phc_settime,
 	.enable		= mlx4_en_phc_enable,
 };
 
@@ -240,14 +289,7 @@ void mlx4_en_init_timestamp(struct mlx4_en_dev *mdev)
 {
 	struct mlx4_dev *dev = mdev->dev;
 	unsigned long flags;
-	u64 ns, zero = 0;
-
-	/* mlx4_en_init_timestamp is called for each netdev.
-	 * mdev->ptp_clock is common for all ports, skip initialization if
-	 * was done for other port.
-	 */
-	if (mdev->ptp_clock)
-		return;
+	u64 ns;
 
 	rwlock_init(&mdev->clock_lock);
 
@@ -272,7 +314,7 @@ void mlx4_en_init_timestamp(struct mlx4_en_dev *mdev)
 	/* Calculate period in seconds to call the overflow watchdog - to make
 	 * sure counter is checked at least once every wrap around.
 	 */
-	ns = cyclecounter_cyc2ns(&mdev->cycles, mdev->cycles.mask, zero, &zero);
+	ns = cyclecounter_cyc2ns(&mdev->cycles, mdev->cycles.mask);
 	do_div(ns, NSEC_PER_SEC / 2 / HZ);
 	mdev->overflow_period = ns;
 

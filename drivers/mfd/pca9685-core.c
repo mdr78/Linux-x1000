@@ -24,9 +24,6 @@
 #include <linux/gpio.h>
 #include <linux/regmap.h>
 #include <linux/slab.h>
-#include <linux/delay.h>
-#include <linux/acpi.h>
-#include <linux/property.h>
 
 #include "pca9685.h"
 
@@ -64,8 +61,8 @@ static struct regmap_config pca9685_regmap_i2c_config = {
 };
 
 ssize_t pca9685_pwm_period_sysfs_show(struct device *dev,
-					  struct device_attribute *attr,
-					  char *buf)
+				      struct device_attribute *attr,
+				      char *buf)
 {
 	struct pca9685 *pca = dev_get_drvdata(dev);
 
@@ -73,8 +70,8 @@ ssize_t pca9685_pwm_period_sysfs_show(struct device *dev,
 }
 
 ssize_t pca9685_pwm_period_sysfs_store(struct device *dev,
-					   struct device_attribute *attr,
-					   const char *buf, size_t count)
+				       struct device_attribute *attr,
+				       const char *buf, size_t count)
 {
 	struct pca9685 *pca = dev_get_drvdata(dev);
 	unsigned period_ns;
@@ -96,18 +93,6 @@ ssize_t pca9685_pwm_period_sysfs_store(struct device *dev,
 static DEVICE_ATTR(pwm_period, S_IWUSR | S_IRUGO,
 		   pca9685_pwm_period_sysfs_show,
 		   pca9685_pwm_period_sysfs_store);
-
-u8 default_chan_mapping[] = {
-	PWM_CH_GPIO, PWM_CH_PWM,
-	PWM_CH_GPIO, PWM_CH_PWM,
-	PWM_CH_GPIO, PWM_CH_PWM,
-	PWM_CH_GPIO, PWM_CH_PWM,
-	PWM_CH_GPIO, PWM_CH_PWM,
-	PWM_CH_GPIO, PWM_CH_PWM,
-	PWM_CH_GPIO, PWM_CH_GPIO,
-	PWM_CH_GPIO, PWM_CH_GPIO,
-	PWM_CH_DISABLED /* ALL_LED disabled */
-};
 
 static int pca9685_probe(struct i2c_client *client,
 			 const struct i2c_device_id *id)
@@ -132,16 +117,9 @@ static int pca9685_probe(struct i2c_client *client,
 		dev_warn(&client->dev,
 			 "Platform data not provided."
 			 "Using default or mod params configuration.\n");
-#if 1
-        /* hack for Galileo 2*/
-		pca->gpio_base = 64;
-		memcpy(pca->chan_mapping, default_chan_mapping,
-				ARRAY_SIZE(pca->chan_mapping));
-#else
 		pca->gpio_base = gpio_base;
 		memset(pca->chan_mapping, PWM_CH_UNDEFINED,
 				ARRAY_SIZE(pca->chan_mapping));
-#endif
 	}
 
 	if (unlikely(!i2c_check_functionality(client->adapter,
@@ -231,7 +209,8 @@ err_pwmchip:
 		dev_warn(&client->dev, "%s failed\n", "pwmchip_remove()");
 
 err_gpiochip:
-	gpiochip_remove(&pca->gpio_chip);
+	if (unlikely(gpiochip_remove(&pca->gpio_chip)))
+		dev_warn(&client->dev, "%s failed\n", "gpiochip_remove()");
 err:
 	mutex_destroy(&pca->lock);
 
@@ -246,7 +225,10 @@ static int pca9685_remove(struct i2c_client *client)
 	regmap_update_bits(pca->regmap, PCA9685_MODE1, MODE1_SLEEP,
 			MODE1_SLEEP);
 
-	gpiochip_remove(&pca->gpio_chip);
+	ret = gpiochip_remove(&pca->gpio_chip);
+	if (unlikely(ret))
+		dev_err(&client->dev, "%s failed, %d\n",
+				"gpiochip_remove()", ret);
 
 	sysfs_remove_file(&client->dev.kobj, &dev_attr_pwm_period.attr);
 
@@ -260,12 +242,6 @@ static int pca9685_remove(struct i2c_client *client)
 	return ret;
 }
 
-static const struct acpi_device_id pca9685_acpi_ids[] = {
-	{ "INT3492", 0 },
-	{ /* sentinel */ },
-};
-MODULE_DEVICE_TABLE(acpi, pca9685_acpi_ids);
-
 static const struct i2c_device_id pca9685_id[] = {
 	{ "pca9685", 0 },
 	{ /* sentinel */ },
@@ -276,7 +252,6 @@ static struct i2c_driver pca9685_i2c_driver = {
 	.driver = {
 		.name  = "mfd-pca9685",
 		.owner = THIS_MODULE,
-		.acpi_match_table = ACPI_PTR(pca9685_acpi_ids),
 	},
 	.probe     = pca9685_probe,
 	.remove    = pca9685_remove,
@@ -286,9 +261,9 @@ static struct i2c_driver pca9685_i2c_driver = {
 static int __init pca9685_init(void)
 {
 	if (unlikely((pwm_period < PWM_PERIOD_MIN) ||
-			 (PWM_PERIOD_MAX < pwm_period))) {
+		     (PWM_PERIOD_MAX < pwm_period))) {
 		pr_err("Invalid PWM period specified (valid range: %d-%d)\n",
-			   PWM_PERIOD_MIN, PWM_PERIOD_MAX);
+		       PWM_PERIOD_MIN, PWM_PERIOD_MAX);
 		return -EINVAL;
 	}
 

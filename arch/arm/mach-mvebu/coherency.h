@@ -15,9 +15,8 @@
 #define __MACH_370_XP_COHERENCY_H
 
 extern unsigned long coherency_phys_base;
-int set_cpu_coherent(void);
 
+int set_cpu_coherent(unsigned int cpu_id, int smp_group_id);
 int coherency_init(void);
-int coherency_available(void);
 
 #endif	/* __MACH_370_XP_COHERENCY_H */

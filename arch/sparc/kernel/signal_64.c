@@ -35,10 +35,9 @@
 #include <asm/switch_to.h>
 #include <asm/cacheflush.h>
 
-#include "sigutil.h"
-#include "systbls.h"
-#include "kernel.h"
 #include "entry.h"
+#include "systbls.h"
+#include "sigutil.h"
 
 /* {set, get}context() needed for 64-bit SparcLinux userland. */
 asmlinkage void sparc64_set_context(struct pt_regs *regs)
@@ -254,7 +253,7 @@ void do_rt_sigreturn(struct pt_regs *regs)
 	int err;
 
 	/* Always make any pending restarted system calls return -EINTR */
-	current->restart_block.fn = do_no_restart_syscall;
+	current_thread_info()->restart_block.fn = do_no_restart_syscall;
 
 	synchronize_user_stack ();
 	sf = (struct rt_signal_frame __user *)
@@ -493,6 +492,7 @@ static void do_signal(struct pt_regs *regs, unsigned long orig_i0)
 
 #ifdef CONFIG_COMPAT
 	if (test_thread_flag(TIF_32BIT)) {
+		extern void do_signal32(struct pt_regs *);
 		do_signal32(regs);
 		return;
 	}

@@ -365,7 +365,8 @@ void orion5x_restart(enum reboot_mode mode, const char *cmd)
  * Many orion-based systems have buggy bootloader implementations.
  * This is a common fixup for bogus memory tags.
  */
-void __init tag_fixup_mem32(struct tag *t, char **from)
+void __init tag_fixup_mem32(struct tag *t, char **from,
+			    struct meminfo *meminfo)
 {
 	for (; t->hdr.size; t = tag_next(t))
 		if (t->hdr.tag == ATAG_MEM &&

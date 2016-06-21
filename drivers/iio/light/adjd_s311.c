@@ -14,6 +14,7 @@
  */
 
 #include <linux/module.h>
+#include <linux/init.h>
 #include <linux/interrupt.h>
 #include <linux/i2c.h>
 #include <linux/slab.h>
@@ -119,6 +120,7 @@ static irqreturn_t adjd_s311_trigger_handler(int irq, void *p)
 	struct iio_dev *indio_dev = pf->indio_dev;
 	struct adjd_s311_data *data = iio_priv(indio_dev);
 	s64 time_ns = iio_get_time_ns();
+	int len = 0;
 	int i, j = 0;
 
 	int ret = adjd_s311_req_data(indio_dev);
@@ -133,6 +135,7 @@ static irqreturn_t adjd_s311_trigger_handler(int irq, void *p)
 			goto done;
 
 		data->buffer[j++] = ret & ADJD_S311_DATA_MASK;
+		len += 2;
 	}
 
 	iio_push_to_buffers_with_timestamp(indio_dev, data->buffer, time_ns);

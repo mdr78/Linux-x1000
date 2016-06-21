@@ -54,6 +54,7 @@
 
 enum s3c_cpu_type {
 	TYPE_S3C64XX,
+	TYPE_S5PC100,
 	TYPE_S5PV210,
 };
 
@@ -70,7 +71,7 @@ struct s3c_ide_info {
 	struct clk *clk;
 	void __iomem *ide_addr;
 	void __iomem *sfr_addr;
-	int irq;
+	unsigned int irq;
 	enum s3c_cpu_type cpu_type;
 	unsigned int fifo_status_reg;
 };
@@ -360,7 +361,7 @@ static int pata_s3c_wait_after_reset(struct ata_link *link,
 /*
  * pata_s3c_bus_softreset - PATA device software reset
  */
-static int pata_s3c_bus_softreset(struct ata_port *ap,
+static unsigned int pata_s3c_bus_softreset(struct ata_port *ap,
 		unsigned long deadline)
 {
 	struct ata_ioports *ioaddr = &ap->ioaddr;
@@ -475,6 +476,10 @@ static void pata_s3c_hwinit(struct s3c_ide_info *info,
 		writel(0x1b, info->ide_addr + S3C_ATA_IRQ_MSK);
 		break;
 
+	case TYPE_S5PC100:
+		pata_s3c_cfg_mode(info->sfr_addr);
+		/* FALLTHROUGH */
+
 	case TYPE_S5PV210:
 		/* Configure as little endian */
 		pata_s3c_set_endian(info->ide_addr, 0);
@@ -544,6 +549,11 @@ static int __init pata_s3c_probe(struct platform_device *pdev)
 		info->sfr_addr = info->ide_addr + 0x1800;
 		info->ide_addr += 0x1900;
 		info->fifo_status_reg = 0x94;
+	} else if (cpu_type == TYPE_S5PC100) {
+		ap->ops = &pata_s5p_port_ops;
+		info->sfr_addr = info->ide_addr + 0x1800;
+		info->ide_addr += 0x1900;
+		info->fifo_status_reg = 0x84;
 	} else {
 		ap->ops = &pata_s5p_port_ops;
 		info->fifo_status_reg = 0x84;
@@ -584,13 +594,9 @@ static int __init pata_s3c_probe(struct platform_device *pdev)
 
 	platform_set_drvdata(pdev, host);
 
-	ret = ata_host_activate(host, info->irq,
-				info->irq ? pata_s3c_irq : NULL,
-				0, &pata_s3c_sht);
-	if (ret)
-		goto stop_clk;
-
-	return 0;
+	return ata_host_activate(host, info->irq,
+			info->irq ? pata_s3c_irq : NULL,
+			0, &pata_s3c_sht);
 
 stop_clk:
 	clk_disable(info->clk);
@@ -638,10 +644,13 @@ static const struct dev_pm_ops pata_s3c_pm_ops = {
 #endif
 
 /* driver device registration */
-static const struct platform_device_id pata_s3c_driver_ids[] = {
+static struct platform_device_id pata_s3c_driver_ids[] = {
 	{
 		.name		= "s3c64xx-pata",
 		.driver_data	= TYPE_S3C64XX,
+	}, {
+		.name		= "s5pc100-pata",
+		.driver_data	= TYPE_S5PC100,
 	}, {
 		.name		= "s5pv210-pata",
 		.driver_data	= TYPE_S5PV210,
@@ -656,6 +665,7 @@ static struct platform_driver pata_s3c_driver = {
 	.id_table	= pata_s3c_driver_ids,
 	.driver		= {
 		.name	= DRV_NAME,
+		.owner	= THIS_MODULE,
 #ifdef CONFIG_PM_SLEEP
 		.pm	= &pata_s3c_pm_ops,
 #endif

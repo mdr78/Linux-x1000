@@ -695,14 +695,14 @@ static irqreturn_t xemaclite_interrupt(int irq, void *dev_id)
 
 static int xemaclite_mdio_wait(struct net_local *lp)
 {
-	unsigned long end = jiffies + 2;
+	long end = jiffies + 2;
 
 	/* wait for the MDIO interface to not be busy or timeout
 	   after some time.
 	*/
 	while (__raw_readl(lp->base_addr + XEL_MDIOCTRL_OFFSET) &
 			XEL_MDIOCTRL_MDIOSTS_MASK) {
-		if (time_before_eq(end, jiffies)) {
+		if (end - jiffies <= 0) {
 			WARN_ON(1);
 			return -ETIMEDOUT;
 		}
@@ -795,6 +795,18 @@ static int xemaclite_mdio_write(struct mii_bus *bus, int phy_id, int reg,
 }
 
 /**
+ * xemaclite_mdio_reset - Reset the mdio bus.
+ * @bus:	Pointer to the MII bus
+ *
+ * This function is required(?) as per Documentation/networking/phy.txt.
+ * There is no reset in this device; this function always returns 0.
+ */
+static int xemaclite_mdio_reset(struct mii_bus *bus)
+{
+	return 0;
+}
+
+/**
  * xemaclite_mdio_setup - Register mii_bus for the Emaclite device
  * @lp:		Pointer to the Emaclite device private data
  * @ofdev:	Pointer to OF device structure
@@ -828,8 +840,6 @@ static int xemaclite_mdio_setup(struct net_local *lp, struct device *dev)
 		if (!phydev)
 			dev_info(dev,
 				 "MDIO of the phy is not registered yet\n");
-		else
-			put_device(&phydev->dev);
 		return 0;
 	}
 
@@ -851,6 +861,7 @@ static int xemaclite_mdio_setup(struct net_local *lp, struct device *dev)
 	bus->name = "Xilinx Emaclite MDIO";
 	bus->read = xemaclite_mdio_read;
 	bus->write = xemaclite_mdio_write;
+	bus->reset = xemaclite_mdio_reset;
 	bus->parent = dev;
 	bus->irq = lp->mdio_irqs; /* preallocated IRQ table */
 
@@ -1026,7 +1037,7 @@ static int xemaclite_send(struct sk_buff *orig_skb, struct net_device *dev)
 	skb_tx_timestamp(new_skb);
 
 	dev->stats.tx_bytes += len;
-	dev_consume_skb_any(new_skb);
+	dev_kfree_skb(new_skb);
 
 	return 0;
 }
@@ -1064,7 +1075,7 @@ static bool get_bool(struct platform_device *ofdev, const char *s)
 	} else {
 		dev_warn(&ofdev->dev, "Parameter %s not found,"
 			"defaulting to false\n", s);
-		return false;
+		return 0;
 	}
 }
 
@@ -1111,7 +1122,6 @@ static int xemaclite_of_probe(struct platform_device *ofdev)
 	res = platform_get_resource(ofdev, IORESOURCE_IRQ, 0);
 	if (!res) {
 		dev_err(dev, "no IRQ found\n");
-		rc = -ENXIO;
 		goto error;
 	}
 
@@ -1203,7 +1213,8 @@ static int xemaclite_of_remove(struct platform_device *of_dev)
 
 	unregister_netdev(ndev);
 
-	of_node_put(lp->phy_node);
+	if (lp->phy_node)
+		of_node_put(lp->phy_node);
 	lp->phy_node = NULL;
 
 	xemaclite_remove_ndev(ndev);
@@ -1233,7 +1244,7 @@ static struct net_device_ops xemaclite_netdev_ops = {
 };
 
 /* Match table for OF platform binding */
-static const struct of_device_id xemaclite_of_match[] = {
+static struct of_device_id xemaclite_of_match[] = {
 	{ .compatible = "xlnx,opb-ethernetlite-1.01.a", },
 	{ .compatible = "xlnx,opb-ethernetlite-1.01.b", },
 	{ .compatible = "xlnx,xps-ethernetlite-1.00.a", },
@@ -1247,6 +1258,7 @@ MODULE_DEVICE_TABLE(of, xemaclite_of_match);
 static struct platform_driver xemaclite_of_driver = {
 	.driver = {
 		.name = DRIVER_NAME,
+		.owner = THIS_MODULE,
 		.of_match_table = xemaclite_of_match,
 	},
 	.probe		= xemaclite_of_probe,

@@ -25,13 +25,13 @@
 #include "ion.h"
 #include "ion_priv.h"
 
-static struct ion_device *idev;
-static struct ion_heap **heaps;
+struct ion_device *idev;
+struct ion_heap **heaps;
 
-static void *carveout_ptr;
-static void *chunk_ptr;
+void *carveout_ptr;
+void *chunk_ptr;
 
-static struct ion_platform_heap dummy_heaps[] = {
+struct ion_platform_heap dummy_heaps[] = {
 		{
 			.id	= ION_HEAP_TYPE_SYSTEM,
 			.type	= ION_HEAP_TYPE_SYSTEM,
@@ -58,7 +58,7 @@ static struct ion_platform_heap dummy_heaps[] = {
 		},
 };
 
-static struct ion_platform_data dummy_ion_pdata = {
+struct ion_platform_data dummy_ion_pdata = {
 	.nr = ARRAY_SIZE(dummy_heaps),
 	.heaps = dummy_heaps,
 };
@@ -68,7 +68,7 @@ static int __init ion_dummy_init(void)
 	int i, err;
 
 	idev = ion_device_create(NULL);
-	heaps = kcalloc(dummy_ion_pdata.nr, sizeof(struct ion_heap *),
+	heaps = kzalloc(sizeof(struct ion_heap *) * dummy_ion_pdata.nr,
 			GFP_KERNEL);
 	if (!heaps)
 		return -ENOMEM;
@@ -112,8 +112,10 @@ static int __init ion_dummy_init(void)
 	}
 	return 0;
 err:
-	for (i = 0; i < dummy_ion_pdata.nr; ++i)
-		ion_heap_destroy(heaps[i]);
+	for (i = 0; i < dummy_ion_pdata.nr; i++) {
+		if (heaps[i])
+			ion_heap_destroy(heaps[i]);
+	}
 	kfree(heaps);
 
 	if (carveout_ptr) {
@@ -150,5 +152,7 @@ static void __exit ion_dummy_exit(void)
 				dummy_heaps[ION_HEAP_TYPE_CHUNK].size);
 		chunk_ptr = NULL;
 	}
+
+	return;
 }
 __exitcall(ion_dummy_exit);

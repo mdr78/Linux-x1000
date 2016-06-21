@@ -425,7 +425,7 @@ static int ads7845_read12_ser(struct device *dev, unsigned command)
 name ## _show(struct device *dev, struct device_attribute *attr, char *buf) \
 { \
 	struct ads7846 *ts = dev_get_drvdata(dev); \
-	ssize_t v = ads7846_read12_ser(&ts->spi->dev, \
+	ssize_t v = ads7846_read12_ser(dev, \
 			READ_12BIT_SER(var)); \
 	if (v < 0) \
 		return v; \
@@ -529,8 +529,10 @@ static int ads784x_hwmon_register(struct spi_device *spi, struct ads7846 *ts)
 
 	ts->hwmon = hwmon_device_register_with_groups(&spi->dev, spi->modalias,
 						      ts, ads7846_attr_groups);
+	if (IS_ERR(ts->hwmon))
+		return PTR_ERR(ts->hwmon);
 
-	return PTR_ERR_OR_ZERO(ts->hwmon);
+	return 0;
 }
 
 static void ads784x_hwmon_unregister(struct spi_device *spi,
@@ -666,22 +668,18 @@ static int ads7846_no_filter(void *ads, int data_idx, int *val)
 
 static int ads7846_get_value(struct ads7846 *ts, struct spi_message *m)
 {
-	int value;
 	struct spi_transfer *t =
 		list_entry(m->transfers.prev, struct spi_transfer, transfer_list);
 
 	if (ts->model == 7845) {
-		value = be16_to_cpup((__be16 *)&(((char *)t->rx_buf)[1]));
+		return be16_to_cpup((__be16 *)&(((char*)t->rx_buf)[1])) >> 3;
 	} else {
 		/*
 		 * adjust:  on-wire is a must-ignore bit, a BE12 value, then
 		 * padding; built from two 8 bit values written msb-first.
 		 */
-		value = be16_to_cpup((__be16 *)t->rx_buf);
+		return be16_to_cpup((__be16 *)t->rx_buf) >> 3;
 	}
-
-	/* enforce ADC output is 12 bits width */
-	return (value >> 3) & 0xfff;
 }
 
 static void ads7846_update_value(struct spi_message *m, int val)
@@ -708,7 +706,7 @@ static void ads7846_read_state(struct ads7846 *ts)
 		m = &ts->msg[msg_idx];
 		error = spi_sync(ts->spi, m);
 		if (error) {
-			dev_err(&ts->spi->dev, "spi_sync --> %d\n", error);
+			dev_err(&ts->spi->dev, "spi_async --> %d\n", error);
 			packet->tc.ignore = true;
 			return;
 		}
@@ -885,7 +883,8 @@ static irqreturn_t ads7846_irq(int irq, void *handle)
 	return IRQ_HANDLED;
 }
 
-static int __maybe_unused ads7846_suspend(struct device *dev)
+#ifdef CONFIG_PM_SLEEP
+static int ads7846_suspend(struct device *dev)
 {
 	struct ads7846 *ts = dev_get_drvdata(dev);
 
@@ -907,7 +906,7 @@ static int __maybe_unused ads7846_suspend(struct device *dev)
 	return 0;
 }
 
-static int __maybe_unused ads7846_resume(struct device *dev)
+static int ads7846_resume(struct device *dev)
 {
 	struct ads7846 *ts = dev_get_drvdata(dev);
 
@@ -928,6 +927,7 @@ static int __maybe_unused ads7846_resume(struct device *dev)
 
 	return 0;
 }
+#endif
 
 static SIMPLE_DEV_PM_OPS(ads7846_pm, ads7846_suspend, ads7846_resume);
 
@@ -1236,8 +1236,7 @@ static const struct ads7846_platform_data *ads7846_probe_dt(struct device *dev)
 	of_property_read_u32(node, "ti,pendown-gpio-debounce",
 			     &pdata->gpio_pendown_debounce);
 
-	pdata->wakeup = of_property_read_bool(node, "wakeup-source") ||
-			of_property_read_bool(node, "linux,wakeup");
+	pdata->wakeup = of_property_read_bool(node, "linux,wakeup");
 
 	pdata->gpio_pendown = of_get_named_gpio(dev->of_node, "pendown-gpio", 0);
 
@@ -1303,10 +1302,8 @@ static int ads7846_probe(struct spi_device *spi)
 	pdata = dev_get_platdata(&spi->dev);
 	if (!pdata) {
 		pdata = ads7846_probe_dt(&spi->dev);
-		if (IS_ERR(pdata)) {
-			err = PTR_ERR(pdata);
-			goto err_free_mem;
-		}
+		if (IS_ERR(pdata))
+			return PTR_ERR(pdata);
 	}
 
 	ts->model = pdata->model ? : 7846;
@@ -1498,6 +1495,7 @@ static int ads7846_remove(struct spi_device *spi)
 static struct spi_driver ads7846_driver = {
 	.driver = {
 		.name	= "ads7846",
+		.owner	= THIS_MODULE,
 		.pm	= &ads7846_pm,
 		.of_match_table = of_match_ptr(ads7846_dt_ids),
 	},

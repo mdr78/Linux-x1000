@@ -6,7 +6,6 @@
  * it under the terms of the GNU General Public License version 2 as
  * publishhed by the Free Software Foundation.
  */
-#include "stih41x-b2020x.dtsi"
 / {
 	memory{
 		device_type = "memory";
@@ -14,13 +13,12 @@
 	};
 
 	chosen {
-		bootargs = "console=ttyAS0,115200 clk_ignore_unused";
+		bootargs = "console=ttyAS0,115200";
 		linux,stdout-path = &sbc_serial1;
 	};
 
 	aliases {
 		ttyAS0 = &sbc_serial1;
-		ethernet1 = &ethernet1;
 	};
 	soc {
 		sbc_serial1: serial@fe531000 {
@@ -32,11 +30,11 @@
 			red {
 				#gpio-cells = <1>;
 				label	= "Front Panel LED";
-				gpios	= <&pio4 1>;
+				gpios	= <&PIO4 1>;
 				linux,default-trigger	= "heartbeat";
 			};
 			green {
-				gpios	= <&pio4 7>;
+				gpios	= <&PIO4 7>;
 				default-state = "off";
 			};
 		};
@@ -61,22 +59,6 @@
 
 		i2c@fe541000 {
 			status = "okay";
-		};
-
-		ethernet1: dwmac@fef08000 {
-			status			= "okay";
-			phy-mode		= "rgmii-id";
-			max-speed		= <1000>;
-			st,tx-retime-src	= "clk_125";
-			snps,reset-gpio 	= <&pio3 0>;
-			snps,reset-active-low;
-			snps,reset-delays-us 	= <0 10000 10000>;
-
-			pinctrl-0	= <&pinctrl_rgmii1>;
-		};
-
-		mmc0: sdhci@fe81e000 {
-			bus-width = <8>;
 		};
 	};
 };

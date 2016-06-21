@@ -69,7 +69,11 @@
 #include <net/ip.h>
 #include <net/tcp.h>
 #include <asm/byteorder.h>
+#include <asm/io.h>
 #include <asm/processor.h>
+#ifdef CONFIG_MTRR
+#include <asm/mtrr.h>
+#endif
 #include <net/busy_poll.h>
 
 #include "myri10ge_mcp.h"
@@ -238,7 +242,8 @@ struct myri10ge_priv {
 	unsigned int rdma_tags_available;
 	int intr_coal_delay;
 	__be32 __iomem *intr_coal_delay_ptr;
-	int wc_cookie;
+	int mtrr;
+	int wc_enabled;
 	int down_cnt;
 	wait_queue_head_t down_wq;
 	struct work_struct watchdog_work;
@@ -279,7 +284,7 @@ MODULE_FIRMWARE("myri10ge_eth_z8e.dat");
 MODULE_FIRMWARE("myri10ge_rss_ethp_z8e.dat");
 MODULE_FIRMWARE("myri10ge_rss_eth_z8e.dat");
 
-/* Careful: must be accessed under kernel_param_lock() */
+/* Careful: must be accessed under kparam_block_sysfs_write */
 static char *myri10ge_fw_name = NULL;
 module_param(myri10ge_fw_name, charp, S_IRUGO | S_IWUSR);
 MODULE_PARM_DESC(myri10ge_fw_name, "Firmware image name");
@@ -569,7 +574,6 @@ myri10ge_validate_firmware(struct myri10ge_priv *mgp,
 
 	/* save firmware version for ethtool */
 	strncpy(mgp->fw_version, hdr->version, sizeof(mgp->fw_version));
-	mgp->fw_version[sizeof(mgp->fw_version) - 1] = '\0';
 
 	sscanf(mgp->fw_version, "%d.%d.%d", &mgp->fw_ver_major,
 	       &mgp->fw_ver_minor, &mgp->fw_ver_tiny);
@@ -1900,7 +1904,7 @@ static const char myri10ge_gstrings_main_stats[][ETH_GSTRING_LEN] = {
 	"tx_aborted_errors", "tx_carrier_errors", "tx_fifo_errors",
 	"tx_heartbeat_errors", "tx_window_errors",
 	/* device-specific stats */
-	"tx_boundary", "irq", "MSI", "MSIX",
+	"tx_boundary", "WC", "irq", "MSI", "MSIX",
 	"read_dma_bw_MBs", "write_dma_bw_MBs", "read_write_dma_bw_MBs",
 	"serial_number", "watchdog_resets",
 #ifdef CONFIG_MYRI10GE_DCA
@@ -1979,6 +1983,7 @@ myri10ge_get_ethtool_stats(struct net_device *netdev,
 		data[i] = ((u64 *)&link_stats)[i];
 
 	data[i++] = (unsigned int)mgp->tx_boundary;
+	data[i++] = (unsigned int)mgp->wc_enabled;
 	data[i++] = (unsigned int)mgp->pdev->irq;
 	data[i++] = (unsigned int)mgp->msi_enabled;
 	data[i++] = (unsigned int)mgp->msix_enabled;
@@ -2339,14 +2344,16 @@ static int myri10ge_request_irq(struct myri10ge_priv *mgp)
 	status = 0;
 	if (myri10ge_msi) {
 		if (mgp->num_slices > 1) {
-			status = pci_enable_msix_range(pdev, mgp->msix_vectors,
-					mgp->num_slices, mgp->num_slices);
-			if (status < 0) {
+			status =
+			    pci_enable_msix(pdev, mgp->msix_vectors,
+					    mgp->num_slices);
+			if (status == 0) {
+				mgp->msix_enabled = 1;
+			} else {
 				dev_err(&pdev->dev,
 					"Error %d setting up MSI-X\n", status);
 				return status;
 			}
-			mgp->msix_enabled = 1;
 		}
 		if (mgp->msix_enabled == 0) {
 			status = pci_enable_msi(pdev);
@@ -2907,11 +2914,16 @@ again:
 		flags |= MXGEFW_FLAGS_SMALL;
 
 		/* pad frames to at least ETH_ZLEN bytes */
-		if (eth_skb_pad(skb)) {
-			/* The packet is gone, so we must
-			 * return 0 */
-			ss->stats.tx_dropped += 1;
-			return NETDEV_TX_OK;
+		if (unlikely(skb->len < ETH_ZLEN)) {
+			if (skb_padto(skb, ETH_ZLEN)) {
+				/* The packet is gone, so we must
+				 * return 0 */
+				ss->stats.tx_dropped += 1;
+				return NETDEV_TX_OK;
+			}
+			/* adjust the len to account for the zero pad
+			 * so that the nic can know how long it is */
+			skb->len = ETH_ZLEN;
 		}
 	}
 
@@ -3427,7 +3439,7 @@ static void myri10ge_select_firmware(struct myri10ge_priv *mgp)
 		}
 	}
 
-	kernel_param_lock(THIS_MODULE);
+	kparam_block_sysfs_write(myri10ge_fw_name);
 	if (myri10ge_fw_name != NULL) {
 		char *fw_name = kstrdup(myri10ge_fw_name, GFP_KERNEL);
 		if (fw_name) {
@@ -3435,7 +3447,7 @@ static void myri10ge_select_firmware(struct myri10ge_priv *mgp)
 			set_fw_name(mgp, fw_name, true);
 		}
 	}
-	kernel_param_unlock(THIS_MODULE);
+	kparam_unblock_sysfs_write(myri10ge_fw_name);
 
 	if (mgp->board_number < MYRI10GE_MAX_BOARDS &&
 	    myri10ge_fw_names[mgp->board_number] != NULL &&
@@ -3911,34 +3923,32 @@ static void myri10ge_probe_slices(struct myri10ge_priv *mgp)
 	mgp->msix_vectors = kcalloc(mgp->num_slices, sizeof(*mgp->msix_vectors),
 				    GFP_KERNEL);
 	if (mgp->msix_vectors == NULL)
-		goto no_msix;
+		goto disable_msix;
 	for (i = 0; i < mgp->num_slices; i++) {
 		mgp->msix_vectors[i].entry = i;
 	}
 
 	while (mgp->num_slices > 1) {
-		mgp->num_slices = rounddown_pow_of_two(mgp->num_slices);
+		/* make sure it is a power of two */
+		while (!is_power_of_2(mgp->num_slices))
+			mgp->num_slices--;
 		if (mgp->num_slices == 1)
-			goto no_msix;
-		status = pci_enable_msix_range(pdev,
-					       mgp->msix_vectors,
-					       mgp->num_slices,
-					       mgp->num_slices);
-		if (status < 0)
-			goto no_msix;
-
-		pci_disable_msix(pdev);
-
-		if (status == mgp->num_slices) {
+			goto disable_msix;
+		status = pci_enable_msix(pdev, mgp->msix_vectors,
+					 mgp->num_slices);
+		if (status == 0) {
+			pci_disable_msix(pdev);
 			if (old_allocated)
 				kfree(old_fw);
 			return;
-		} else {
-			mgp->num_slices = status;
 		}
+		if (status > 0)
+			mgp->num_slices = status;
+		else
+			goto disable_msix;
 	}
 
-no_msix:
+disable_msix:
 	if (mgp->msix_vectors != NULL) {
 		kfree(mgp->msix_vectors);
 		mgp->msix_vectors = NULL;
@@ -4027,14 +4037,19 @@ static int myri10ge_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
 	(void)pci_set_consistent_dma_mask(pdev, DMA_BIT_MASK(64));
 	mgp->cmd = dma_alloc_coherent(&pdev->dev, sizeof(*mgp->cmd),
 				      &mgp->cmd_bus, GFP_KERNEL);
-	if (!mgp->cmd) {
-		status = -ENOMEM;
+	if (mgp->cmd == NULL)
 		goto abort_with_enabled;
-	}
 
 	mgp->board_span = pci_resource_len(pdev, 0);
 	mgp->iomem_base = pci_resource_start(pdev, 0);
-	mgp->wc_cookie = arch_phys_wc_add(mgp->iomem_base, mgp->board_span);
+	mgp->mtrr = -1;
+	mgp->wc_enabled = 0;
+#ifdef CONFIG_MTRR
+	mgp->mtrr = mtrr_add(mgp->iomem_base, mgp->board_span,
+			     MTRR_TYPE_WRCOMB, 1);
+	if (mgp->mtrr >= 0)
+		mgp->wc_enabled = 1;
+#endif
 	mgp->sram = ioremap_wc(mgp->iomem_base, mgp->board_span);
 	if (mgp->sram == NULL) {
 		dev_err(&pdev->dev, "ioremap failed for %ld bytes at 0x%lx\n",
@@ -4133,14 +4148,14 @@ static int myri10ge_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
 		goto abort_with_state;
 	}
 	if (mgp->msix_enabled)
-		dev_info(dev, "%d MSI-X IRQs, tx bndry %d, fw %s, MTRR %s, WC Enabled\n",
+		dev_info(dev, "%d MSI-X IRQs, tx bndry %d, fw %s, WC %s\n",
 			 mgp->num_slices, mgp->tx_boundary, mgp->fw_name,
-			 (mgp->wc_cookie > 0 ? "Enabled" : "Disabled"));
+			 (mgp->wc_enabled ? "Enabled" : "Disabled"));
 	else
-		dev_info(dev, "%s IRQ %d, tx bndry %d, fw %s, MTRR %s, WC Enabled\n",
+		dev_info(dev, "%s IRQ %d, tx bndry %d, fw %s, WC %s\n",
 			 mgp->msi_enabled ? "MSI" : "xPIC",
 			 pdev->irq, mgp->tx_boundary, mgp->fw_name,
-			 (mgp->wc_cookie > 0 ? "Enabled" : "Disabled"));
+			 (mgp->wc_enabled ? "Enabled" : "Disabled"));
 
 	board_number++;
 	return 0;
@@ -4162,7 +4177,10 @@ abort_with_ioremap:
 	iounmap(mgp->sram);
 
 abort_with_mtrr:
-	arch_phys_wc_del(mgp->wc_cookie);
+#ifdef CONFIG_MTRR
+	if (mgp->mtrr >= 0)
+		mtrr_del(mgp->mtrr, mgp->iomem_base, mgp->board_span);
+#endif
 	dma_free_coherent(&pdev->dev, sizeof(*mgp->cmd),
 			  mgp->cmd, mgp->cmd_bus);
 
@@ -4204,9 +4222,14 @@ static void myri10ge_remove(struct pci_dev *pdev)
 	pci_restore_state(pdev);
 
 	iounmap(mgp->sram);
-	arch_phys_wc_del(mgp->wc_cookie);
+
+#ifdef CONFIG_MTRR
+	if (mgp->mtrr >= 0)
+		mtrr_del(mgp->mtrr, mgp->iomem_base, mgp->board_span);
+#endif
 	myri10ge_free_slices(mgp);
-	kfree(mgp->msix_vectors);
+	if (mgp->msix_vectors != NULL)
+		kfree(mgp->msix_vectors);
 	dma_free_coherent(&pdev->dev, sizeof(*mgp->cmd),
 			  mgp->cmd, mgp->cmd_bus);
 
@@ -4218,7 +4241,7 @@ static void myri10ge_remove(struct pci_dev *pdev)
 #define PCI_DEVICE_ID_MYRICOM_MYRI10GE_Z8E 	0x0008
 #define PCI_DEVICE_ID_MYRICOM_MYRI10GE_Z8E_9	0x0009
 
-static const struct pci_device_id myri10ge_pci_tbl[] = {
+static DEFINE_PCI_DEVICE_TABLE(myri10ge_pci_tbl) = {
 	{PCI_DEVICE(PCI_VENDOR_ID_MYRICOM, PCI_DEVICE_ID_MYRICOM_MYRI10GE_Z8E)},
 	{PCI_DEVICE
 	 (PCI_VENDOR_ID_MYRICOM, PCI_DEVICE_ID_MYRICOM_MYRI10GE_Z8E_9)},

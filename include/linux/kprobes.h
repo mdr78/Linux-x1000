@@ -205,10 +205,10 @@ struct kretprobe_blackpoint {
 	void *addr;
 };
 
-struct kprobe_blacklist_entry {
-	struct list_head list;
+struct kprobe_blackpoint {
+	const char *name;
 	unsigned long start_addr;
-	unsigned long end_addr;
+	unsigned long range;
 };
 
 #ifdef CONFIG_KPROBES
@@ -265,9 +265,6 @@ extern void arch_disarm_kprobe(struct kprobe *p);
 extern int arch_init_kprobes(void);
 extern void show_registers(struct pt_regs *regs);
 extern void kprobes_inc_nmissed_count(struct kprobe *p);
-extern bool arch_within_kprobe_blacklist(unsigned long addr);
-
-extern bool within_kprobe_blacklist(unsigned long addr);
 
 struct kprobe_insn_cache {
 	struct mutex mutex;
@@ -310,8 +307,7 @@ struct optimized_kprobe {
 /* Architecture dependent functions for direct jump optimization */
 extern int arch_prepared_optinsn(struct arch_optimized_insn *optinsn);
 extern int arch_check_optimized_kprobe(struct optimized_kprobe *op);
-extern int arch_prepare_optimized_kprobe(struct optimized_kprobe *op,
-					 struct kprobe *orig);
+extern int arch_prepare_optimized_kprobe(struct optimized_kprobe *op);
 extern void arch_remove_optimized_kprobe(struct optimized_kprobe *op);
 extern void arch_optimize_kprobes(struct list_head *oplist);
 extern void arch_unoptimize_kprobes(struct list_head *oplist,
@@ -338,7 +334,6 @@ extern void kprobe_ftrace_handler(unsigned long ip, unsigned long parent_ip,
 extern int arch_prepare_kprobe_ftrace(struct kprobe *p);
 #endif
 
-int arch_check_ftrace_location(struct kprobe *p);
 
 /* Get the kprobe at this addr (if any) - called with preemption disabled */
 struct kprobe *get_kprobe(void *addr);
@@ -360,7 +355,7 @@ static inline void reset_current_kprobe(void)
 
 static inline struct kprobe_ctlblk *get_kprobe_ctlblk(void)
 {
-	return this_cpu_ptr(&kprobe_ctlblk);
+	return (&__get_cpu_var(kprobe_ctlblk));
 }
 
 int register_kprobe(struct kprobe *p);
@@ -480,19 +475,5 @@ static inline int enable_jprobe(struct jprobe *jp)
 {
 	return enable_kprobe(&jp->kp);
 }
-
-#ifdef CONFIG_KPROBES
-/*
- * Blacklist ganerating macro. Specify functions which is not probed
- * by using this macro.
- */
-#define __NOKPROBE_SYMBOL(fname)			\
-static unsigned long __used				\
-	__attribute__((section("_kprobe_blacklist")))	\
-	_kbl_addr_##fname = (unsigned long)fname;
-#define NOKPROBE_SYMBOL(fname)	__NOKPROBE_SYMBOL(fname)
-#else
-#define NOKPROBE_SYMBOL(fname)
-#endif
 
 #endif /* _LINUX_KPROBES_H */

@@ -12,7 +12,6 @@
  */
 
 /dts-v1/;
-#include <dt-bindings/gpio/gpio.h>
 #include "imx23.dtsi"
 
 / {
@@ -74,12 +73,6 @@
 				status = "okay";
 			};
 
-			i2c: i2c@80058000 {
-				pinctrl-names = "default";
-				pinctrl-0 = <&i2c_pins_b>;
-				status = "okay";
-			};
-
 			duart: serial@80070000 {
 				pinctrl-names = "default";
 				pinctrl-0 = <&duart_pins_a>;
@@ -100,7 +93,6 @@
 
 	ahb@80080000 {
 		usb0: usb@80080000 {
-			dr_mode = "host";
 			vbus-supply = <&reg_usb0_vbus>;
 			status = "okay";
 		};
@@ -108,12 +100,9 @@
 
 	regulators {
 		compatible = "simple-bus";
-		#address-cells = <1>;
-		#size-cells = <0>;
 
-		reg_usb0_vbus: regulator@0 {
+		reg_usb0_vbus: usb0_vbus {
 			compatible = "regulator-fixed";
-			reg = <0>;
 			regulator-name = "usb0_vbus";
 			regulator-min-microvolt = <5000000>;
 			regulator-max-microvolt = <5000000>;
@@ -130,7 +119,7 @@
 
 		user {
 			label = "green";
-			gpios = <&gpio2 1 GPIO_ACTIVE_HIGH>;
+			gpios = <&gpio2 1 1>;
 		};
 	};
 };

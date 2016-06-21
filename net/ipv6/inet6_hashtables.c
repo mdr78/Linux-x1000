@@ -6,7 +6,7 @@
  *		Generic INET6 transport hashtables
  *
  * Authors:	Lotsa people, from code originally in tcp, generalised here
- *		by Arnaldo Carvalho de Melo <acme@mandriva.com>
+ * 		by Arnaldo Carvalho de Melo <acme@mandriva.com>
  *
  *	This program is free software; you can redistribute it and/or
  *      modify it under the terms of the GNU General Public License
@@ -23,9 +23,11 @@
 #include <net/secure_seq.h>
 #include <net/ip.h>
 
-u32 inet6_ehashfn(const struct net *net,
-		  const struct in6_addr *laddr, const u16 lport,
-		  const struct in6_addr *faddr, const __be16 fport)
+static unsigned int inet6_ehashfn(struct net *net,
+				  const struct in6_addr *laddr,
+				  const u16 lport,
+				  const struct in6_addr *faddr,
+				  const __be16 fport)
 {
 	static u32 inet6_ehash_secret __read_mostly;
 	static u32 ipv6_hash_secret __read_mostly;
@@ -41,6 +43,54 @@ u32 inet6_ehashfn(const struct net *net,
 	return __inet6_ehashfn(lhash, lport, fhash, fport,
 			       inet6_ehash_secret + net_hash_mix(net));
 }
+
+static int inet6_sk_ehashfn(const struct sock *sk)
+{
+	const struct inet_sock *inet = inet_sk(sk);
+	const struct in6_addr *laddr = &sk->sk_v6_rcv_saddr;
+	const struct in6_addr *faddr = &sk->sk_v6_daddr;
+	const __u16 lport = inet->inet_num;
+	const __be16 fport = inet->inet_dport;
+	struct net *net = sock_net(sk);
+
+	return inet6_ehashfn(net, laddr, lport, faddr, fport);
+}
+
+int __inet6_hash(struct sock *sk, struct inet_timewait_sock *tw)
+{
+	struct inet_hashinfo *hashinfo = sk->sk_prot->h.hashinfo;
+	int twrefcnt = 0;
+
+	WARN_ON(!sk_unhashed(sk));
+
+	if (sk->sk_state == TCP_LISTEN) {
+		struct inet_listen_hashbucket *ilb;
+
+		ilb = &hashinfo->listening_hash[inet_sk_listen_hashfn(sk)];
+		spin_lock(&ilb->lock);
+		__sk_nulls_add_node_rcu(sk, &ilb->head);
+		spin_unlock(&ilb->lock);
+	} else {
+		unsigned int hash;
+		struct hlist_nulls_head *list;
+		spinlock_t *lock;
+
+		sk->sk_hash = hash = inet6_sk_ehashfn(sk);
+		list = &inet_ehash_bucket(hashinfo, hash)->chain;
+		lock = inet_ehash_lockp(hashinfo, hash);
+		spin_lock(lock);
+		__sk_nulls_add_node_rcu(sk, list);
+		if (tw) {
+			WARN_ON(sk->sk_hash != tw->tw_hash);
+			twrefcnt = inet_twsk_unhash(tw);
+		}
+		spin_unlock(lock);
+	}
+
+	sock_prot_inuse_add(sock_net(sk), sk->sk_prot, 1);
+	return twrefcnt;
+}
+EXPORT_SYMBOL(__inet6_hash);
 
 /*
  * Sockets in TCP_CLOSE state are _always_ taken out of the hash, so
@@ -114,8 +164,6 @@ static inline int compute_score(struct sock *sk, struct net *net,
 				return -1;
 			score++;
 		}
-		if (sk->sk_incoming_cpu == raw_smp_processor_id())
-			score++;
 	}
 	return score;
 }
@@ -150,7 +198,7 @@ begin:
 			}
 		} else if (score == hiscore && reuseport) {
 			matches++;
-			if (reciprocal_scale(phash, matches) == 0)
+			if (((u64)phash * matches) >> 32 == 0)
 				result = sk;
 			phash = next_pseudo_random32(phash);
 		}
@@ -174,6 +222,7 @@ begin:
 	rcu_read_unlock();
 	return result;
 }
+
 EXPORT_SYMBOL_GPL(inet6_lookup_listener);
 
 struct sock *inet6_lookup(struct net *net, struct inet_hashinfo *hashinfo,
@@ -189,6 +238,7 @@ struct sock *inet6_lookup(struct net *net, struct inet_hashinfo *hashinfo,
 
 	return sk;
 }
+
 EXPORT_SYMBOL_GPL(inet6_lookup);
 
 static int __inet6_check_established(struct inet_timewait_death_row *death_row,
@@ -209,6 +259,7 @@ static int __inet6_check_established(struct inet_timewait_death_row *death_row,
 	struct sock *sk2;
 	const struct hlist_nulls_node *node;
 	struct inet_timewait_sock *tw = NULL;
+	int twrefcnt = 0;
 
 	spin_lock(lock);
 
@@ -235,17 +286,21 @@ static int __inet6_check_established(struct inet_timewait_death_row *death_row,
 	WARN_ON(!sk_unhashed(sk));
 	__sk_nulls_add_node_rcu(sk, &head->chain);
 	if (tw) {
-		sk_nulls_del_node_init_rcu((struct sock *)tw);
+		twrefcnt = inet_twsk_unhash(tw);
 		NET_INC_STATS_BH(net, LINUX_MIB_TIMEWAITRECYCLED);
 	}
 	spin_unlock(lock);
+	if (twrefcnt)
+		inet_twsk_put(tw);
 	sock_prot_inuse_add(sock_net(sk), sk->sk_prot, 1);
 
 	if (twp) {
 		*twp = tw;
 	} else if (tw) {
 		/* Silly. Should hash-dance instead... */
-		inet_twsk_deschedule_put(tw);
+		inet_twsk_deschedule(tw, death_row);
+
+		inet_twsk_put(tw);
 	}
 	return 0;
 
@@ -254,7 +309,7 @@ not_unique:
 	return -EADDRNOTAVAIL;
 }
 
-static u32 inet6_sk_port_offset(const struct sock *sk)
+static inline u32 inet6_sk_port_offset(const struct sock *sk)
 {
 	const struct inet_sock *inet = inet_sk(sk);
 
@@ -266,11 +321,8 @@ static u32 inet6_sk_port_offset(const struct sock *sk)
 int inet6_hash_connect(struct inet_timewait_death_row *death_row,
 		       struct sock *sk)
 {
-	u32 port_offset = 0;
-
-	if (!inet_sk(sk)->inet_num)
-		port_offset = inet6_sk_port_offset(sk);
-	return __inet_hash_connect(death_row, sk, port_offset,
-				   __inet6_check_established);
+	return __inet_hash_connect(death_row, sk, inet6_sk_port_offset(sk),
+			__inet6_check_established, __inet6_hash);
 }
+
 EXPORT_SYMBOL_GPL(inet6_hash_connect);

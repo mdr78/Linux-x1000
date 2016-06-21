@@ -122,7 +122,7 @@ NESTED(bmips_reset_nmi_vec, PT_SIZE, sp)
 	jr	k0
 
 	RESTORE_ALL
-	.set	arch=r4000
+	.set	mips3
 	eret
 
 /***********************************************************************
@@ -208,6 +208,7 @@ bmips_reset_nmi_vec_end:
 END(bmips_reset_nmi_vec)
 
 	.set	pop
+	.previous
 
 /***********************************************************************
  * CPU1 warm restart vector (used for second and subsequent boots).
@@ -280,3 +281,5 @@ LEAF(bmips_enable_xks01)
 	jr	ra
 
 END(bmips_enable_xks01)
+
+	.previous

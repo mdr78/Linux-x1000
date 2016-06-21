@@ -18,7 +18,6 @@
 #define __ASM_ASM_H
 
 #include <asm/sgidefs.h>
-#include <asm/asm-eva.h>
 
 #ifndef CAT
 #ifdef __STDC__
@@ -146,27 +145,19 @@ symbol		=	value
 
 #define PREF(hint,addr)					\
 		.set	push;				\
-		.set	arch=r5000;			\
+		.set	mips4;				\
 		pref	hint, addr;			\
-		.set	pop
-
-#define PREFE(hint, addr)				\
-		.set	push;				\
-		.set	mips0;				\
-		.set	eva;				\
-		prefe	hint, addr;			\
 		.set	pop
 
 #define PREFX(hint,addr)				\
 		.set	push;				\
-		.set	arch=r5000;			\
+		.set	mips4;				\
 		prefx	hint, addr;			\
 		.set	pop
 
 #else /* !CONFIG_CPU_HAS_PREFETCH */
 
 #define PREF(hint, addr)
-#define PREFE(hint, addr)
 #define PREFX(hint, addr)
 
 #endif /* !CONFIG_CPU_HAS_PREFETCH */

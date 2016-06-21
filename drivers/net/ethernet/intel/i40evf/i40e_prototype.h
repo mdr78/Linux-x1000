@@ -1,7 +1,7 @@
 /*******************************************************************************
  *
  * Intel Ethernet Controller XL710 Family Linux Virtual Function Driver
- * Copyright(c) 2013 - 2014 Intel Corporation.
+ * Copyright(c) 2013 Intel Corporation.
  *
  * This program is free software; you can redistribute it and/or modify it
  * under the terms and conditions of the GNU General Public License,
@@ -11,9 +11,6 @@
  * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
  * FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for
  * more details.
- *
- * You should have received a copy of the GNU General Public License along
- * with this program.  If not, see <http://www.gnu.org/licenses/>.
  *
  * The full GNU General Public License is included in this distribution in
  * the file called "COPYING".
@@ -53,35 +50,18 @@ i40e_status i40evf_asq_send_command(struct i40e_hw *hw,
 bool i40evf_asq_done(struct i40e_hw *hw);
 
 /* debug function for adminq */
-void i40evf_debug_aq(struct i40e_hw *hw, enum i40e_debug_mask mask,
-		     void *desc, void *buffer, u16 buf_len);
+void i40evf_debug_aq(struct i40e_hw *hw,
+		   enum i40e_debug_mask mask,
+		   void *desc,
+		   void *buffer);
 
 void i40e_idle_aq(struct i40e_hw *hw);
 void i40evf_resume_aq(struct i40e_hw *hw);
 bool i40evf_check_asq_alive(struct i40e_hw *hw);
-i40e_status i40evf_aq_queue_shutdown(struct i40e_hw *hw, bool unloading);
-const char *i40evf_aq_str(struct i40e_hw *hw, enum i40e_admin_queue_err aq_err);
-const char *i40evf_stat_str(struct i40e_hw *hw, i40e_status stat_err);
-
-i40e_status i40evf_aq_get_rss_lut(struct i40e_hw *hw, u16 seid,
-				  bool pf_lut, u8 *lut, u16 lut_size);
-i40e_status i40evf_aq_set_rss_lut(struct i40e_hw *hw, u16 seid,
-				  bool pf_lut, u8 *lut, u16 lut_size);
-i40e_status i40evf_aq_get_rss_key(struct i40e_hw *hw,
-				  u16 seid,
-				  struct i40e_aqc_get_set_rss_key_data *key);
-i40e_status i40evf_aq_set_rss_key(struct i40e_hw *hw,
-				  u16 seid,
-				  struct i40e_aqc_get_set_rss_key_data *key);
+i40e_status i40evf_aq_queue_shutdown(struct i40e_hw *hw,
+					     bool unloading);
 
 i40e_status i40e_set_mac_type(struct i40e_hw *hw);
-
-extern struct i40e_rx_ptype_decoded i40evf_ptype_lookup[];
-
-static inline struct i40e_rx_ptype_decoded decode_rx_desc_ptype(u8 ptype)
-{
-	return i40evf_ptype_lookup[ptype];
-}
 
 /* prototype for functions used for SW locks */
 
@@ -101,6 +81,4 @@ i40e_status i40e_aq_add_rem_control_packet_filter(struct i40e_hw *hw,
 				u16 vsi_seid, u16 queue, bool is_add,
 				struct i40e_control_filter_stats *stats,
 				struct i40e_asq_cmd_details *cmd_details);
-void i40e_add_filter_to_drop_tx_flow_control_frames(struct i40e_hw *hw,
-						    u16 vsi_seid);
 #endif /* _I40E_PROTOTYPE_H_ */

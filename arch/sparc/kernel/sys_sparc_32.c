@@ -24,8 +24,6 @@
 #include <asm/uaccess.h>
 #include <asm/unistd.h>
 
-#include "systbls.h"
-
 /* #define DEBUG_UNIMP_SYSCALL */
 
 /* XXX Make this per-binary type, this way we can detect the type of
@@ -70,7 +68,7 @@ unsigned long arch_get_unmapped_area(struct file *filp, unsigned long addr, unsi
  * sys_pipe() is the normal C calling standard for creating
  * a pipe. It's not the way unix traditionally does this, though.
  */
-asmlinkage long sparc_pipe(struct pt_regs *regs)
+asmlinkage int sparc_pipe(struct pt_regs *regs)
 {
 	int fd[2];
 	int error;
@@ -95,7 +93,7 @@ int sparc_mmap_check(unsigned long addr, unsigned long len)
 
 /* Linux version of mmap */
 
-asmlinkage long sys_mmap2(unsigned long addr, unsigned long len,
+asmlinkage unsigned long sys_mmap2(unsigned long addr, unsigned long len,
 	unsigned long prot, unsigned long flags, unsigned long fd,
 	unsigned long pgoff)
 {
@@ -105,7 +103,7 @@ asmlinkage long sys_mmap2(unsigned long addr, unsigned long len,
 			      pgoff >> (PAGE_SHIFT - 12));
 }
 
-asmlinkage long sys_mmap(unsigned long addr, unsigned long len,
+asmlinkage unsigned long sys_mmap(unsigned long addr, unsigned long len,
 	unsigned long prot, unsigned long flags, unsigned long fd,
 	unsigned long off)
 {
@@ -199,7 +197,7 @@ SYSCALL_DEFINE5(rt_sigaction, int, sig,
 	return ret;
 }
 
-asmlinkage long sys_getdomainname(char __user *name, int len)
+asmlinkage int sys_getdomainname(char __user *name, int len)
 {
  	int nlen, err;
  	

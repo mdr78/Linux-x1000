@@ -30,9 +30,10 @@ static LIST_HEAD(regmap_debugfs_early_list);
 static DEFINE_MUTEX(regmap_debugfs_early_lock);
 
 /* Calculate the length of a fixed format  */
-static size_t regmap_calc_reg_len(int max_val)
+static size_t regmap_calc_reg_len(int max_val, char *buf, size_t buf_size)
 {
-	return snprintf(NULL, 0, "%x", max_val);
+	snprintf(buf, buf_size, "%x", max_val);
+	return strlen(buf);
 }
 
 static ssize_t regmap_name_read_file(struct file *file,
@@ -173,7 +174,8 @@ static inline void regmap_calc_tot_len(struct regmap *map,
 {
 	/* Calculate the length of a fixed format  */
 	if (!map->debugfs_tot_len) {
-		map->debugfs_reg_len = regmap_calc_reg_len(map->max_register),
+		map->debugfs_reg_len = regmap_calc_reg_len(map->max_register,
+							   buf, count);
 		map->debugfs_val_len = 2 * map->format.val_bytes;
 		map->debugfs_tot_len = map->debugfs_reg_len +
 			map->debugfs_val_len + 3;      /* : \n */
@@ -337,7 +339,6 @@ static ssize_t regmap_reg_ranges_read_file(struct file *file,
 	char *buf;
 	char *entry;
 	int ret;
-	unsigned entry_len;
 
 	if (*ppos < 0 || !count)
 		return -EINVAL;
@@ -365,15 +366,18 @@ static ssize_t regmap_reg_ranges_read_file(struct file *file,
 	p = 0;
 	mutex_lock(&map->cache_lock);
 	list_for_each_entry(c, &map->debugfs_off_cache, list) {
-		entry_len = snprintf(entry, PAGE_SIZE, "%x-%x\n",
-				     c->base_reg, c->max_reg);
+		snprintf(entry, PAGE_SIZE, "%x-%x",
+			 c->base_reg, c->max_reg);
 		if (p >= *ppos) {
-			if (buf_pos + entry_len > count)
+			if (buf_pos + 1 + strlen(entry) > count)
 				break;
-			memcpy(buf + buf_pos, entry, entry_len);
-			buf_pos += entry_len;
+			snprintf(buf + buf_pos, count - buf_pos,
+				 "%s", entry);
+			buf_pos += strlen(entry);
+			buf[buf_pos] = '\n';
+			buf_pos++;
 		}
-		p += entry_len;
+		p += strlen(entry) + 1;
 	}
 	mutex_unlock(&map->cache_lock);
 
@@ -417,7 +421,7 @@ static ssize_t regmap_access_read_file(struct file *file,
 		return -ENOMEM;
 
 	/* Calculate the length of a fixed format  */
-	reg_len = regmap_calc_reg_len(map->max_register);
+	reg_len = regmap_calc_reg_len(map->max_register, buf, count);
 	tot_len = reg_len + 10; /* ': R W V P\n' */
 
 	for (i = 0; i <= map->max_register; i += map->reg_stride) {
@@ -428,7 +432,7 @@ static ssize_t regmap_access_read_file(struct file *file,
 		/* If we're in the region the user is trying to read */
 		if (p >= *ppos) {
 			/* ...but not beyond it */
-			if (buf_pos + tot_len + 1 >= count)
+			if (buf_pos >= count - 1 - tot_len)
 				break;
 
 			/* Format the register */
@@ -463,87 +467,6 @@ static const struct file_operations regmap_access_fops = {
 	.open = simple_open,
 	.read = regmap_access_read_file,
 	.llseek = default_llseek,
-};
-
-static ssize_t regmap_cache_only_write_file(struct file *file,
-					    const char __user *user_buf,
-					    size_t count, loff_t *ppos)
-{
-	struct regmap *map = container_of(file->private_data,
-					  struct regmap, cache_only);
-	ssize_t result;
-	bool was_enabled, require_sync = false;
-	int err;
-
-	map->lock(map->lock_arg);
-
-	was_enabled = map->cache_only;
-
-	result = debugfs_write_file_bool(file, user_buf, count, ppos);
-	if (result < 0) {
-		map->unlock(map->lock_arg);
-		return result;
-	}
-
-	if (map->cache_only && !was_enabled) {
-		dev_warn(map->dev, "debugfs cache_only=Y forced\n");
-		add_taint(TAINT_USER, LOCKDEP_STILL_OK);
-	} else if (!map->cache_only && was_enabled) {
-		dev_warn(map->dev, "debugfs cache_only=N forced: syncing cache\n");
-		require_sync = true;
-	}
-
-	map->unlock(map->lock_arg);
-
-	if (require_sync) {
-		err = regcache_sync(map);
-		if (err)
-			dev_err(map->dev, "Failed to sync cache %d\n", err);
-	}
-
-	return result;
-}
-
-static const struct file_operations regmap_cache_only_fops = {
-	.open = simple_open,
-	.read = debugfs_read_file_bool,
-	.write = regmap_cache_only_write_file,
-};
-
-static ssize_t regmap_cache_bypass_write_file(struct file *file,
-					      const char __user *user_buf,
-					      size_t count, loff_t *ppos)
-{
-	struct regmap *map = container_of(file->private_data,
-					  struct regmap, cache_bypass);
-	ssize_t result;
-	bool was_enabled;
-
-	map->lock(map->lock_arg);
-
-	was_enabled = map->cache_bypass;
-
-	result = debugfs_write_file_bool(file, user_buf, count, ppos);
-	if (result < 0)
-		goto out;
-
-	if (map->cache_bypass && !was_enabled) {
-		dev_warn(map->dev, "debugfs cache_bypass=Y forced\n");
-		add_taint(TAINT_USER, LOCKDEP_STILL_OK);
-	} else if (!map->cache_bypass && was_enabled) {
-		dev_warn(map->dev, "debugfs cache_bypass=N forced\n");
-	}
-
-out:
-	map->unlock(map->lock_arg);
-
-	return result;
-}
-
-static const struct file_operations regmap_cache_bypass_fops = {
-	.open = simple_open,
-	.read = debugfs_read_file_bool,
-	.write = regmap_cache_bypass_write_file,
 };
 
 void regmap_debugfs_init(struct regmap *map, const char *name)
@@ -592,29 +515,20 @@ void regmap_debugfs_init(struct regmap *map, const char *name)
 	debugfs_create_file("range", 0400, map->debugfs,
 			    map, &regmap_reg_ranges_fops);
 
-	if (map->max_register || regmap_readable(map, 0)) {
-		umode_t registers_mode;
-
-#if defined(REGMAP_ALLOW_WRITE_DEBUGFS)
-		registers_mode = 0600;
-#else
-		registers_mode = 0400;
-#endif
-
-		debugfs_create_file("registers", registers_mode, map->debugfs,
+	if (map->max_register) {
+		debugfs_create_file("registers", 0400, map->debugfs,
 				    map, &regmap_map_fops);
 		debugfs_create_file("access", 0400, map->debugfs,
 				    map, &regmap_access_fops);
 	}
 
 	if (map->cache_type) {
-		debugfs_create_file("cache_only", 0600, map->debugfs,
-				    &map->cache_only, &regmap_cache_only_fops);
+		debugfs_create_bool("cache_only", 0400, map->debugfs,
+				    &map->cache_only);
 		debugfs_create_bool("cache_dirty", 0400, map->debugfs,
 				    &map->cache_dirty);
-		debugfs_create_file("cache_bypass", 0600, map->debugfs,
-				    &map->cache_bypass,
-				    &regmap_cache_bypass_fops);
+		debugfs_create_bool("cache_bypass", 0400, map->debugfs,
+				    &map->cache_bypass);
 	}
 
 	next = rb_first(&map->range_tree);
@@ -628,9 +542,6 @@ void regmap_debugfs_init(struct regmap *map, const char *name)
 
 		next = rb_next(&range_node->node);
 	}
-
-	if (map->cache_ops && map->cache_ops->debugfs_init)
-		map->cache_ops->debugfs_init(map);
 }
 
 void regmap_debugfs_exit(struct regmap *map)

@@ -24,7 +24,7 @@
 #include <linux/init.h>
 #include <linux/of_platform.h>
 
-static const struct of_device_id ppc40x_of_bus[] __initconst = {
+static __initdata struct of_device_id ppc40x_of_bus[] = {
 	{ .compatible = "ibm,plb3", },
 	{ .compatible = "ibm,plb4", },
 	{ .compatible = "ibm,opb", },

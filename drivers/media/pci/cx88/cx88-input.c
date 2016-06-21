@@ -130,41 +130,25 @@ static void cx88_ir_handle_key(struct cx88_IR *ir)
 
 		data = (data << 4) | ((gpio_key & 0xf0) >> 4);
 
-		rc_keydown(ir->dev, RC_TYPE_UNKNOWN, data, 0);
-
-	} else if (ir->core->boardnr == CX88_BOARD_PROLINK_PLAYTVPVR ||
-		   ir->core->boardnr == CX88_BOARD_PIXELVIEW_PLAYTV_ULTRA_PRO) {
-		/* bit cleared on keydown, NEC scancode, 0xAAAACC, A = 0x866b */
-		u16 addr;
-		u8 cmd;
-		u32 scancode;
-
-		addr = (data >> 8) & 0xffff;
-		cmd  = (data >> 0) & 0x00ff;
-		scancode = RC_SCANCODE_NECX(addr, cmd);
-
-		if (0 == (gpio & ir->mask_keyup))
-			rc_keydown_notimeout(ir->dev, RC_TYPE_NEC, scancode, 0);
-		else
-			rc_keyup(ir->dev);
+		rc_keydown(ir->dev, data, 0);
 
 	} else if (ir->mask_keydown) {
 		/* bit set on keydown */
 		if (gpio & ir->mask_keydown)
-			rc_keydown_notimeout(ir->dev, RC_TYPE_UNKNOWN, data, 0);
+			rc_keydown_notimeout(ir->dev, data, 0);
 		else
 			rc_keyup(ir->dev);
 
 	} else if (ir->mask_keyup) {
 		/* bit cleared on keydown */
 		if (0 == (gpio & ir->mask_keyup))
-			rc_keydown_notimeout(ir->dev, RC_TYPE_UNKNOWN, data, 0);
+			rc_keydown_notimeout(ir->dev, data, 0);
 		else
 			rc_keyup(ir->dev);
 
 	} else {
 		/* can't distinguish keydown/up :-/ */
-		rc_keydown_notimeout(ir->dev, RC_TYPE_UNKNOWN, data, 0);
+		rc_keydown_notimeout(ir->dev, data, 0);
 		rc_keyup(ir->dev);
 	}
 }
@@ -345,7 +329,6 @@ int cx88_ir_init(struct cx88_core *core, struct pci_dev *pci)
 		 * 002-T mini RC, provided with newer PV hardware
 		 */
 		ir_codes = RC_MAP_PIXELVIEW_MK12;
-		rc_type = RC_BIT_NEC;
 		ir->gpio_addr = MO_GP1_IO;
 		ir->mask_keyup = 0x80;
 		ir->polling = 10; /* ms */
@@ -433,6 +416,7 @@ int cx88_ir_init(struct cx88_core *core, struct pci_dev *pci)
 		break;
 	case CX88_BOARD_TWINHAN_VP1027_DVBS:
 		ir_codes         = RC_MAP_TWINHAN_VP1027_DVBS;
+		rc_type          = RC_BIT_NEC;
 		ir->sampling     = 0xff00; /* address */
 		break;
 	}
@@ -478,14 +462,14 @@ int cx88_ir_init(struct cx88_core *core, struct pci_dev *pci)
 	dev->priv = core;
 	dev->open = cx88_ir_open;
 	dev->close = cx88_ir_close;
-	dev->scancode_mask = hardware_mask;
+	dev->scanmask = hardware_mask;
 
 	if (ir->sampling) {
 		dev->driver_type = RC_DRIVER_IR_RAW;
 		dev->timeout = 10 * 1000 * 1000; /* 10 ms */
 	} else {
 		dev->driver_type = RC_DRIVER_SCANCODE;
-		dev->allowed_protocols = rc_type;
+		dev->allowed_protos = rc_type;
 	}
 
 	ir->core = core;
@@ -555,8 +539,7 @@ void cx88_ir_irq(struct cx88_core *core)
 	ir_raw_event_handle(ir->dev);
 }
 
-static int get_key_pvr2000(struct IR_i2c *ir, enum rc_type *protocol,
-			   u32 *scancode, u8 *toggle)
+static int get_key_pvr2000(struct IR_i2c *ir, u32 *ir_key, u32 *ir_raw)
 {
 	int flags, code;
 
@@ -580,9 +563,8 @@ static int get_key_pvr2000(struct IR_i2c *ir, enum rc_type *protocol,
 	dprintk("IR Key/Flags: (0x%02x/0x%02x)\n",
 		   code & 0xff, flags & 0xff);
 
-	*protocol = RC_TYPE_UNKNOWN;
-	*scancode = code & 0xff;
-	*toggle = 0;
+	*ir_key = code & 0xff;
+	*ir_raw = code;
 	return 1;
 }
 

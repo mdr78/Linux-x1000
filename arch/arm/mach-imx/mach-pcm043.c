@@ -35,7 +35,6 @@
 
 #include "common.h"
 #include "devices-imx35.h"
-#include "ehci.h"
 #include "hardware.h"
 #include "iomux-mx35.h"
 #include "ulpi.h"
@@ -129,7 +128,7 @@ static struct platform_device *devices[] __initdata = {
 	&pcm043_flash,
 };
 
-static const iomux_v3_cfg_t pcm043_pads[] __initconst = {
+static iomux_v3_cfg_t pcm043_pads[] = {
 	/* UART1 */
 	MX35_PAD_CTS1__UART1_CTS,
 	MX35_PAD_RTS1__UART1_RTS,
@@ -401,6 +400,7 @@ MACHINE_START(PCM043, "Phytec Phycore pcm043")
 	.map_io = mx35_map_io,
 	.init_early = imx35_init_early,
 	.init_irq = mx35_init_irq,
+	.handle_irq = imx35_handle_irq,
 	.init_time = pcm043_timer_init,
 	.init_machine = pcm043_init,
 	.restart	= mxc_restart,

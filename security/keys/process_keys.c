@@ -457,7 +457,7 @@ key_ref_t search_process_keyrings(struct keyring_search_context *ctx)
 		down_read(&cred->request_key_auth->sem);
 
 		if (key_validate(ctx->cred->request_key_auth) == 0) {
-			rka = ctx->cred->request_key_auth->payload.data[0];
+			rka = ctx->cred->request_key_auth->payload.data;
 
 			ctx->cred = rka->cred;
 			key_ref = search_process_keyrings(ctx);
@@ -489,10 +489,9 @@ found:
 /*
  * See if the key we're looking at is the target key.
  */
-bool lookup_user_key_possessed(const struct key *key,
-			       const struct key_match_data *match_data)
+int lookup_user_key_possessed(const struct key *key, const void *target)
 {
-	return key == match_data->raw_data;
+	return key == target;
 }
 
 /*
@@ -517,9 +516,9 @@ key_ref_t lookup_user_key(key_serial_t id, unsigned long lflags,
 			  key_perm_t perm)
 {
 	struct keyring_search_context ctx = {
-		.match_data.cmp		= lookup_user_key_possessed,
-		.match_data.lookup_type	= KEYRING_SEARCH_LOOKUP_DIRECT,
-		.flags			= KEYRING_SEARCH_NO_STATE_CHECK,
+		.match	= lookup_user_key_possessed,
+		.flags	= (KEYRING_SEARCH_NO_STATE_CHECK |
+			   KEYRING_SEARCH_LOOKUP_DIRECT),
 	};
 	struct request_key_auth *rka;
 	struct key *key;
@@ -647,7 +646,7 @@ try_again:
 			key_ref = ERR_PTR(-EKEYREVOKED);
 			key = NULL;
 		} else {
-			rka = ctx.cred->request_key_auth->payload.data[0];
+			rka = ctx.cred->request_key_auth->payload.data;
 			key = rka->dest_keyring;
 			__key_get(key);
 		}
@@ -674,7 +673,7 @@ try_again:
 		ctx.index_key.type		= key->type;
 		ctx.index_key.description	= key->description;
 		ctx.index_key.desc_len		= strlen(key->description);
-		ctx.match_data.raw_data		= key;
+		ctx.match_data			= key;
 		kdebug("check possessed");
 		skey_ref = search_process_keyrings(&ctx);
 		kdebug("possessed=%p", skey_ref);
@@ -794,7 +793,6 @@ long join_session_keyring(const char *name)
 		ret = PTR_ERR(keyring);
 		goto error2;
 	} else if (keyring == new->session_keyring) {
-		key_put(keyring);
 		ret = 0;
 		goto error2;
 	}
@@ -849,7 +847,6 @@ void key_change_session_keyring(struct callback_head *twork)
 	new->cap_inheritable	= old->cap_inheritable;
 	new->cap_permitted	= old->cap_permitted;
 	new->cap_effective	= old->cap_effective;
-	new->cap_ambient	= old->cap_ambient;
 	new->cap_bset		= old->cap_bset;
 
 	new->jit_keyring	= old->jit_keyring;

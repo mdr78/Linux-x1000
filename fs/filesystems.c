@@ -121,7 +121,6 @@ int unregister_filesystem(struct file_system_type * fs)
 
 EXPORT_SYMBOL(unregister_filesystem);
 
-#ifdef CONFIG_SYSFS_SYSCALL
 static int fs_index(const char __user * __name)
 {
 	struct file_system_type * tmp;
@@ -200,7 +199,6 @@ SYSCALL_DEFINE3(sysfs, int, option, unsigned long, arg1, unsigned long, arg2)
 	}
 	return retval;
 }
-#endif
 
 int __init get_filesystem_list(char *buf)
 {

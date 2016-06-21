@@ -1,11 +1,10 @@
 [event]
 fd=1
 group_fd=-1
-# 0 or PERF_FLAG_FD_CLOEXEC flag
-flags=0|8
+flags=0
 cpu=*
 type=0|1
-size=112
+size=96
 config=0
 sample_period=4000
 sample_type=263

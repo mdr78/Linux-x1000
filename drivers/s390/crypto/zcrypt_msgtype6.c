@@ -315,10 +315,6 @@ static int XCRB_msg_to_type6CPRB_msgX(struct zcrypt_device *zdev,
 	char *req_data = ap_msg->message + sizeof(struct type6_hdr) + rcblen;
 	char *function_code;
 
-	if (CEIL4(xcRB->request_control_blk_length) <
-			xcRB->request_control_blk_length)
-		return -EINVAL; /* overflow after alignment*/
-
 	/* length checks */
 	ap_msg->length = sizeof(struct type6_hdr) +
 		CEIL4(xcRB->request_control_blk_length) +
@@ -336,10 +332,6 @@ static int XCRB_msg_to_type6CPRB_msgX(struct zcrypt_device *zdev,
 		(req_sumlen < CEIL4(xcRB->request_control_blk_length))) {
 		return -EINVAL;
 	}
-
-	if (CEIL4(xcRB->reply_control_blk_length) <
-			xcRB->reply_control_blk_length)
-		return -EINVAL; /* overflow after alignment*/
 
 	replylen = sizeof(struct type86_fmt2_msg) +
 		CEIL4(xcRB->reply_control_blk_length) +
@@ -423,17 +415,11 @@ static int xcrb_msg_to_type6_ep11cprb_msgx(struct zcrypt_device *zdev,
 		unsigned int	dom_val;	/* domain id	   */
 	} __packed * payload_hdr;
 
-	if (CEIL4(xcRB->req_len) < xcRB->req_len)
-		return -EINVAL; /* overflow after alignment*/
-
 	/* length checks */
 	ap_msg->length = sizeof(struct type6_hdr) + xcRB->req_len;
 	if (CEIL4(xcRB->req_len) > MSGTYPE06_MAX_MSG_SIZE -
 				   (sizeof(struct type6_hdr)))
 		return -EINVAL;
-
-	if (CEIL4(xcRB->resp_len) < xcRB->resp_len)
-		return -EINVAL; /* overflow after alignment*/
 
 	if (CEIL4(xcRB->resp_len) > MSGTYPE06_MAX_MSG_SIZE -
 				    (sizeof(struct type86_fmt2_msg)))
@@ -446,7 +432,7 @@ static int xcrb_msg_to_type6_ep11cprb_msgx(struct zcrypt_device *zdev,
 
 	/* Import CPRB data from the ioctl input parameter */
 	if (copy_from_user(&(msg->cprbx.cprb_len),
-			   (char __force __user *)xcRB->req, xcRB->req_len)) {
+			   (char *)xcRB->req, xcRB->req_len)) {
 		return -EFAULT;
 	}
 
@@ -659,7 +645,7 @@ static int convert_type86_ep11_xcrb(struct zcrypt_device *zdev,
 		return -EINVAL;
 
 	/* Copy response CPRB to user */
-	if (copy_to_user((char __force __user *)xcRB->resp,
+	if (copy_to_user((char *)xcRB->resp,
 			 data + msg->fmt2.offset1, msg->fmt2.count1))
 		return -EFAULT;
 	xcRB->resp_len = msg->fmt2.count1;
@@ -829,8 +815,10 @@ static void zcrypt_msgtype6_receive(struct ap_device *ap_dev,
 	int length;
 
 	/* Copy the reply message to the request message buffer. */
-	if (!reply)
-		goto out;	/* ap_msg->rc indicates the error */
+	if (IS_ERR(reply)) {
+		memcpy(msg->message, &error_reply, sizeof(error_reply));
+		goto out;
+	}
 	t86r = reply->message;
 	if (t86r->hdr.type == TYPE86_RSP_CODE &&
 		 t86r->cprbx.cprb_ver_id == 0x02) {
@@ -878,8 +866,10 @@ static void zcrypt_msgtype6_receive_ep11(struct ap_device *ap_dev,
 	int length;
 
 	/* Copy the reply message to the request message buffer. */
-	if (!reply)
-		goto out;	/* ap_msg->rc indicates the error */
+	if (IS_ERR(reply)) {
+		memcpy(msg->message, &error_reply, sizeof(error_reply));
+		goto out;
+	}
 	t86r = reply->message;
 	if (t86r->hdr.type == TYPE86_RSP_CODE &&
 	    t86r->cprbx.cprb_ver_id == 0x04) {
@@ -931,13 +921,10 @@ static long zcrypt_msgtype6_modexpo(struct zcrypt_device *zdev,
 	init_completion(&resp_type.work);
 	ap_queue_message(zdev->ap_dev, &ap_msg);
 	rc = wait_for_completion_interruptible(&resp_type.work);
-	if (rc == 0) {
-		rc = ap_msg.rc;
-		if (rc == 0)
-			rc = convert_response_ica(zdev, &ap_msg,
-						  mex->outputdata,
-						  mex->outputdatalength);
-	} else
+	if (rc == 0)
+		rc = convert_response_ica(zdev, &ap_msg, mex->outputdata,
+					  mex->outputdatalength);
+	else
 		/* Signal pending. */
 		ap_cancel_message(zdev->ap_dev, &ap_msg);
 out_free:
@@ -975,13 +962,10 @@ static long zcrypt_msgtype6_modexpo_crt(struct zcrypt_device *zdev,
 	init_completion(&resp_type.work);
 	ap_queue_message(zdev->ap_dev, &ap_msg);
 	rc = wait_for_completion_interruptible(&resp_type.work);
-	if (rc == 0) {
-		rc = ap_msg.rc;
-		if (rc == 0)
-			rc = convert_response_ica(zdev, &ap_msg,
-						  crt->outputdata,
-						  crt->outputdatalength);
-	} else
+	if (rc == 0)
+		rc = convert_response_ica(zdev, &ap_msg, crt->outputdata,
+					  crt->outputdatalength);
+	else
 		/* Signal pending. */
 		ap_cancel_message(zdev->ap_dev, &ap_msg);
 out_free:
@@ -1019,11 +1003,9 @@ static long zcrypt_msgtype6_send_cprb(struct zcrypt_device *zdev,
 	init_completion(&resp_type.work);
 	ap_queue_message(zdev->ap_dev, &ap_msg);
 	rc = wait_for_completion_interruptible(&resp_type.work);
-	if (rc == 0) {
-		rc = ap_msg.rc;
-		if (rc == 0)
-			rc = convert_response_xcrb(zdev, &ap_msg, xcRB);
-	} else
+	if (rc == 0)
+		rc = convert_response_xcrb(zdev, &ap_msg, xcRB);
+	else
 		/* Signal pending. */
 		ap_cancel_message(zdev->ap_dev, &ap_msg);
 out_free:
@@ -1061,12 +1043,9 @@ static long zcrypt_msgtype6_send_ep11_cprb(struct zcrypt_device *zdev,
 	init_completion(&resp_type.work);
 	ap_queue_message(zdev->ap_dev, &ap_msg);
 	rc = wait_for_completion_interruptible(&resp_type.work);
-	if (rc == 0) {
-		rc = ap_msg.rc;
-		if (rc == 0)
-			rc = convert_response_ep11_xcrb(zdev, &ap_msg, xcrb);
-	} else
-		/* Signal pending. */
+	if (rc == 0)
+		rc = convert_response_ep11_xcrb(zdev, &ap_msg, xcrb);
+	else /* Signal pending. */
 		ap_cancel_message(zdev->ap_dev, &ap_msg);
 
 out_free:
@@ -1103,11 +1082,9 @@ static long zcrypt_msgtype6_rng(struct zcrypt_device *zdev,
 	init_completion(&resp_type.work);
 	ap_queue_message(zdev->ap_dev, &ap_msg);
 	rc = wait_for_completion_interruptible(&resp_type.work);
-	if (rc == 0) {
-		rc = ap_msg.rc;
-		if (rc == 0)
-			rc = convert_response_rng(zdev, &ap_msg, buffer);
-	} else
+	if (rc == 0)
+		rc = convert_response_rng(zdev, &ap_msg, buffer);
+	else
 		/* Signal pending. */
 		ap_cancel_message(zdev->ap_dev, &ap_msg);
 	kfree(ap_msg.message);
@@ -1119,7 +1096,6 @@ static long zcrypt_msgtype6_rng(struct zcrypt_device *zdev,
  */
 static struct zcrypt_ops zcrypt_msgtype6_norng_ops = {
 	.owner = THIS_MODULE,
-	.name = MSGTYPE06_NAME,
 	.variant = MSGTYPE06_VARIANT_NORNG,
 	.rsa_modexpo = zcrypt_msgtype6_modexpo,
 	.rsa_modexpo_crt = zcrypt_msgtype6_modexpo_crt,
@@ -1128,7 +1104,6 @@ static struct zcrypt_ops zcrypt_msgtype6_norng_ops = {
 
 static struct zcrypt_ops zcrypt_msgtype6_ops = {
 	.owner = THIS_MODULE,
-	.name = MSGTYPE06_NAME,
 	.variant = MSGTYPE06_VARIANT_DEFAULT,
 	.rsa_modexpo = zcrypt_msgtype6_modexpo,
 	.rsa_modexpo_crt = zcrypt_msgtype6_modexpo_crt,
@@ -1138,7 +1113,6 @@ static struct zcrypt_ops zcrypt_msgtype6_ops = {
 
 static struct zcrypt_ops zcrypt_msgtype6_ep11_ops = {
 	.owner = THIS_MODULE,
-	.name = MSGTYPE06_NAME,
 	.variant = MSGTYPE06_VARIANT_EP11,
 	.rsa_modexpo = NULL,
 	.rsa_modexpo_crt = NULL,

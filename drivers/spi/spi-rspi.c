@@ -15,6 +15,11 @@
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program; if not, write to the Free Software
+ * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
+ *
  */
 
 #include <linux/module.h>
@@ -82,7 +87,7 @@
 /* RSPI on SH only */
 #define SPCR_TXMD		0x02	/* TX Only Mode (vs. Full Duplex) */
 #define SPCR_SPMS		0x01	/* 3-wire Mode (vs. 4-wire) */
-/* QSPI on R-Car Gen2 only */
+/* QSPI on R-Car M2 only */
 #define SPCR_WSWAP		0x02	/* Word Swap of read-data for DMAC */
 #define SPCR_BSWAP		0x01	/* Byte Swap of read-data for DMAC */
 
@@ -177,13 +182,6 @@
 #define SPBFCR_RXRST		0x40	/* Receive Buffer Data Reset */
 #define SPBFCR_TXTRG_MASK	0x30	/* Transmit Buffer Data Triggering Number */
 #define SPBFCR_RXTRG_MASK	0x07	/* Receive Buffer Data Triggering Number */
-/* QSPI on R-Car Gen2 */
-#define SPBFCR_TXTRG_1B		0x00	/* 31 bytes (1 byte available) */
-#define SPBFCR_TXTRG_32B	0x30	/* 0 byte (32 bytes available) */
-#define SPBFCR_RXTRG_1B		0x00	/* 1 byte (31 bytes available) */
-#define SPBFCR_RXTRG_32B	0x07	/* 32 bytes (0 byte available) */
-
-#define QSPI_BUFFER_SIZE        32u
 
 struct rspi_data {
 	void __iomem *addr;
@@ -371,53 +369,6 @@ static int qspi_set_config_register(struct rspi_data *rspi, int access_size)
 	rspi_write8(rspi, SPCR_SPE | SPCR_MSTR, RSPI_SPCR);
 
 	return 0;
-}
-
-static void qspi_update(const struct rspi_data *rspi, u8 mask, u8 val, u8 reg)
-{
-	u8 data;
-
-	data = rspi_read8(rspi, reg);
-	data &= ~mask;
-	data |= (val & mask);
-	rspi_write8(rspi, data, reg);
-}
-
-static unsigned int qspi_set_send_trigger(struct rspi_data *rspi,
-					  unsigned int len)
-{
-	unsigned int n;
-
-	n = min(len, QSPI_BUFFER_SIZE);
-
-	if (len >= QSPI_BUFFER_SIZE) {
-		/* sets triggering number to 32 bytes */
-		qspi_update(rspi, SPBFCR_TXTRG_MASK,
-			     SPBFCR_TXTRG_32B, QSPI_SPBFCR);
-	} else {
-		/* sets triggering number to 1 byte */
-		qspi_update(rspi, SPBFCR_TXTRG_MASK,
-			     SPBFCR_TXTRG_1B, QSPI_SPBFCR);
-	}
-
-	return n;
-}
-
-static void qspi_set_receive_trigger(struct rspi_data *rspi, unsigned int len)
-{
-	unsigned int n;
-
-	n = min(len, QSPI_BUFFER_SIZE);
-
-	if (len >= QSPI_BUFFER_SIZE) {
-		/* sets triggering number to 32 bytes */
-		qspi_update(rspi, SPBFCR_RXTRG_MASK,
-			     SPBFCR_RXTRG_32B, QSPI_SPBFCR);
-	} else {
-		/* sets triggering number to 1 byte */
-		qspi_update(rspi, SPBFCR_RXTRG_MASK,
-			     SPBFCR_RXTRG_1B, QSPI_SPBFCR);
-	}
 }
 
 #define set_config_register(spi, n) spi->ops->set_config_register(spi, n)
@@ -663,25 +614,18 @@ static bool rspi_can_dma(struct spi_master *master, struct spi_device *spi,
 	return __rspi_can_dma(rspi, xfer);
 }
 
-static int rspi_dma_check_then_transfer(struct rspi_data *rspi,
-					 struct spi_transfer *xfer)
-{
-	if (!rspi->master->can_dma || !__rspi_can_dma(rspi, xfer))
-		return -EAGAIN;
-
-	/* rx_buf can be NULL on RSPI on SH in TX-only Mode */
-	return rspi_dma_transfer(rspi, &xfer->tx_sg,
-				xfer->rx_buf ? &xfer->rx_sg : NULL);
-}
-
 static int rspi_common_transfer(struct rspi_data *rspi,
 				struct spi_transfer *xfer)
 {
 	int ret;
 
-	ret = rspi_dma_check_then_transfer(rspi, xfer);
-	if (ret != -EAGAIN)
-		return ret;
+	if (rspi->master->can_dma && __rspi_can_dma(rspi, xfer)) {
+		/* rx_buf can be NULL on RSPI on SH in TX-only Mode */
+		ret = rspi_dma_transfer(rspi, &xfer->tx_sg,
+					xfer->rx_buf ? &xfer->rx_sg : NULL);
+		if (ret != -EAGAIN)
+			return ret;
+	}
 
 	ret = rspi_pio_transfer(rspi, xfer->tx_buf, xfer->rx_buf, xfer->len);
 	if (ret < 0)
@@ -722,55 +666,12 @@ static int rspi_rz_transfer_one(struct spi_master *master,
 	return rspi_common_transfer(rspi, xfer);
 }
 
-static int qspi_trigger_transfer_out_in(struct rspi_data *rspi, const u8 *tx,
-					u8 *rx, unsigned int len)
-{
-	unsigned int i, n;
-	int ret;
-
-	while (len > 0) {
-		n = qspi_set_send_trigger(rspi, len);
-		qspi_set_receive_trigger(rspi, len);
-		if (n == QSPI_BUFFER_SIZE) {
-			ret = rspi_wait_for_tx_empty(rspi);
-			if (ret < 0) {
-				dev_err(&rspi->master->dev, "transmit timeout\n");
-				return ret;
-			}
-			for (i = 0; i < n; i++)
-				rspi_write_data(rspi, *tx++);
-
-			ret = rspi_wait_for_rx_full(rspi);
-			if (ret < 0) {
-				dev_err(&rspi->master->dev, "receive timeout\n");
-				return ret;
-			}
-			for (i = 0; i < n; i++)
-				*rx++ = rspi_read_data(rspi);
-		} else {
-			ret = rspi_pio_transfer(rspi, tx, rx, n);
-			if (ret < 0)
-				return ret;
-		}
-		len -= n;
-	}
-
-	return 0;
-}
-
 static int qspi_transfer_out_in(struct rspi_data *rspi,
 				struct spi_transfer *xfer)
 {
-	int ret;
-
 	qspi_receive_init(rspi);
 
-	ret = rspi_dma_check_then_transfer(rspi, xfer);
-	if (ret != -EAGAIN)
-		return ret;
-
-	return qspi_trigger_transfer_out_in(rspi, xfer->tx_buf,
-					    xfer->rx_buf, xfer->len);
+	return rspi_common_transfer(rspi, xfer);
 }
 
 static int qspi_transfer_out(struct rspi_data *rspi, struct spi_transfer *xfer)
@@ -1008,23 +909,20 @@ static struct dma_chan *rspi_request_dma_chan(struct device *dev,
 	dma_cap_zero(mask);
 	dma_cap_set(DMA_SLAVE, mask);
 
-	chan = dma_request_slave_channel_compat(mask, shdma_chan_filter,
-				(void *)(unsigned long)id, dev,
-				dir == DMA_MEM_TO_DEV ? "tx" : "rx");
+	chan = dma_request_channel(mask, shdma_chan_filter,
+				   (void *)(unsigned long)id);
 	if (!chan) {
-		dev_warn(dev, "dma_request_slave_channel_compat failed\n");
+		dev_warn(dev, "dma_request_channel failed\n");
 		return NULL;
 	}
 
 	memset(&cfg, 0, sizeof(cfg));
+	cfg.slave_id = id;
 	cfg.direction = dir;
-	if (dir == DMA_MEM_TO_DEV) {
+	if (dir == DMA_MEM_TO_DEV)
 		cfg.dst_addr = port_addr;
-		cfg.dst_addr_width = DMA_SLAVE_BUSWIDTH_1_BYTE;
-	} else {
+	else
 		cfg.src_addr = port_addr;
-		cfg.src_addr_width = DMA_SLAVE_BUSWIDTH_1_BYTE;
-	}
 
 	ret = dmaengine_slave_config(chan, &cfg);
 	if (ret) {
@@ -1040,30 +938,22 @@ static int rspi_request_dma(struct device *dev, struct spi_master *master,
 			    const struct resource *res)
 {
 	const struct rspi_plat_data *rspi_pd = dev_get_platdata(dev);
-	unsigned int dma_tx_id, dma_rx_id;
 
-	if (dev->of_node) {
-		/* In the OF case we will get the slave IDs from the DT */
-		dma_tx_id = 0;
-		dma_rx_id = 0;
-	} else if (rspi_pd && rspi_pd->dma_tx_id && rspi_pd->dma_rx_id) {
-		dma_tx_id = rspi_pd->dma_tx_id;
-		dma_rx_id = rspi_pd->dma_rx_id;
-	} else {
-		/* The driver assumes no error. */
-		return 0;
-	}
+	if (!rspi_pd || !rspi_pd->dma_rx_id || !rspi_pd->dma_tx_id)
+		return 0;	/* The driver assumes no error. */
 
-	master->dma_tx = rspi_request_dma_chan(dev, DMA_MEM_TO_DEV, dma_tx_id,
+	master->dma_rx = rspi_request_dma_chan(dev, DMA_DEV_TO_MEM,
+					       rspi_pd->dma_rx_id,
 					       res->start + RSPI_SPDR);
-	if (!master->dma_tx)
+	if (!master->dma_rx)
 		return -ENODEV;
 
-	master->dma_rx = rspi_request_dma_chan(dev, DMA_DEV_TO_MEM, dma_rx_id,
+	master->dma_tx = rspi_request_dma_chan(dev, DMA_MEM_TO_DEV,
+					       rspi_pd->dma_tx_id,
 					       res->start + RSPI_SPDR);
-	if (!master->dma_rx) {
-		dma_release_channel(master->dma_tx);
-		master->dma_tx = NULL;
+	if (!master->dma_tx) {
+		dma_release_channel(master->dma_rx);
+		master->dma_rx = NULL;
 		return -ENODEV;
 	}
 
@@ -1156,11 +1046,12 @@ static int rspi_request_irq(struct device *dev, unsigned int irq,
 			    irq_handler_t handler, const char *suffix,
 			    void *dev_id)
 {
-	const char *name = devm_kasprintf(dev, GFP_KERNEL, "%s:%s",
-					  dev_name(dev), suffix);
+	const char *base = dev_name(dev);
+	size_t len = strlen(base) + strlen(suffix) + 2;
+	char *name = devm_kzalloc(dev, len, GFP_KERNEL);
 	if (!name)
 		return -ENOMEM;
-
+	snprintf(name, len, "%s:%s", base, suffix);
 	return devm_request_irq(dev, irq, handler, 0, name, dev_id);
 }
 
@@ -1193,7 +1084,7 @@ static int rspi_probe(struct platform_device *pdev)
 			master->num_chipselect = rspi_pd->num_chipselect;
 		else
 			master->num_chipselect = 2; /* default */
-	}
+	};
 
 	/* ops parameter check */
 	if (!ops->set_config_register) {
@@ -1294,7 +1185,7 @@ error1:
 	return ret;
 }
 
-static const struct platform_device_id spi_driver_ids[] = {
+static struct platform_device_id spi_driver_ids[] = {
 	{ "rspi",	(kernel_ulong_t)&rspi_ops },
 	{ "rspi-rz",	(kernel_ulong_t)&rspi_rz_ops },
 	{ "qspi",	(kernel_ulong_t)&qspi_ops },
@@ -1309,6 +1200,7 @@ static struct platform_driver rspi_driver = {
 	.id_table =	spi_driver_ids,
 	.driver		= {
 		.name = "renesas_spi",
+		.owner	= THIS_MODULE,
 		.of_match_table = of_match_ptr(rspi_of_match),
 	},
 };

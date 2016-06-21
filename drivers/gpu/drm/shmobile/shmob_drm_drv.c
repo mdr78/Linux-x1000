@@ -1,7 +1,7 @@
 /*
  * shmob_drm_drv.c  --  SH Mobile DRM driver
  *
- * Copyright (C) 2012 Renesas Electronics Corporation
+ * Copyright (C) 2012 Renesas Corporation
  *
  * Laurent Pinchart (laurent.pinchart@ideasonboard.com)
  *
@@ -185,7 +185,7 @@ static int shmob_drm_load(struct drm_device *dev, unsigned long flags)
 		goto done;
 	}
 
-	ret = drm_irq_install(dev, platform_get_irq(dev->platformdev, 0));
+	ret = drm_irq_install(dev);
 	if (ret < 0) {
 		dev_err(&pdev->dev, "failed to install IRQ handler\n");
 		goto done;
@@ -231,7 +231,7 @@ static irqreturn_t shmob_drm_irq(int irq, void *arg)
 	return IRQ_HANDLED;
 }
 
-static int shmob_drm_enable_vblank(struct drm_device *dev, unsigned int pipe)
+static int shmob_drm_enable_vblank(struct drm_device *dev, int crtc)
 {
 	struct shmob_drm_device *sdev = dev->dev_private;
 
@@ -240,7 +240,7 @@ static int shmob_drm_enable_vblank(struct drm_device *dev, unsigned int pipe)
 	return 0;
 }
 
-static void shmob_drm_disable_vblank(struct drm_device *dev, unsigned int pipe)
+static void shmob_drm_disable_vblank(struct drm_device *dev, int crtc)
 {
 	struct shmob_drm_device *sdev = dev->dev_private;
 
@@ -267,9 +267,8 @@ static struct drm_driver shmob_drm_driver = {
 	.load			= shmob_drm_load,
 	.unload			= shmob_drm_unload,
 	.preclose		= shmob_drm_preclose,
-	.set_busid		= drm_platform_set_busid,
 	.irq_handler		= shmob_drm_irq,
-	.get_vblank_counter	= drm_vblank_no_hw_counter,
+	.get_vblank_counter	= drm_vblank_count,
 	.enable_vblank		= shmob_drm_enable_vblank,
 	.disable_vblank		= shmob_drm_disable_vblank,
 	.gem_free_object	= drm_gem_cma_free_object,
@@ -298,7 +297,7 @@ static struct drm_driver shmob_drm_driver = {
  * Power management
  */
 
-#ifdef CONFIG_PM_SLEEP
+#if CONFIG_PM_SLEEP
 static int shmob_drm_pm_suspend(struct device *dev)
 {
 	struct shmob_drm_device *sdev = dev_get_drvdata(dev);
@@ -348,6 +347,7 @@ static struct platform_driver shmob_drm_platform_driver = {
 	.probe		= shmob_drm_probe,
 	.remove		= shmob_drm_remove,
 	.driver		= {
+		.owner	= THIS_MODULE,
 		.name	= "shmob-drm",
 		.pm	= &shmob_drm_pm_ops,
 	},

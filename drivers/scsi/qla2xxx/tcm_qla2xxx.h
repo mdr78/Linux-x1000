@@ -4,17 +4,10 @@
 #define TCM_QLA2XXX_VERSION	"v0.1"
 /* length of ASCII WWPNs including pad */
 #define TCM_QLA2XXX_NAMELEN	32
-/*
- * Number of pre-allocated per-session tags, based upon the worst-case
- * per port number of iocbs
- */
-#define TCM_QLA2XXX_DEFAULT_TAGS 2088
 
 #include "qla_target.h"
 
 struct tcm_qla2xxx_nacl {
-	struct se_node_acl se_node_acl;
-
 	/* From libfc struct fc_rport->port_id */
 	u32 nport_id;
 	/* Binary World Wide unique Node Name for remote FC Initiator Nport */
@@ -25,6 +18,8 @@ struct tcm_qla2xxx_nacl {
 	struct qla_tgt_sess *qla_tgt_sess;
 	/* Pointer to TCM FC nexus */
 	struct se_session *nport_nexus;
+	/* Returned by tcm_qla2xxx_make_nodeacl() */
+	struct se_node_acl se_node_acl;
 };
 
 struct tcm_qla2xxx_tpg_attrib {
@@ -33,7 +28,6 @@ struct tcm_qla2xxx_tpg_attrib {
 	int demo_mode_write_protect;
 	int prod_mode_write_protect;
 	int demo_mode_login_only;
-	int fabric_prot_type;
 };
 
 struct tcm_qla2xxx_tpg {
@@ -57,6 +51,8 @@ struct tcm_qla2xxx_fc_loopid {
 };
 
 struct tcm_qla2xxx_lport {
+	/* SCSI protocol the lport is providing */
+	u8 lport_proto_id;
 	/* Binary World Wide unique Port Name for FC Target Lport */
 	u64 lport_wwpn;
 	/* Binary World Wide unique Port Name for FC NPIV Target Lport */

@@ -40,10 +40,11 @@
 
 #define DEBUG_SUBSYSTEM S_LLITE
 
-#include "../../include/linux/libcfs/libcfs.h"
 
-#include "../include/obd.h"
-#include "../include/lustre_lite.h"
+#include <linux/libcfs/libcfs.h>
+
+#include <obd.h>
+#include <lustre_lite.h>
 
 #include "vvp_internal.h"
 
@@ -86,9 +87,9 @@ static int vvp_attr_get(const struct lu_env *env, struct cl_object *obj,
 	 */
 
 	attr->cat_size = i_size_read(inode);
-	attr->cat_mtime = inode->i_mtime.tv_sec;
-	attr->cat_atime = inode->i_atime.tv_sec;
-	attr->cat_ctime = inode->i_ctime.tv_sec;
+	attr->cat_mtime = LTIME_S(inode->i_mtime);
+	attr->cat_atime = LTIME_S(inode->i_atime);
+	attr->cat_ctime = LTIME_S(inode->i_ctime);
 	attr->cat_blocks = inode->i_blocks;
 	attr->cat_uid = from_kuid(&init_user_ns, inode->i_uid);
 	attr->cat_gid = from_kgid(&init_user_ns, inode->i_gid);
@@ -106,11 +107,11 @@ static int vvp_attr_set(const struct lu_env *env, struct cl_object *obj,
 	if (valid & CAT_GID)
 		inode->i_gid = make_kgid(&init_user_ns, attr->cat_gid);
 	if (valid & CAT_ATIME)
-		inode->i_atime.tv_sec = attr->cat_atime;
+		LTIME_S(inode->i_atime) = attr->cat_atime;
 	if (valid & CAT_MTIME)
-		inode->i_mtime.tv_sec = attr->cat_mtime;
+		LTIME_S(inode->i_mtime) = attr->cat_mtime;
 	if (valid & CAT_CTIME)
-		inode->i_ctime.tv_sec = attr->cat_ctime;
+		LTIME_S(inode->i_ctime) = attr->cat_ctime;
 	if (0 && valid & CAT_SIZE)
 		cl_isize_write_nolock(inode, attr->cat_size);
 	/* not currently necessary */
@@ -119,28 +120,13 @@ static int vvp_attr_set(const struct lu_env *env, struct cl_object *obj,
 	return 0;
 }
 
-static int vvp_conf_set(const struct lu_env *env, struct cl_object *obj,
-			const struct cl_object_conf *conf)
+int vvp_conf_set(const struct lu_env *env, struct cl_object *obj,
+		const struct cl_object_conf *conf)
 {
 	struct ll_inode_info *lli = ll_i2info(conf->coc_inode);
 
 	if (conf->coc_opc == OBJECT_CONF_INVALIDATE) {
-		CDEBUG(D_VFSTRACE, DFID ": losing layout lock\n",
-		       PFID(&lli->lli_fid));
-
-		ll_layout_version_set(lli, LL_LAYOUT_GEN_NONE);
-
-		/* Clean up page mmap for this inode.
-		 * The reason for us to do this is that if the page has
-		 * already been installed into memory space, the process
-		 * can access it without interacting with lustre, so this
-		 * page may be stale due to layout change, and the process
-		 * will never be notified.
-		 * This operation is expensive but mmap processes have to pay
-		 * a price themselves. */
-		unmap_mapping_range(conf->coc_inode->i_mapping,
-				    0, OBD_OBJECT_EOF, 0);
-
+		lli->lli_layout_gen = LL_LAYOUT_GEN_NONE;
 		return 0;
 	}
 
@@ -148,18 +134,18 @@ static int vvp_conf_set(const struct lu_env *env, struct cl_object *obj,
 		return 0;
 
 	if (conf->u.coc_md != NULL && conf->u.coc_md->lsm != NULL) {
-		CDEBUG(D_VFSTRACE, DFID ": layout version change: %u -> %u\n",
-		       PFID(&lli->lli_fid), lli->lli_layout_gen,
-		       conf->u.coc_md->lsm->lsm_layout_gen);
+		CDEBUG(D_VFSTRACE, "layout lock change: %u -> %u\n",
+			lli->lli_layout_gen,
+			conf->u.coc_md->lsm->lsm_layout_gen);
 
 		lli->lli_has_smd = lsm_has_objects(conf->u.coc_md->lsm);
-		ll_layout_version_set(lli, conf->u.coc_md->lsm->lsm_layout_gen);
+		lli->lli_layout_gen = conf->u.coc_md->lsm->lsm_layout_gen;
 	} else {
-		CDEBUG(D_VFSTRACE, DFID ": layout nuked: %u.\n",
-		       PFID(&lli->lli_fid), lli->lli_layout_gen);
+		CDEBUG(D_VFSTRACE, "layout lock destroyed: %u.\n",
+			lli->lli_layout_gen);
 
 		lli->lli_has_smd = false;
-		ll_layout_version_set(lli, LL_LAYOUT_GEN_EMPTY);
+		lli->lli_layout_gen = LL_LAYOUT_GEN_EMPTY;
 	}
 	return 0;
 }

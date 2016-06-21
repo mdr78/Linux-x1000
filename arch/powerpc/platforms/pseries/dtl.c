@@ -29,7 +29,6 @@
 #include <asm/lppaca.h>
 #include <asm/debug.h>
 #include <asm/plpar_wrappers.h>
-#include <asm/machdep.h>
 
 struct dtl {
 	struct dtl_entry	*buf;
@@ -75,7 +74,7 @@ static atomic_t dtl_count;
  */
 static void consume_dtle(struct dtl_entry *dtle, u64 index)
 {
-	struct dtl_ring *dtlr = this_cpu_ptr(&dtl_rings);
+	struct dtl_ring *dtlr = &__get_cpu_var(dtl_rings);
 	struct dtl_entry *wp = dtlr->write_ptr;
 	struct lppaca *vpa = local_paca->lppaca_ptr;
 
@@ -392,4 +391,4 @@ err_remove_dir:
 err:
 	return rc;
 }
-machine_arch_initcall(pseries, dtl_init);
+arch_initcall(dtl_init);

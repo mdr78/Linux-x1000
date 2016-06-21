@@ -20,7 +20,6 @@
 
 #define pr_fmt(fmt) "hw-breakpoint: " fmt
 
-#include <linux/compat.h>
 #include <linux/cpu_pm.h>
 #include <linux/errno.h>
 #include <linux/hw_breakpoint.h>
@@ -32,6 +31,7 @@
 #include <asm/current.h>
 #include <asm/debug-monitors.h>
 #include <asm/hw_breakpoint.h>
+#include <asm/kdebug.h>
 #include <asm/traps.h>
 #include <asm/cputype.h>
 #include <asm/system_misc.h>
@@ -48,6 +48,18 @@ static DEFINE_PER_CPU(int, stepping_kernel_bp);
 /* Number of BRP/WRP registers on this CPU. */
 static int core_num_brps;
 static int core_num_wrps;
+
+/* Determine number of BRP registers available. */
+static int get_num_brps(void)
+{
+	return ((read_cpuid(ID_AA64DFR0_EL1) >> 12) & 0xf) + 1;
+}
+
+/* Determine number of WRP registers available. */
+static int get_num_wrps(void)
+{
+	return ((read_cpuid(ID_AA64DFR0_EL1) >> 20) & 0xf) + 1;
+}
 
 int hw_breakpoint_slots(int type)
 {
@@ -145,7 +157,7 @@ static void write_wb_reg(int reg, int n, u64 val)
  * Convert a breakpoint privilege level to the corresponding exception
  * level.
  */
-static enum dbg_active_el debug_exception_level(int privilege)
+static enum debug_el debug_exception_level(int privilege)
 {
 	switch (privilege) {
 	case AARCH64_BREAKPOINT_EL0:
@@ -163,20 +175,6 @@ enum hw_breakpoint_ops {
 	HW_BREAKPOINT_UNINSTALL,
 	HW_BREAKPOINT_RESTORE
 };
-
-static int is_compat_bp(struct perf_event *bp)
-{
-	struct task_struct *tsk = bp->hw.target;
-
-	/*
-	 * tsk can be NULL for per-cpu (non-ptrace) breakpoints.
-	 * In this case, use the native interface, since we don't have
-	 * the notion of a "compat CPU" and could end up relying on
-	 * deprecated behaviour if we use unaligned watchpoints in
-	 * AArch64 state.
-	 */
-	return tsk && is_compat_thread(task_thread_info(tsk));
-}
 
 /**
  * hw_breakpoint_slot_setup - Find and setup a perf slot according to
@@ -233,7 +231,7 @@ static int hw_breakpoint_control(struct perf_event *bp,
 	struct perf_event **slots;
 	struct debug_info *debug_info = &current->thread.debug;
 	int i, max_slots, ctrl_reg, val_reg, reg_enable;
-	enum dbg_active_el dbg_el = debug_exception_level(info->ctrl.privilege);
+	enum debug_el dbg_el = debug_exception_level(info->ctrl.privilege);
 	u32 ctrl;
 
 	if (info->ctrl.type == ARM_BREAKPOINT_EXECUTE) {
@@ -435,7 +433,7 @@ static int arch_build_bp_info(struct perf_event *bp)
 	 * Watchpoints can be of length 1, 2, 4 or 8 bytes.
 	 */
 	if (info->ctrl.type == ARM_BREAKPOINT_EXECUTE) {
-		if (is_compat_bp(bp)) {
+		if (is_compat_task()) {
 			if (info->ctrl.len != ARM_BREAKPOINT_LEN_2 &&
 			    info->ctrl.len != ARM_BREAKPOINT_LEN_4)
 				return -EINVAL;
@@ -492,7 +490,7 @@ int arch_validate_hwbkpt_settings(struct perf_event *bp)
 	 * AArch32 tasks expect some simple alignment fixups, so emulate
 	 * that here.
 	 */
-	if (is_compat_bp(bp)) {
+	if (is_compat_task()) {
 		if (info->ctrl.len == ARM_BREAKPOINT_LEN_8)
 			alignment_mask = 0x7;
 		else
@@ -529,7 +527,7 @@ int arch_validate_hwbkpt_settings(struct perf_event *bp)
 	 * Disallow per-task kernel breakpoints since these would
 	 * complicate the stepping code.
 	 */
-	if (info->ctrl.privilege == AARCH64_BREAKPOINT_EL1 && bp->hw.target)
+	if (info->ctrl.privilege == AARCH64_BREAKPOINT_EL1 && bp->hw.bp_target)
 		return -EINVAL;
 
 	return 0;
@@ -540,7 +538,7 @@ int arch_validate_hwbkpt_settings(struct perf_event *bp)
  * exception level at the register level.
  * This is used when single-stepping after a breakpoint exception.
  */
-static void toggle_bp_registers(int reg, enum dbg_active_el el, int enable)
+static void toggle_bp_registers(int reg, enum debug_el el, int enable)
 {
 	int i, max_slots, privilege;
 	u32 ctrl;
@@ -887,7 +885,7 @@ static int hw_breakpoint_reset_notify(struct notifier_block *self,
 						void *hcpu)
 {
 	int cpu = (long)hcpu;
-	if ((action & ~CPU_TASKS_FROZEN) == CPU_ONLINE)
+	if (action == CPU_ONLINE)
 		smp_call_function_single(cpu, hw_breakpoint_reset, NULL, 1);
 	return NOTIFY_OK;
 }
@@ -896,7 +894,7 @@ static struct notifier_block hw_breakpoint_reset_nb = {
 	.notifier_call = hw_breakpoint_reset_notify,
 };
 
-#ifdef CONFIG_CPU_PM
+#ifdef CONFIG_ARM64_CPU_SUSPEND
 extern void cpu_suspend_set_dbg_restorer(void (*hw_bp_restore)(void *));
 #else
 static inline void cpu_suspend_set_dbg_restorer(void (*hw_bp_restore)(void *))
@@ -915,8 +913,6 @@ static int __init arch_hw_breakpoint_init(void)
 	pr_info("found %d breakpoint and %d watchpoint registers.\n",
 		core_num_brps, core_num_wrps);
 
-	cpu_notifier_register_begin();
-
 	/*
 	 * Reset the breakpoint resources. We assume that a halting
 	 * debugger will leave the world in a nice state for us.
@@ -931,10 +927,7 @@ static int __init arch_hw_breakpoint_init(void)
 			      TRAP_HWBKPT, "hw-watchpoint handler");
 
 	/* Register hotplug notifier. */
-	__register_cpu_notifier(&hw_breakpoint_reset_nb);
-
-	cpu_notifier_register_done();
-
+	register_cpu_notifier(&hw_breakpoint_reset_nb);
 	/* Register cpu_suspend hw breakpoint restore hook */
 	cpu_suspend_set_dbg_restorer(hw_breakpoint_reset);
 

@@ -507,18 +507,18 @@ static int s6e63m0_power_on(struct s6e63m0 *lcd)
 	if (!pd->power_on) {
 		dev_err(lcd->dev, "power_on is NULL.\n");
 		return -EINVAL;
+	} else {
+		pd->power_on(lcd->ld, 1);
+		msleep(pd->power_on_delay);
 	}
-
-	pd->power_on(lcd->ld, 1);
-	msleep(pd->power_on_delay);
 
 	if (!pd->reset) {
 		dev_err(lcd->dev, "reset is NULL.\n");
 		return -EINVAL;
+	} else {
+		pd->reset(lcd->ld);
+		msleep(pd->reset_delay);
 	}
-
-	pd->reset(lcd->ld);
-	msleep(pd->reset_delay);
 
 	ret = s6e63m0_ldi_init(lcd);
 	if (ret) {
@@ -597,6 +597,11 @@ static int s6e63m0_get_power(struct lcd_device *ld)
 	return lcd->power;
 }
 
+static int s6e63m0_get_brightness(struct backlight_device *bd)
+{
+	return bd->props.brightness;
+}
+
 static int s6e63m0_set_brightness(struct backlight_device *bd)
 {
 	int ret = 0, brightness = bd->props.brightness;
@@ -624,6 +629,7 @@ static struct lcd_ops s6e63m0_lcd_ops = {
 };
 
 static const struct backlight_ops s6e63m0_backlight_ops  = {
+	.get_brightness = s6e63m0_get_brightness,
 	.update_status = s6e63m0_set_brightness,
 };
 
@@ -697,7 +703,7 @@ static ssize_t s6e63m0_sysfs_show_gamma_table(struct device *dev,
 	struct s6e63m0 *lcd = dev_get_drvdata(dev);
 	char temp[3];
 
-	sprintf(temp, "%u\n", lcd->gamma_table_count);
+	sprintf(temp, "%d\n", lcd->gamma_table_count);
 	strcpy(buf, temp);
 
 	return strlen(buf);
@@ -842,6 +848,7 @@ static void s6e63m0_shutdown(struct spi_device *spi)
 static struct spi_driver s6e63m0_driver = {
 	.driver = {
 		.name	= "s6e63m0",
+		.owner	= THIS_MODULE,
 		.pm	= &s6e63m0_pm_ops,
 	},
 	.probe		= s6e63m0_probe,

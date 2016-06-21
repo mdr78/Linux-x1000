@@ -119,6 +119,8 @@ static DEFINE_SPINLOCK(davinci_rtc_lock);
 struct davinci_rtc {
 	struct rtc_device		*rtc;
 	void __iomem			*base;
+	resource_size_t			pbase;
+	size_t				base_size;
 	int				irq;
 };
 
@@ -480,12 +482,14 @@ static int __init davinci_rtc_probe(struct platform_device *pdev)
 {
 	struct device *dev = &pdev->dev;
 	struct davinci_rtc *davinci_rtc;
-	struct resource *res;
+	struct resource *res, *mem;
 	int ret = 0;
 
 	davinci_rtc = devm_kzalloc(&pdev->dev, sizeof(struct davinci_rtc), GFP_KERNEL);
-	if (!davinci_rtc)
+	if (!davinci_rtc) {
+		dev_dbg(dev, "could not allocate memory for private data\n");
 		return -ENOMEM;
+	}
 
 	davinci_rtc->irq = platform_get_irq(pdev, 0);
 	if (davinci_rtc->irq < 0) {
@@ -494,9 +498,28 @@ static int __init davinci_rtc_probe(struct platform_device *pdev)
 	}
 
 	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
-	davinci_rtc->base = devm_ioremap_resource(dev, res);
-	if (IS_ERR(davinci_rtc->base))
-		return PTR_ERR(davinci_rtc->base);
+	if (!res) {
+		dev_err(dev, "no mem resource\n");
+		return -EINVAL;
+	}
+
+	davinci_rtc->pbase = res->start;
+	davinci_rtc->base_size = resource_size(res);
+
+	mem = devm_request_mem_region(dev, davinci_rtc->pbase,
+				davinci_rtc->base_size, pdev->name);
+	if (!mem) {
+		dev_err(dev, "RTC registers at %08x are not free\n",
+			davinci_rtc->pbase);
+		return -EBUSY;
+	}
+
+	davinci_rtc->base = devm_ioremap(dev, davinci_rtc->pbase,
+					davinci_rtc->base_size);
+	if (!davinci_rtc->base) {
+		dev_err(dev, "unable to ioremap MEM resource\n");
+		return -ENOMEM;
+	}
 
 	platform_set_drvdata(pdev, davinci_rtc);
 
@@ -546,9 +569,11 @@ static int __exit davinci_rtc_remove(struct platform_device *pdev)
 }
 
 static struct platform_driver davinci_rtc_driver = {
+	.probe		= davinci_rtc_probe,
 	.remove		= __exit_p(davinci_rtc_remove),
 	.driver		= {
 		.name = "rtc_davinci",
+		.owner = THIS_MODULE,
 	},
 };
 

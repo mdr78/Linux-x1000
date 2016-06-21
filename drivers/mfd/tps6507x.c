@@ -119,7 +119,7 @@ static const struct i2c_device_id tps6507x_i2c_id[] = {
 MODULE_DEVICE_TABLE(i2c, tps6507x_i2c_id);
 
 #ifdef CONFIG_OF
-static const struct of_device_id tps6507x_of_match[] = {
+static struct of_device_id tps6507x_of_match[] = {
 	{.compatible = "ti,tps6507x", },
 	{},
 };
@@ -129,6 +129,7 @@ MODULE_DEVICE_TABLE(of, tps6507x_of_match);
 static struct i2c_driver tps6507x_i2c_driver = {
 	.driver = {
 		   .name = "tps6507x",
+		   .owner = THIS_MODULE,
 		   .of_match_table = of_match_ptr(tps6507x_of_match),
 	},
 	.probe = tps6507x_i2c_probe,

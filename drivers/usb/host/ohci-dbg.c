@@ -491,8 +491,7 @@ static ssize_t fill_periodic_buffer(struct debug_buffer *buf)
 	char			*next;
 	unsigned		i;
 
-	seen = kmalloc(DBG_SCHED_LIMIT * sizeof *seen, GFP_ATOMIC);
-	if (!seen)
+	if (!(seen = kmalloc (DBG_SCHED_LIMIT * sizeof *seen, GFP_ATOMIC)))
 		return 0;
 	seen_count = 0;
 
@@ -507,8 +506,7 @@ static ssize_t fill_periodic_buffer(struct debug_buffer *buf)
 	/* dump a snapshot of the periodic schedule (and load) */
 	spin_lock_irqsave (&ohci->lock, flags);
 	for (i = 0; i < NUM_INTS; i++) {
-		ed = ohci->periodic[i];
-		if (!ed)
+		if (!(ed = ohci->periodic [i]))
 			continue;
 
 		temp = scnprintf (next, size, "%2d [%3d]:", i, ohci->load [i]);

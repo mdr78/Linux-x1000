@@ -313,13 +313,13 @@ intvec_\vecname:
 	 movei  r3, 0
 	}
 	.else
-	.ifc \c_routine, handle_perf_interrupt
+	.ifc \c_routine, op_handle_perf_interrupt
 	{
 	 mfspr  r2, PERF_COUNT_STS
 	 movei  r3, -1   /* not used, but set for consistency */
 	}
 	.else
-	.ifc \c_routine, handle_perf_interrupt
+	.ifc \c_routine, op_handle_aux_perf_interrupt
 	{
 	 mfspr  r2, AUX_PERF_COUNT_STS
 	 movei  r3, -1   /* not used, but set for consistency */
@@ -946,13 +946,6 @@ STD_ENTRY(interrupt_return)
 	bzt     r30, .Lrestore_regs
 3:
 
-	/* We are relying on INT_PERF_COUNT at 33, and AUX_PERF_COUNT at 48 */
-	{
-	 moveli r0, lo16(1 << (INT_PERF_COUNT - 32))
-	 bz     r31, .Lrestore_regs
-	}
-	auli    r0, r0, ha16(1 << (INT_AUX_PERF_COUNT - 32))
-	mtspr   SPR_INTERRUPT_MASK_RESET_K_1, r0
 
 	/*
 	 * We now commit to returning from this interrupt, since we will be
@@ -1178,10 +1171,6 @@ handle_nmi:
 	 PTREGS_PTR(r0, PTREGS_OFFSET_BASE)
 	}
 	FEEDBACK_REENTER(handle_nmi)
-	{
-	 movei  r30, 1
-	 seq    r31, r0, zero
-	}
 	j       interrupt_return
 	STD_ENDPROC(handle_nmi)
 
@@ -1224,7 +1213,6 @@ handle_syscall:
 	 jal    do_syscall_trace_enter
 	}
 	FEEDBACK_REENTER(handle_syscall)
-	blz     r0, .Lsyscall_sigreturn_skip
 
 	/*
 	 * We always reload our registers from the stack at this
@@ -1847,9 +1835,8 @@ int_unalign:
 /* Include .intrpt array of interrupt vectors */
 	.section ".intrpt", "ax"
 
-#ifndef CONFIG_USE_PMC
-#define handle_perf_interrupt bad_intr
-#endif
+#define op_handle_perf_interrupt bad_intr
+#define op_handle_aux_perf_interrupt bad_intr
 
 #ifndef CONFIG_HARDWALL
 #define do_hardwall_trap bad_intr
@@ -1890,7 +1877,7 @@ int_unalign:
 	int_hand     INT_IDN_AVAIL, IDN_AVAIL, bad_intr
 	int_hand     INT_UDN_AVAIL, UDN_AVAIL, bad_intr
 	int_hand     INT_PERF_COUNT, PERF_COUNT, \
-		     handle_perf_interrupt, handle_nmi
+		     op_handle_perf_interrupt, handle_nmi
 	int_hand     INT_INTCTRL_3, INTCTRL_3, bad_intr
 #if CONFIG_KERNEL_PL == 2
 	dc_dispatch  INT_INTCTRL_2, INTCTRL_2
@@ -1915,7 +1902,7 @@ int_unalign:
 	int_hand     INT_SN_CPL, SN_CPL, bad_intr
 	int_hand     INT_DOUBLE_FAULT, DOUBLE_FAULT, do_trap
 	int_hand     INT_AUX_PERF_COUNT, AUX_PERF_COUNT, \
-		     handle_perf_interrupt, handle_nmi
+		     op_handle_aux_perf_interrupt, handle_nmi
 
 	/* Synthetic interrupt delivered only by the simulator */
 	int_hand     INT_BREAKPOINT, BREAKPOINT, do_breakpoint

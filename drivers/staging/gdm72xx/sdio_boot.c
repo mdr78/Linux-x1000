@@ -41,11 +41,11 @@ static u8 *tx_buf;
 
 static int ack_ready(struct sdio_func *func)
 {
-	unsigned long wait = jiffies + HZ;
+	unsigned long start = jiffies;
 	u8 val;
 	int ret;
 
-	while (time_before(jiffies, wait)) {
+	while ((jiffies - start) < HZ) {
 		val = sdio_readb(func, 0x13, &ret);
 		if (val & 0x01)
 			return 1;
@@ -72,7 +72,7 @@ static int download_image(struct sdio_func *func, const char *img_name)
 	}
 
 	buf = kmalloc(DOWNLOAD_SIZE + TYPE_A_HEADER_SIZE, GFP_KERNEL);
-	if (!buf)
+	if (buf == NULL)
 		return -ENOMEM;
 
 	img_len = firm->size;
@@ -139,7 +139,7 @@ int sdio_boot(struct sdio_func *func)
 	const char *rfs_name = FW_DIR FW_RFS;
 
 	tx_buf = kmalloc(YMEM0_SIZE, GFP_KERNEL);
-	if (!tx_buf)
+	if (tx_buf == NULL)
 		return -ENOMEM;
 
 	ret = download_image(func, krn_name);

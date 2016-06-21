@@ -29,6 +29,7 @@
  * struct adc_jack_data - internal data for adc_jack device driver
  * @edev:		extcon device.
  * @cable_names:	list of supported cables.
+ * @num_cables:		size of cable_names.
  * @adc_conditions:	list of adc value conditions.
  * @num_conditions:	size of adc_conditions.
  * @irq:		irq number of attach/detach event (0 if not exist).
@@ -38,9 +39,10 @@
  * @chan:		iio channel being queried.
  */
 struct adc_jack_data {
-	struct extcon_dev *edev;
+	struct extcon_dev edev;
 
-	const unsigned int **cable_names;
+	const char **cable_names;
+	int num_cables;
 	struct adc_jack_cond *adc_conditions;
 	int num_conditions;
 
@@ -62,7 +64,7 @@ static void adc_jack_handler(struct work_struct *work)
 
 	ret = iio_read_channel_raw(data->chan, &adc_val);
 	if (ret < 0) {
-		dev_err(&data->edev->dev, "read channel() error: %d\n", ret);
+		dev_err(&data->edev.dev, "read channel() error: %d\n", ret);
 		return;
 	}
 
@@ -78,7 +80,7 @@ static void adc_jack_handler(struct work_struct *work)
 	}
 	/* if no def has met, it means state = 0 (no cables attached) */
 
-	extcon_set_state(data->edev, state);
+	extcon_set_state(&data->edev, state);
 }
 
 static irqreturn_t adc_jack_irq_thread(int irq, void *_data)
@@ -100,21 +102,33 @@ static int adc_jack_probe(struct platform_device *pdev)
 	if (!data)
 		return -ENOMEM;
 
+	data->edev.name = pdata->name;
+
 	if (!pdata->cable_names) {
+		err = -EINVAL;
 		dev_err(&pdev->dev, "error: cable_names not defined.\n");
-		return -EINVAL;
+		goto out;
 	}
 
-	data->edev = devm_extcon_dev_allocate(&pdev->dev, pdata->cable_names);
-	if (IS_ERR(data->edev)) {
-		dev_err(&pdev->dev, "failed to allocate extcon device\n");
-		return -ENOMEM;
+	data->edev.dev.parent = &pdev->dev;
+	data->edev.supported_cable = pdata->cable_names;
+
+	/* Check the length of array and set num_cables */
+	for (i = 0; data->edev.supported_cable[i]; i++)
+		;
+	if (i == 0 || i > SUPPORTED_CABLE_MAX) {
+		err = -EINVAL;
+		dev_err(&pdev->dev, "error: pdata->cable_names size = %d\n",
+				i - 1);
+		goto out;
 	}
+	data->num_cables = i;
 
 	if (!pdata->adc_conditions ||
 			!pdata->adc_conditions[0].state) {
+		err = -EINVAL;
 		dev_err(&pdev->dev, "error: adc_conditions not defined.\n");
-		return -EINVAL;
+		goto out;
 	}
 	data->adc_conditions = pdata->adc_conditions;
 
@@ -124,8 +138,10 @@ static int adc_jack_probe(struct platform_device *pdev)
 	data->num_conditions = i;
 
 	data->chan = iio_channel_get(&pdev->dev, pdata->consumer_channel);
-	if (IS_ERR(data->chan))
-		return PTR_ERR(data->chan);
+	if (IS_ERR(data->chan)) {
+		err = PTR_ERR(data->chan);
+		goto out;
+	}
 
 	data->handling_delay = msecs_to_jiffies(pdata->handling_delay_ms);
 
@@ -133,14 +149,15 @@ static int adc_jack_probe(struct platform_device *pdev)
 
 	platform_set_drvdata(pdev, data);
 
-	err = devm_extcon_dev_register(&pdev->dev, data->edev);
+	err = extcon_dev_register(&data->edev);
 	if (err)
-		return err;
+		goto out;
 
 	data->irq = platform_get_irq(pdev, 0);
 	if (!data->irq) {
 		dev_err(&pdev->dev, "platform_get_irq failed\n");
-		return -ENODEV;
+		err = -ENODEV;
+		goto err_irq;
 	}
 
 	err = request_any_context_irq(data->irq, adc_jack_irq_thread,
@@ -148,10 +165,15 @@ static int adc_jack_probe(struct platform_device *pdev)
 
 	if (err < 0) {
 		dev_err(&pdev->dev, "error: irq %d\n", data->irq);
-		return err;
+		goto err_irq;
 	}
 
 	return 0;
+
+err_irq:
+	extcon_dev_unregister(&data->edev);
+out:
+	return err;
 }
 
 static int adc_jack_remove(struct platform_device *pdev)
@@ -160,7 +182,7 @@ static int adc_jack_remove(struct platform_device *pdev)
 
 	free_irq(data->irq, data);
 	cancel_work_sync(&data->handler.work);
-	iio_channel_release(data->chan);
+	extcon_dev_unregister(&data->edev);
 
 	return 0;
 }
@@ -170,6 +192,7 @@ static struct platform_driver adc_jack_driver = {
 	.remove         = adc_jack_remove,
 	.driver         = {
 		.name   = "adc-jack",
+		.owner  = THIS_MODULE,
 	},
 };
 

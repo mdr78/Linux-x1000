@@ -235,7 +235,7 @@ static void atl1_check_options(struct atl1_adapter *adapter)
 /*
  * atl1_pci_tbl - PCI Device ID Table
  */
-static const struct pci_device_id atl1_pci_tbl[] = {
+static DEFINE_PCI_DEVICE_TABLE(atl1_pci_tbl) = {
 	{PCI_DEVICE(PCI_VENDOR_ID_ATTANSIC, PCI_DEVICE_ID_ATTANSIC_L1)},
 	/* required last entry */
 	{0,}
@@ -910,6 +910,7 @@ static s32 atl1_get_speed_and_duplex(struct atl1_hw *hw, u16 *speed, u16 *duplex
 		if (netif_msg_hw(adapter))
 			dev_dbg(&pdev->dev, "error getting speed\n");
 		return ATLX_ERR_PHY_SPEED;
+		break;
 	}
 	if (phy_data & MII_ATLX_PSSR_DPLX)
 		*duplex = FULL_DUPLEX;
@@ -2117,17 +2118,18 @@ static u16 atl1_tpd_avail(struct atl1_tpd_ring *tpd_ring)
 }
 
 static int atl1_tso(struct atl1_adapter *adapter, struct sk_buff *skb,
-		    struct tx_packet_desc *ptpd)
+	struct tx_packet_desc *ptpd)
 {
 	u8 hdr_len, ip_off;
 	u32 real_len;
+	int err;
 
 	if (skb_shinfo(skb)->gso_size) {
-		int err;
-
-		err = skb_cow_head(skb, 0);
-		if (err < 0)
-			return err;
+		if (skb_header_cloned(skb)) {
+			err = pskb_expand_head(skb, 0, 0, GFP_ATOMIC);
+			if (unlikely(err))
+				return -1;
+		}
 
 		if (skb->protocol == htons(ETH_P_IP)) {
 			struct iphdr *iph = ip_hdr(skb);
@@ -2173,7 +2175,7 @@ static int atl1_tso(struct atl1_adapter *adapter, struct sk_buff *skb,
 			return 3;
 		}
 	}
-	return 0;
+	return false;
 }
 
 static int atl1_tx_csum(struct atl1_adapter *adapter, struct sk_buff *skb,
@@ -2415,8 +2417,8 @@ static netdev_tx_t atl1_xmit_frame(struct sk_buff *skb,
 		(u16) atomic_read(&tpd_ring->next_to_use));
 	memset(ptpd, 0, sizeof(struct tx_packet_desc));
 
-	if (skb_vlan_tag_present(skb)) {
-		vlan_tag = skb_vlan_tag_get(skb);
+	if (vlan_tx_tag_present(skb)) {
+		vlan_tag = vlan_tx_tag_get(skb);
 		vlan_tag = (vlan_tag << 4) | (vlan_tag >> 13) |
 			((vlan_tag >> 9) & 0x8);
 		ptpd->word3 |= 1 << TPD_INS_VL_TAG_SHIFT;
@@ -3257,8 +3259,8 @@ static int atl1_get_settings(struct net_device *netdev,
 		else
 			ecmd->duplex = DUPLEX_HALF;
 	} else {
-		ethtool_cmd_speed_set(ecmd, SPEED_UNKNOWN);
-		ecmd->duplex = DUPLEX_UNKNOWN;
+		ethtool_cmd_speed_set(ecmd, -1);
+		ecmd->duplex = -1;
 	}
 	if (hw->media_type == MEDIA_TYPE_AUTO_SENSOR ||
 	    hw->media_type == MEDIA_TYPE_1000M_FULL)
@@ -3388,6 +3390,7 @@ static void atl1_get_drvinfo(struct net_device *netdev,
 		sizeof(drvinfo->version));
 	strlcpy(drvinfo->bus_info, pci_name(adapter->pdev),
 		sizeof(drvinfo->bus_info));
+	drvinfo->eedump_len = ATL1_EEDUMP_LEN;
 }
 
 static void atl1_get_wol(struct net_device *netdev,

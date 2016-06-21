@@ -27,7 +27,6 @@
 #include <linux/interrupt.h>
 #include <linux/usb.h>
 #include <linux/slab.h>
-#include <linux/bitrev.h>
 
 #include "em28xx.h"
 
@@ -54,7 +53,6 @@ struct em28xx_ir_poll_result {
 	unsigned int toggle_bit:1;
 	unsigned int read_count:7;
 
-	enum rc_type protocol;
 	u32 scancode;
 };
 
@@ -71,9 +69,10 @@ struct em28xx_IR {
 	unsigned int last_readcount;
 	u64 rc_type;
 
-	struct i2c_client *i2c_client;
+	/* i2c slave address of external device (if used) */
+	u16 i2c_dev_addr;
 
-	int  (*get_key_i2c)(struct i2c_client *ir, enum rc_type *protocol, u32 *scancode);
+	int  (*get_key_i2c)(struct i2c_client *, u32 *);
 	int  (*get_key)(struct em28xx_IR *, struct em28xx_ir_poll_result *);
 };
 
@@ -81,8 +80,7 @@ struct em28xx_IR {
  I2C IR based get keycodes - should be used with ir-kbd-i2c
  **********************************************************/
 
-static int em28xx_get_key_terratec(struct i2c_client *i2c_dev,
-				   enum rc_type *protocol, u32 *scancode)
+static int em28xx_get_key_terratec(struct i2c_client *i2c_dev, u32 *ir_key)
 {
 	unsigned char b;
 
@@ -100,15 +98,14 @@ static int em28xx_get_key_terratec(struct i2c_client *i2c_dev,
 		/* keep old data */
 		return 1;
 
-	*protocol = RC_TYPE_UNKNOWN;
-	*scancode = b;
+	*ir_key = b;
 	return 1;
 }
 
-static int em28xx_get_key_em_haup(struct i2c_client *i2c_dev,
-				  enum rc_type *protocol, u32 *scancode)
+static int em28xx_get_key_em_haup(struct i2c_client *i2c_dev, u32 *ir_key)
 {
 	unsigned char buf[2];
+	u16 code;
 	int size;
 
 	/* poll IR chip */
@@ -130,13 +127,26 @@ static int em28xx_get_key_em_haup(struct i2c_client *i2c_dev,
 	 * So, the code translation is not complete. Yet, it is enough to
 	 * work with the provided RC5 IR.
 	 */
-	*protocol = RC_TYPE_RC5;
-	*scancode = (bitrev8(buf[1]) & 0x1f) << 8 | bitrev8(buf[0]) >> 2;
+	code =
+		 ((buf[0] & 0x01) ? 0x0020 : 0) | /* 		0010 0000 */
+		 ((buf[0] & 0x02) ? 0x0010 : 0) | /* 		0001 0000 */
+		 ((buf[0] & 0x04) ? 0x0008 : 0) | /* 		0000 1000 */
+		 ((buf[0] & 0x08) ? 0x0004 : 0) | /* 		0000 0100 */
+		 ((buf[0] & 0x10) ? 0x0002 : 0) | /* 		0000 0010 */
+		 ((buf[0] & 0x20) ? 0x0001 : 0) | /* 		0000 0001 */
+		 ((buf[1] & 0x08) ? 0x1000 : 0) | /* 0001 0000		  */
+		 ((buf[1] & 0x10) ? 0x0800 : 0) | /* 0000 1000		  */
+		 ((buf[1] & 0x20) ? 0x0400 : 0) | /* 0000 0100		  */
+		 ((buf[1] & 0x40) ? 0x0200 : 0) | /* 0000 0010		  */
+		 ((buf[1] & 0x80) ? 0x0100 : 0);  /* 0000 0001		  */
+
+	/* return key */
+	*ir_key = code;
 	return 1;
 }
 
 static int em28xx_get_key_pinnacle_usb_grey(struct i2c_client *i2c_dev,
-					    enum rc_type *protocol, u32 *scancode)
+					    u32 *ir_key)
 {
 	unsigned char buf[3];
 
@@ -148,13 +158,13 @@ static int em28xx_get_key_pinnacle_usb_grey(struct i2c_client *i2c_dev,
 	if (buf[0] != 0x00)
 		return 0;
 
-	*protocol = RC_TYPE_UNKNOWN;
-	*scancode = buf[2] & 0x3f;
+	*ir_key = buf[2]&0x3f;
+
 	return 1;
 }
 
 static int em28xx_get_key_winfast_usbii_deluxe(struct i2c_client *i2c_dev,
-					       enum rc_type *protocol, u32 *scancode)
+					       u32 *ir_key)
 {
 	unsigned char subaddr, keydetect, key;
 
@@ -174,8 +184,7 @@ static int em28xx_get_key_winfast_usbii_deluxe(struct i2c_client *i2c_dev,
 	if (key == 0x00)
 		return 0;
 
-	*protocol = RC_TYPE_UNKNOWN;
-	*scancode = key;
+	*ir_key = key;
 	return 1;
 }
 
@@ -206,22 +215,7 @@ static int default_polling_getkey(struct em28xx_IR *ir,
 	poll_result->read_count = (msg[0] & 0x7f);
 
 	/* Remote Control Address/Data (Regs 0x46/0x47) */
-	switch (ir->rc_type) {
-	case RC_BIT_RC5:
-		poll_result->protocol = RC_TYPE_RC5;
-		poll_result->scancode = RC_SCANCODE_RC5(msg[1], msg[2]);
-		break;
-
-	case RC_BIT_NEC:
-		poll_result->protocol = RC_TYPE_NEC;
-		poll_result->scancode = RC_SCANCODE_NEC(msg[1], msg[2]);
-		break;
-
-	default:
-		poll_result->protocol = RC_TYPE_UNKNOWN;
-		poll_result->scancode = msg[1] << 8 | msg[2];
-		break;
-	}
+	poll_result->scancode = msg[1] << 8 | msg[2];
 
 	return 0;
 }
@@ -253,32 +247,25 @@ static int em2874_polling_getkey(struct em28xx_IR *ir,
 	 */
 	switch (ir->rc_type) {
 	case RC_BIT_RC5:
-		poll_result->protocol = RC_TYPE_RC5;
-		poll_result->scancode = RC_SCANCODE_RC5(msg[1], msg[2]);
-		break;
-
-	case RC_BIT_NEC:
-		poll_result->protocol = RC_TYPE_RC5;
 		poll_result->scancode = msg[1] << 8 | msg[2];
+		break;
+	case RC_BIT_NEC:
 		if ((msg[3] ^ msg[4]) != 0xff)		/* 32 bits NEC */
-			poll_result->scancode = RC_SCANCODE_NEC32((msg[1] << 24) |
-								  (msg[2] << 16) |
-								  (msg[3] << 8)  |
-								  (msg[4]));
+			poll_result->scancode = (msg[1] << 24) |
+						(msg[2] << 16) |
+						(msg[3] << 8)  |
+						 msg[4];
 		else if ((msg[1] ^ msg[2]) != 0xff)	/* 24 bits NEC */
-			poll_result->scancode = RC_SCANCODE_NECX(msg[1] << 8 |
-								 msg[2], msg[3]);
+			poll_result->scancode = (msg[1] << 16) |
+						(msg[2] << 8)  |
+						 msg[3];
 		else					/* Normal NEC */
-			poll_result->scancode = RC_SCANCODE_NEC(msg[1], msg[3]);
+			poll_result->scancode = msg[1] << 8 | msg[3];
 		break;
-
 	case RC_BIT_RC6_0:
-		poll_result->protocol = RC_TYPE_RC6_0;
-		poll_result->scancode = RC_SCANCODE_RC6_0(msg[1], msg[2]);
+		poll_result->scancode = msg[1] << 8 | msg[2];
 		break;
-
 	default:
-		poll_result->protocol = RC_TYPE_UNKNOWN;
 		poll_result->scancode = (msg[1] << 24) | (msg[2] << 16) |
 					(msg[3] << 8)  | msg[4];
 		break;
@@ -293,20 +280,23 @@ static int em2874_polling_getkey(struct em28xx_IR *ir,
 
 static int em28xx_i2c_ir_handle_key(struct em28xx_IR *ir)
 {
-	static u32 scancode;
-	enum rc_type protocol;
+	struct em28xx *dev = ir->dev;
+	static u32 ir_key;
 	int rc;
+	struct i2c_client client;
 
-	rc = ir->get_key_i2c(ir->i2c_client, &protocol, &scancode);
+	client.adapter = &ir->dev->i2c_adap[dev->def_i2c_bus];
+	client.addr = ir->i2c_dev_addr;
+
+	rc = ir->get_key_i2c(&client, &ir_key);
 	if (rc < 0) {
 		dprintk("ir->get_key_i2c() failed: %d\n", rc);
 		return rc;
 	}
 
 	if (rc) {
-		dprintk("%s: proto = 0x%04x, scancode = 0x%04x\n",
-			__func__, protocol, scancode);
-		rc_keydown(ir->rc, protocol, scancode, 0);
+		dprintk("%s: keycode = 0x%04x\n", __func__, ir_key);
+		rc_keydown(ir->rc, ir_key, 0);
 	}
 	return 0;
 }
@@ -329,12 +319,10 @@ static void em28xx_ir_handle_key(struct em28xx_IR *ir)
 			poll_result.scancode);
 		if (ir->full_code)
 			rc_keydown(ir->rc,
-				   poll_result.protocol,
 				   poll_result.scancode,
 				   poll_result.toggle_bit);
 		else
 			rc_keydown(ir->rc,
-				   RC_TYPE_UNKNOWN,
 				   poll_result.scancode & 0xff,
 				   poll_result.toggle_bit);
 
@@ -355,7 +343,7 @@ static void em28xx_ir_work(struct work_struct *work)
 {
 	struct em28xx_IR *ir = container_of(work, struct em28xx_IR, work.work);
 
-	if (ir->i2c_client) /* external i2c device */
+	if (ir->i2c_dev_addr) /* external i2c device */
 		em28xx_i2c_ir_handle_key(ir);
 	else /* internal device */
 		em28xx_ir_handle_key(ir);
@@ -459,7 +447,7 @@ static int em28xx_ir_change_protocol(struct rc_dev *rc_dev, u64 *rc_type)
 		return em2874_ir_change_protocol(rc_dev, rc_type);
 	default:
 		printk("Unrecognized em28xx chip id 0x%02x: IR not supported\n",
-		       dev->chip_id);
+			dev->chip_id);
 		return -EINVAL;
 	}
 }
@@ -505,7 +493,7 @@ static void em28xx_query_buttons(struct work_struct *work)
 		/* Check states of the buttons and act */
 		j = 0;
 		while (dev->board.buttons[j].role >= 0 &&
-		       dev->board.buttons[j].role < EM28XX_NUM_BUTTON_ROLES) {
+			 dev->board.buttons[j].role < EM28XX_NUM_BUTTON_ROLES) {
 			struct em28xx_button *button = &dev->board.buttons[j];
 			/* Check if button uses the current address */
 			if (button->reg_r != dev->button_polling_addresses[i]) {
@@ -603,17 +591,17 @@ static int em28xx_register_snapshot_button(struct em28xx *dev)
 static void em28xx_init_buttons(struct em28xx *dev)
 {
 	u8  i = 0, j = 0;
-	bool addr_new = false;
+	bool addr_new = 0;
 
 	dev->button_polling_interval = EM28XX_BUTTONS_DEBOUNCED_QUERY_INTERVAL;
 	while (dev->board.buttons[i].role >= 0 &&
-	       dev->board.buttons[i].role < EM28XX_NUM_BUTTON_ROLES) {
+			 dev->board.buttons[i].role < EM28XX_NUM_BUTTON_ROLES) {
 		struct em28xx_button *button = &dev->board.buttons[i];
 		/* Check if polling address is already on the list */
-		addr_new = true;
+		addr_new = 1;
 		for (j = 0; j < dev->num_button_polling_addresses; j++) {
 			if (button->reg_r == dev->button_polling_addresses[j]) {
-				addr_new = false;
+				addr_new = 0;
 				break;
 			}
 		}
@@ -653,9 +641,11 @@ next_button:
 	/* Start polling */
 	if (dev->num_button_polling_addresses) {
 		memset(dev->button_polling_last_values, 0,
-		       EM28XX_NUM_BUTTON_ADDRESSES_MAX);
+					       EM28XX_NUM_BUTTON_ADDRESSES_MAX);
+		INIT_DELAYED_WORK(&dev->buttons_query_work,
+							  em28xx_query_buttons);
 		schedule_delayed_work(&dev->buttons_query_work,
-				      msecs_to_jiffies(dev->button_polling_interval));
+			       msecs_to_jiffies(dev->button_polling_interval));
 	}
 }
 
@@ -686,9 +676,6 @@ static int em28xx_ir_init(struct em28xx *dev)
 		return 0;
 	}
 
-	kref_get(&dev->ref);
-	INIT_DELAYED_WORK(&dev->buttons_query_work, em28xx_query_buttons);
-
 	if (dev->board.buttons)
 		em28xx_init_buttons(dev);
 
@@ -711,10 +698,8 @@ static int em28xx_ir_init(struct em28xx *dev)
 	em28xx_info("Registering input extension\n");
 
 	ir = kzalloc(sizeof(*ir), GFP_KERNEL);
-	if (!ir)
-		return -ENOMEM;
 	rc = rc_allocate_device();
-	if (!rc)
+	if (!ir || !rc)
 		goto error;
 
 	/* record handles to ourself */
@@ -740,7 +725,7 @@ static int em28xx_ir_init(struct em28xx *dev)
 		case EM2820_BOARD_HAUPPAUGE_WINTV_USB_2:
 			rc->map_name = RC_MAP_HAUPPAUGE;
 			ir->get_key_i2c = em28xx_get_key_em_haup;
-			rc->allowed_protocols = RC_BIT_RC5;
+			rc->allowed_protos = RC_BIT_RC5;
 			break;
 		case EM2820_BOARD_LEADTEK_WINFAST_USBII_DELUXE:
 			rc->map_name = RC_MAP_WINFAST_USBII_DELUXE;
@@ -751,18 +736,12 @@ static int em28xx_ir_init(struct em28xx *dev)
 			goto error;
 		}
 
-		ir->i2c_client = kzalloc(sizeof(struct i2c_client), GFP_KERNEL);
-		if (!ir->i2c_client)
-			goto error;
-		ir->i2c_client->adapter = &ir->dev->i2c_adap[dev->def_i2c_bus];
-		ir->i2c_client->addr = i2c_rc_dev_addr;
-		ir->i2c_client->flags = 0;
-		/* NOTE: all other fields of i2c_client are unused */
+		ir->i2c_dev_addr = i2c_rc_dev_addr;
 	} else {	/* internal device */
 		switch (dev->chip_id) {
 		case CHIP_ID_EM2860:
 		case CHIP_ID_EM2883:
-			rc->allowed_protocols = RC_BIT_RC5 | RC_BIT_NEC;
+			rc->allowed_protos = RC_BIT_RC5 | RC_BIT_NEC;
 			ir->get_key = default_polling_getkey;
 			break;
 		case CHIP_ID_EM2884:
@@ -770,7 +749,7 @@ static int em28xx_ir_init(struct em28xx *dev)
 		case CHIP_ID_EM28174:
 		case CHIP_ID_EM28178:
 			ir->get_key = em2874_polling_getkey;
-			rc->allowed_protocols = RC_BIT_RC5 | RC_BIT_NEC |
+			rc->allowed_protos = RC_BIT_RC5 | RC_BIT_NEC |
 					     RC_BIT_RC6_0;
 			break;
 		default:
@@ -816,7 +795,6 @@ static int em28xx_ir_init(struct em28xx *dev)
 	return 0;
 
 error:
-	kfree(ir->i2c_client);
 	dev->ir = NULL;
 	rc_free_device(rc);
 	kfree(ir);
@@ -832,60 +810,20 @@ static int em28xx_ir_fini(struct em28xx *dev)
 		return 0;
 	}
 
-	em28xx_info("Closing input extension\n");
+	em28xx_info("Closing input extension");
 
 	em28xx_shutdown_buttons(dev);
 
 	/* skip detach on non attached boards */
 	if (!ir)
-		goto ref_put;
+		return 0;
 
-	rc_unregister_device(ir->rc);
-
-	kfree(ir->i2c_client);
+	if (ir->rc)
+		rc_unregister_device(ir->rc);
 
 	/* done */
 	kfree(ir);
 	dev->ir = NULL;
-
-ref_put:
-	kref_put(&dev->ref, em28xx_free_device);
-
-	return 0;
-}
-
-static int em28xx_ir_suspend(struct em28xx *dev)
-{
-	struct em28xx_IR *ir = dev->ir;
-
-	if (dev->is_audio_only)
-		return 0;
-
-	em28xx_info("Suspending input extension\n");
-	if (ir)
-		cancel_delayed_work_sync(&ir->work);
-	cancel_delayed_work_sync(&dev->buttons_query_work);
-	/* is canceling delayed work sufficient or does the rc event
-	   kthread needs stopping? kthread is stopped in
-	   ir_raw_event_unregister() */
-	return 0;
-}
-
-static int em28xx_ir_resume(struct em28xx *dev)
-{
-	struct em28xx_IR *ir = dev->ir;
-
-	if (dev->is_audio_only)
-		return 0;
-
-	em28xx_info("Resuming input extension\n");
-	/* if suspend calls ir_raw_event_unregister(), the should call
-	   ir_raw_event_register() */
-	if (ir)
-		schedule_delayed_work(&ir->work, msecs_to_jiffies(ir->polling));
-	if (dev->num_button_polling_addresses)
-		schedule_delayed_work(&dev->buttons_query_work,
-				      msecs_to_jiffies(dev->button_polling_interval));
 	return 0;
 }
 
@@ -894,8 +832,6 @@ static struct em28xx_ops rc_ops = {
 	.name = "Em28xx Input Extension",
 	.init = em28xx_ir_init,
 	.fini = em28xx_ir_fini,
-	.suspend = em28xx_ir_suspend,
-	.resume = em28xx_ir_resume,
 };
 
 static int __init em28xx_rc_register(void)
@@ -909,7 +845,7 @@ static void __exit em28xx_rc_unregister(void)
 }
 
 MODULE_LICENSE("GPL");
-MODULE_AUTHOR("Mauro Carvalho Chehab");
+MODULE_AUTHOR("Mauro Carvalho Chehab <mchehab@redhat.com>");
 MODULE_DESCRIPTION(DRIVER_DESC " - input interface");
 MODULE_VERSION(EM28XX_VERSION);
 

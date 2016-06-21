@@ -38,7 +38,7 @@ struct spear_thermal_dev {
 };
 
 static inline int thermal_get_temp(struct thermal_zone_device *thermal,
-				int *temp)
+				unsigned long *temp)
 {
 	struct spear_thermal_dev *stdev = thermal->devdata;
 
@@ -113,8 +113,10 @@ static int spear_thermal_probe(struct platform_device *pdev)
 	}
 
 	stdev = devm_kzalloc(&pdev->dev, sizeof(*stdev), GFP_KERNEL);
-	if (!stdev)
+	if (!stdev) {
+		dev_err(&pdev->dev, "kzalloc fail\n");
 		return -ENOMEM;
+	}
 
 	/* Enable thermal sensor */
 	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
@@ -186,6 +188,7 @@ static struct platform_driver spear_thermal_driver = {
 	.remove = spear_thermal_exit,
 	.driver = {
 		.name = "spear_thermal",
+		.owner = THIS_MODULE,
 		.pm = &spear_thermal_pm_ops,
 		.of_match_table = spear_thermal_id_table,
 	},

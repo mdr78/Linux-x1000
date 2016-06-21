@@ -520,36 +520,9 @@ static struct nand_ecclayout hwecc4_2048 = {
 	},
 };
 
-/*
- * An ECC layout for using 4-bit ECC with large-page (4096bytes) flash,
- * storing ten ECC bytes plus the manufacturer's bad block marker byte,
- * and not overlapping the default BBT markers.
- */
-static struct nand_ecclayout hwecc4_4096 = {
-	.eccbytes = 80,
-	.eccpos = {
-		/* at the end of spare sector */
-		48, 49, 50, 51, 52, 53, 54, 55, 56, 57,
-		58, 59, 60, 61, 62, 63, 64, 65, 66, 67,
-		68, 69, 70, 71, 72, 73, 74, 75, 76, 77,
-		78, 79, 80, 81, 82, 83, 84, 85, 86, 87,
-		88, 89, 90, 91, 92, 93, 94, 95, 96, 97,
-		98, 99, 100, 101, 102, 103, 104, 105, 106, 107,
-		108, 109, 110, 111, 112, 113, 114, 115, 116, 117,
-		118, 119, 120, 121, 122, 123, 124, 125, 126, 127,
-	},
-	.oobfree = {
-		/* 2 bytes at offset 0 hold manufacturer badblock markers */
-		{.offset = 2, .length = 46, },
-		/* 5 bytes at offset 8 hold BBT markers */
-		/* 8 bytes at offset 16 hold JFFS2 clean markers */
-	},
-};
-
 #if defined(CONFIG_OF)
 static const struct of_device_id davinci_nand_of_match[] = {
 	{.compatible = "ti,davinci-nand", },
-	{.compatible = "ti,keystone-nand", },
 	{},
 };
 MODULE_DEVICE_TABLE(of, davinci_nand_of_match);
@@ -608,11 +581,6 @@ static struct davinci_nand_pdata
 		    of_property_read_bool(pdev->dev.of_node,
 			"ti,davinci-nand-use-bbt"))
 			pdata->bbt_options = NAND_BBT_USE_FLASH;
-
-		if (of_device_is_compatible(pdev->dev.of_node,
-					    "ti,keystone-nand")) {
-			pdata->options |= NAND_NO_SUBPAGE_WRITE;
-		}
 	}
 
 	return dev_get_platdata(&pdev->dev);
@@ -683,6 +651,9 @@ static int nand_davinci_probe(struct platform_device *pdev)
 	info->vaddr		= vaddr;
 
 	info->mtd.priv		= &info->chip;
+	info->mtd.name		= dev_name(&pdev->dev);
+	info->mtd.owner		= THIS_MODULE;
+
 	info->mtd.dev.parent	= &pdev->dev;
 
 	info->chip.IO_ADDR_R	= vaddr;
@@ -774,6 +745,28 @@ static int nand_davinci_probe(struct platform_device *pdev)
 		goto err_clk_enable;
 	}
 
+	/*
+	 * Setup Async configuration register in case we did not boot from
+	 * NAND and so bootloader did not bother to set it up.
+	 */
+	val = davinci_nand_readl(info, A1CR_OFFSET + info->core_chipsel * 4);
+
+	/* Extended Wait is not valid and Select Strobe mode is not used */
+	val &= ~(ACR_ASIZE_MASK | ACR_EW_MASK | ACR_SS_MASK);
+	if (info->chip.options & NAND_BUSWIDTH_16)
+		val |= 0x1;
+
+	davinci_nand_writel(info, A1CR_OFFSET + info->core_chipsel * 4, val);
+
+	ret = 0;
+	if (info->timing)
+		ret = davinci_aemif_setup_timing(info->timing, info->base,
+							info->core_chipsel);
+	if (ret < 0) {
+		dev_dbg(&pdev->dev, "NAND timing values setup fail\n");
+		goto err;
+	}
+
 	spin_lock_irq(&davinci_nand_lock);
 
 	/* put CSxNAND into NAND mode */
@@ -819,12 +812,18 @@ static int nand_davinci_probe(struct platform_device *pdev)
 			info->chip.ecc.mode = NAND_ECC_HW_OOB_FIRST;
 			goto syndrome_done;
 		}
-		if (chunks == 8) {
-			info->ecclayout = hwecc4_4096;
-			info->chip.ecc.mode = NAND_ECC_HW_OOB_FIRST;
-			goto syndrome_done;
-		}
 
+		/* 4KiB page chips are not yet supported. The eccpos from
+		 * nand_ecclayout cannot hold 80 bytes and change to eccpos[]
+		 * breaks userspace ioctl interface with mtd-utils. Once we
+		 * resolve this issue, NAND_ECC_HW_OOB_FIRST mode can be used
+		 * for the 4KiB page chips.
+		 *
+		 * TODO: Note that nand_ecclayout has now been expanded and can
+		 *  hold plenty of OOB entries.
+		 */
+		dev_warn(&pdev->dev, "no 4-bit ECC support yet "
+				"for 4KiB-page NAND\n");
 		ret = -EIO;
 		goto err;
 
@@ -887,6 +886,7 @@ static struct platform_driver nand_davinci_driver = {
 	.remove		= nand_davinci_remove,
 	.driver		= {
 		.name	= "davinci_nand",
+		.owner	= THIS_MODULE,
 		.of_match_table = of_match_ptr(davinci_nand_of_match),
 	},
 };

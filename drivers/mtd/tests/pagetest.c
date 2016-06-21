@@ -52,7 +52,7 @@ static struct rnd_state rnd_state;
 
 static int write_eraseblock(int ebnum)
 {
-	loff_t addr = (loff_t)ebnum * mtd->erasesize;
+	loff_t addr = ebnum * mtd->erasesize;
 
 	prandom_bytes_state(&rnd_state, writebuf, mtd->erasesize);
 	cond_resched();
@@ -64,7 +64,7 @@ static int verify_eraseblock(int ebnum)
 	uint32_t j;
 	int err = 0, i;
 	loff_t addr0, addrn;
-	loff_t addr = (loff_t)ebnum * mtd->erasesize;
+	loff_t addr = ebnum * mtd->erasesize;
 
 	addr0 = 0;
 	for (i = 0; i < ebcnt && bbt[i]; ++i)
@@ -407,10 +407,7 @@ static int __init mtd_pagetest_init(void)
 			goto out;
 		if (i % 256 == 0)
 			pr_info("written up to eraseblock %u\n", i);
-
-		err = mtdtest_relax();
-		if (err)
-			goto out;
+		cond_resched();
 	}
 	pr_info("written %u eraseblocks\n", i);
 
@@ -425,10 +422,7 @@ static int __init mtd_pagetest_init(void)
 			goto out;
 		if (i % 256 == 0)
 			pr_info("verified up to eraseblock %u\n", i);
-
-		err = mtdtest_relax();
-		if (err)
-			goto out;
+		cond_resched();
 	}
 	pr_info("verified %u eraseblocks\n", i);
 

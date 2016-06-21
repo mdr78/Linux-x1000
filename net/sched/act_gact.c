@@ -1,5 +1,5 @@
 /*
- * net/sched/act_gact.c		Generic actions
+ * net/sched/gact.c	Generic actions
  *
  *		This program is free software; you can redistribute it and/or
  *		modify it under the terms of the GNU General Public License
@@ -24,22 +24,19 @@
 #include <net/tc_act/tc_gact.h>
 
 #define GACT_TAB_MASK	15
+static struct tcf_hashinfo gact_hash_info;
 
 #ifdef CONFIG_GACT_PROB
 static int gact_net_rand(struct tcf_gact *gact)
 {
-	smp_rmb(); /* coupled with smp_wmb() in tcf_gact_init() */
-	if (prandom_u32() % gact->tcfg_pval)
+	if (!gact->tcfg_pval || prandom_u32() % gact->tcfg_pval)
 		return gact->tcf_action;
 	return gact->tcfg_paction;
 }
 
 static int gact_determ(struct tcf_gact *gact)
 {
-	u32 pack = atomic_inc_return(&gact->packets);
-
-	smp_rmb(); /* coupled with smp_wmb() in tcf_gact_init() */
-	if (pack % gact->tcfg_pval)
+	if (!gact->tcfg_pval || gact->tcf_bstats.packets % gact->tcfg_pval)
 		return gact->tcf_action;
 	return gact->tcfg_paction;
 }
@@ -60,6 +57,7 @@ static int tcf_gact_init(struct net *net, struct nlattr *nla,
 	struct nlattr *tb[TCA_GACT_MAX + 1];
 	struct tc_gact *parm;
 	struct tcf_gact *gact;
+	struct tcf_common *pc;
 	int ret = 0;
 	int err;
 #ifdef CONFIG_GACT_PROB
@@ -88,59 +86,67 @@ static int tcf_gact_init(struct net *net, struct nlattr *nla,
 	}
 #endif
 
-	if (!tcf_hash_check(parm->index, a, bind)) {
-		ret = tcf_hash_create(parm->index, est, a, sizeof(*gact),
-				      bind, true);
-		if (ret)
-			return ret;
+	pc = tcf_hash_check(parm->index, a, bind);
+	if (!pc) {
+		pc = tcf_hash_create(parm->index, est, a, sizeof(*gact), bind);
+		if (IS_ERR(pc))
+			return PTR_ERR(pc);
 		ret = ACT_P_CREATED;
 	} else {
 		if (bind)/* dont override defaults */
 			return 0;
-		tcf_hash_release(a, bind);
+		tcf_hash_release(pc, bind, a->ops->hinfo);
 		if (!ovr)
 			return -EEXIST;
 	}
 
-	gact = to_gact(a);
+	gact = to_gact(pc);
 
-	ASSERT_RTNL();
+	spin_lock_bh(&gact->tcf_lock);
 	gact->tcf_action = parm->action;
 #ifdef CONFIG_GACT_PROB
 	if (p_parm) {
 		gact->tcfg_paction = p_parm->paction;
-		gact->tcfg_pval    = max_t(u16, 1, p_parm->pval);
-		/* Make sure tcfg_pval is written before tcfg_ptype
-		 * coupled with smp_rmb() in gact_net_rand() & gact_determ()
-		 */
-		smp_wmb();
+		gact->tcfg_pval    = p_parm->pval;
 		gact->tcfg_ptype   = p_parm->ptype;
 	}
 #endif
+	spin_unlock_bh(&gact->tcf_lock);
 	if (ret == ACT_P_CREATED)
-		tcf_hash_insert(a);
+		tcf_hash_insert(pc, a->ops->hinfo);
 	return ret;
+}
+
+static int tcf_gact_cleanup(struct tc_action *a, int bind)
+{
+	struct tcf_gact *gact = a->priv;
+
+	if (gact)
+		return tcf_hash_release(&gact->common, bind, a->ops->hinfo);
+	return 0;
 }
 
 static int tcf_gact(struct sk_buff *skb, const struct tc_action *a,
 		    struct tcf_result *res)
 {
 	struct tcf_gact *gact = a->priv;
-	int action = READ_ONCE(gact->tcf_action);
+	int action = TC_ACT_SHOT;
 
+	spin_lock(&gact->tcf_lock);
 #ifdef CONFIG_GACT_PROB
-	{
-	u32 ptype = READ_ONCE(gact->tcfg_ptype);
-
-	if (ptype)
-		action = gact_rand[ptype](gact);
-	}
+	if (gact->tcfg_ptype)
+		action = gact_rand[gact->tcfg_ptype](gact);
+	else
+		action = gact->tcf_action;
+#else
+	action = gact->tcf_action;
 #endif
-	bstats_cpu_update(this_cpu_ptr(gact->common.cpu_bstats), skb);
+	gact->tcf_bstats.bytes += qdisc_pkt_len(skb);
+	gact->tcf_bstats.packets++;
 	if (action == TC_ACT_SHOT)
-		qstats_drop_inc(this_cpu_ptr(gact->common.cpu_qstats));
-
-	tcf_lastuse_update(&gact->tcf_tm);
+		gact->tcf_qstats.drops++;
+	gact->tcf_tm.lastuse = jiffies;
+	spin_unlock(&gact->tcf_lock);
 
 	return action;
 }
@@ -185,10 +191,12 @@ nla_put_failure:
 
 static struct tc_action_ops act_gact_ops = {
 	.kind		=	"gact",
+	.hinfo		=	&gact_hash_info,
 	.type		=	TCA_ACT_GACT,
 	.owner		=	THIS_MODULE,
 	.act		=	tcf_gact,
 	.dump		=	tcf_gact_dump,
+	.cleanup	=	tcf_gact_cleanup,
 	.init		=	tcf_gact_init,
 };
 
@@ -198,17 +206,21 @@ MODULE_LICENSE("GPL");
 
 static int __init gact_init_module(void)
 {
+	int err = tcf_hashinfo_init(&gact_hash_info, GACT_TAB_MASK);
+	if (err)
+		return err;
 #ifdef CONFIG_GACT_PROB
 	pr_info("GACT probability on\n");
 #else
 	pr_info("GACT probability NOT on\n");
 #endif
-	return tcf_register_action(&act_gact_ops, GACT_TAB_MASK);
+	return tcf_register_action(&act_gact_ops);
 }
 
 static void __exit gact_cleanup_module(void)
 {
 	tcf_unregister_action(&act_gact_ops);
+	tcf_hashinfo_destroy(&gact_hash_info);
 }
 
 module_init(gact_init_module);

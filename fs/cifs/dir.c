@@ -461,8 +461,8 @@ cifs_atomic_open(struct inode *inode, struct dentry *direntry,
 
 	xid = get_xid();
 
-	cifs_dbg(FYI, "parent inode = 0x%p name is: %pd and dentry = 0x%p\n",
-		 inode, direntry, direntry);
+	cifs_dbg(FYI, "parent inode = 0x%p name is: %s and dentry = 0x%p\n",
+		 inode, direntry->d_name.name, direntry);
 
 	tlink = cifs_sb_tlink(CIFS_SB(inode->i_sb));
 	if (IS_ERR(tlink)) {
@@ -496,14 +496,6 @@ cifs_atomic_open(struct inode *inode, struct dentry *direntry,
 		cifs_del_pending_open(&open);
 		goto out;
 	}
-
-	if (file->f_flags & O_DIRECT &&
-	    CIFS_SB(inode->i_sb)->mnt_cifs_flags & CIFS_MOUNT_STRICT_IO) {
-		if (CIFS_SB(inode->i_sb)->mnt_cifs_flags & CIFS_MOUNT_NO_BRL)
-			file->f_op = &cifs_file_direct_nobrl_ops;
-		else
-			file->f_op = &cifs_file_direct_ops;
-		}
 
 	file_info = cifs_new_fileinfo(&fid, file, tlink, oplock);
 	if (file_info == NULL) {
@@ -540,8 +532,8 @@ int cifs_create(struct inode *inode, struct dentry *direntry, umode_t mode,
 	struct cifs_fid fid;
 	__u32 oplock;
 
-	cifs_dbg(FYI, "cifs_create parent inode = 0x%p name is: %pd and dentry = 0x%p\n",
-		 inode, direntry, direntry);
+	cifs_dbg(FYI, "cifs_create parent inode = 0x%p name is: %s and dentry = 0x%p\n",
+		 inode, direntry->d_name.name, direntry);
 
 	tlink = cifs_sb_tlink(CIFS_SB(inode->i_sb));
 	rc = PTR_ERR(tlink);
@@ -577,13 +569,12 @@ int cifs_mknod(struct inode *inode, struct dentry *direntry, umode_t mode,
 	struct cifs_io_parms io_parms;
 	char *full_path = NULL;
 	struct inode *newinode = NULL;
-	__u32 oplock = 0;
+	int oplock = 0;
 	struct cifs_fid fid;
 	struct cifs_open_parms oparms;
 	FILE_ALL_INFO *buf = NULL;
 	unsigned int bytes_written;
 	struct win_dev *pdev;
-	struct kvec iov[2];
 
 	if (!old_valid_dev(device_number))
 		return -EINVAL;
@@ -620,7 +611,8 @@ int cifs_mknod(struct inode *inode, struct dentry *direntry, umode_t mode,
 		}
 		rc = CIFSSMBUnixSetPathInfo(xid, tcon, full_path, &args,
 					    cifs_sb->local_nls,
-					    cifs_remap(cifs_sb));
+					    cifs_sb->mnt_cifs_flags &
+						CIFS_MOUNT_MAP_SPECIAL_CHR);
 		if (rc)
 			goto mknod_out;
 
@@ -658,11 +650,7 @@ int cifs_mknod(struct inode *inode, struct dentry *direntry, umode_t mode,
 	oparms.fid = &fid;
 	oparms.reconnect = false;
 
-	if (tcon->ses->server->oplocks)
-		oplock = REQ_OPLOCK;
-	else
-		oplock = 0;
-	rc = tcon->ses->server->ops->open(xid, &oparms, &oplock, buf);
+	rc = CIFS_open(xid, &oparms, &oplock, buf);
 	if (rc)
 		goto mknod_out;
 
@@ -672,26 +660,25 @@ int cifs_mknod(struct inode *inode, struct dentry *direntry, umode_t mode,
 	 */
 
 	pdev = (struct win_dev *)buf;
+	io_parms.netfid = fid.netfid;
 	io_parms.pid = current->tgid;
 	io_parms.tcon = tcon;
 	io_parms.offset = 0;
 	io_parms.length = sizeof(struct win_dev);
-	iov[1].iov_base = buf;
-	iov[1].iov_len = sizeof(struct win_dev);
 	if (S_ISCHR(mode)) {
 		memcpy(pdev->type, "IntxCHR", 8);
 		pdev->major = cpu_to_le64(MAJOR(device_number));
 		pdev->minor = cpu_to_le64(MINOR(device_number));
-		rc = tcon->ses->server->ops->sync_write(xid, &fid, &io_parms,
-							&bytes_written, iov, 1);
+		rc = CIFSSMBWrite(xid, &io_parms, &bytes_written, (char *)pdev,
+				  NULL, 0);
 	} else if (S_ISBLK(mode)) {
 		memcpy(pdev->type, "IntxBLK", 8);
 		pdev->major = cpu_to_le64(MAJOR(device_number));
 		pdev->minor = cpu_to_le64(MINOR(device_number));
-		rc = tcon->ses->server->ops->sync_write(xid, &fid, &io_parms,
-							&bytes_written, iov, 1);
+		rc = CIFSSMBWrite(xid, &io_parms, &bytes_written, (char *)pdev,
+				  NULL, 0);
 	} /* else if (S_ISFIFO) */
-	tcon->ses->server->ops->close(xid, tcon, &fid);
+	CIFSSMBClose(xid, tcon, fid.netfid);
 	d_drop(direntry);
 
 	/* FIXME: add code here to set EAs */
@@ -718,8 +705,8 @@ cifs_lookup(struct inode *parent_dir_inode, struct dentry *direntry,
 
 	xid = get_xid();
 
-	cifs_dbg(FYI, "parent inode = 0x%p name is: %pd and dentry = 0x%p\n",
-		 parent_dir_inode, direntry, direntry);
+	cifs_dbg(FYI, "parent inode = 0x%p name is: %s and dentry = 0x%p\n",
+		 parent_dir_inode, direntry->d_name.name, direntry);
 
 	/* check whether path exists */
 
@@ -744,13 +731,13 @@ cifs_lookup(struct inode *parent_dir_inode, struct dentry *direntry,
 		goto lookup_out;
 	}
 
-	if (d_really_is_positive(direntry)) {
+	if (direntry->d_inode != NULL) {
 		cifs_dbg(FYI, "non-NULL inode in lookup\n");
 	} else {
 		cifs_dbg(FYI, "NULL inode in lookup\n");
 	}
 	cifs_dbg(FYI, "Full path: %s inode = 0x%p\n",
-		 full_path, d_inode(direntry));
+		 full_path, direntry->d_inode);
 
 	if (pTcon->unix_ext) {
 		rc = cifs_get_inode_info_unix(&newInode, full_path,
@@ -791,7 +778,7 @@ cifs_d_revalidate(struct dentry *direntry, unsigned int flags)
 	if (flags & LOOKUP_RCU)
 		return -ECHILD;
 
-	if (d_really_is_positive(direntry)) {
+	if (direntry->d_inode) {
 		if (cifs_revalidate_dentry(direntry))
 			return 0;
 		else {
@@ -802,7 +789,7 @@ cifs_d_revalidate(struct dentry *direntry, unsigned int flags)
 			 * attributes will have been updated by
 			 * cifs_revalidate_dentry().
 			 */
-			if (IS_AUTOMOUNT(d_inode(direntry)) &&
+			if (IS_AUTOMOUNT(direntry->d_inode) &&
 			   !(direntry->d_flags & DCACHE_NEED_AUTOMOUNT)) {
 				spin_lock(&direntry->d_lock);
 				direntry->d_flags |= DCACHE_NEED_AUTOMOUNT;
@@ -838,7 +825,7 @@ cifs_d_revalidate(struct dentry *direntry, unsigned int flags)
 {
 	int rc = 0;
 
-	cifs_dbg(FYI, "In cifs d_delete, name = %pd\n", direntry);
+	cifs_dbg(FYI, "In cifs d_delete, name = %s\n", direntry->d_name.name);
 
 	return rc;
 }     */

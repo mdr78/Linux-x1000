@@ -88,7 +88,7 @@ static uint16_t ceph_fscache_inode_get_key(const void *cookie_netfs_data,
 	const struct ceph_inode_info* ci = cookie_netfs_data;
 	uint16_t klen;
 
-	/* use ceph virtual inode (id + snapshot) */
+	/* use ceph virtual inode (id + snaphot) */
 	klen = sizeof(ci->i_vino);
 	if (klen > maxbuf)
 		return 0;
@@ -205,7 +205,6 @@ void ceph_fscache_register_inode_cookie(struct ceph_fs_client* fsc,
 	ci->fscache = fscache_acquire_cookie(fsc->fscache,
 					     &ceph_fscache_inode_object_def,
 					     ci, true);
-	fscache_check_consistency(ci->fscache);
 done:
 	mutex_unlock(&inode->i_mutex);
 

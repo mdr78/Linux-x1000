@@ -114,7 +114,7 @@ const struct address_space_operations gfs2_rgrp_aops = {
 struct buffer_head *gfs2_getbuf(struct gfs2_glock *gl, u64 blkno, int create)
 {
 	struct address_space *mapping = gfs2_glock2aspace(gl);
-	struct gfs2_sbd *sdp = gl->gl_name.ln_sbd;
+	struct gfs2_sbd *sdp = gl->gl_sbd;
 	struct page *page;
 	struct buffer_head *bh;
 	unsigned int shift;
@@ -136,8 +136,7 @@ struct buffer_head *gfs2_getbuf(struct gfs2_glock *gl, u64 blkno, int create)
 			yield();
 		}
 	} else {
-		page = find_get_page_flags(mapping, index,
-						FGP_LOCK|FGP_ACCESSED);
+		page = find_lock_page(mapping, index);
 		if (!page)
 			return NULL;
 	}
@@ -154,6 +153,7 @@ struct buffer_head *gfs2_getbuf(struct gfs2_glock *gl, u64 blkno, int create)
 		map_bh(bh, sdp->sd_vfs, blkno);
 
 	unlock_page(page);
+	mark_page_accessed(page);
 	page_cache_release(page);
 
 	return bh;
@@ -200,7 +200,7 @@ struct buffer_head *gfs2_meta_new(struct gfs2_glock *gl, u64 blkno)
 int gfs2_meta_read(struct gfs2_glock *gl, u64 blkno, int flags,
 		   struct buffer_head **bhp)
 {
-	struct gfs2_sbd *sdp = gl->gl_name.ln_sbd;
+	struct gfs2_sbd *sdp = gl->gl_sbd;
 	struct buffer_head *bh;
 
 	if (unlikely(test_bit(SDF_SHUTDOWN, &sdp->sd_flags))) {
@@ -272,10 +272,15 @@ void gfs2_remove_from_journal(struct buffer_head *bh, struct gfs2_trans *tr, int
 		trace_gfs2_pin(bd, 0);
 		atomic_dec(&sdp->sd_log_pinned);
 		list_del_init(&bd->bd_list);
-		if (meta)
+		if (meta) {
+			gfs2_assert_warn(sdp, sdp->sd_log_num_buf);
+			sdp->sd_log_num_buf--;
 			tr->tr_num_buf_rm++;
-		else
+		} else {
+			gfs2_assert_warn(sdp, sdp->sd_log_num_databuf);
+			sdp->sd_log_num_databuf--;
 			tr->tr_num_databuf_rm++;
+		}
 		tr->tr_touched = 1;
 		was_pinned = 1;
 		brelse(bh);
@@ -362,7 +367,7 @@ int gfs2_meta_indirect_buffer(struct gfs2_inode *ip, int height, u64 num,
 
 struct buffer_head *gfs2_meta_ra(struct gfs2_glock *gl, u64 dblock, u32 extlen)
 {
-	struct gfs2_sbd *sdp = gl->gl_name.ln_sbd;
+	struct gfs2_sbd *sdp = gl->gl_sbd;
 	struct buffer_head *first_bh, *bh;
 	u32 max_ra = gfs2_tune_get(sdp, gt_max_readahead) >>
 			  sdp->sd_sb.sb_bsize_shift;

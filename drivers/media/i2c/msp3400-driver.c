@@ -649,10 +649,10 @@ static const struct v4l2_subdev_core_ops msp_core_ops = {
 	.s_ctrl = v4l2_subdev_s_ctrl,
 	.queryctrl = v4l2_subdev_queryctrl,
 	.querymenu = v4l2_subdev_querymenu,
+	.s_std = msp_s_std,
 };
 
 static const struct v4l2_subdev_video_ops msp_video_ops = {
-	.s_std = msp_s_std,
 	.querystd = msp_querystd,
 };
 
@@ -894,6 +894,7 @@ MODULE_DEVICE_TABLE(i2c, msp_id);
 
 static struct i2c_driver msp_driver = {
 	.driver = {
+		.owner	= THIS_MODULE,
 		.name	= "msp3400",
 		.pm	= &msp3400_pm_ops,
 	},
@@ -903,3 +904,11 @@ static struct i2c_driver msp_driver = {
 };
 
 module_i2c_driver(msp_driver);
+
+/*
+ * Overrides for Emacs so that we follow Linus's tabbing style.
+ * ---------------------------------------------------------------------------
+ * Local variables:
+ * c-basic-offset: 8
+ * End:
+ */

@@ -2,7 +2,7 @@
  * SPEAr3xx machines clock framework source file
  *
  * Copyright (C) 2012 ST Microelectronics
- * Viresh Kumar <vireshk@kernel.org>
+ * Viresh Kumar <viresh.linux@gmail.com>
  *
  * This file is licensed under the terms of the GNU General Public
  * License version 2. This program is licensed "as is" without any
@@ -245,8 +245,7 @@ static const char *smii0_parents[] = { "smii_125m_pad", "ras_pll2_clk",
 	"ras_syn0_gclk", };
 static const char *uartx_parents[] = { "ras_syn1_gclk", "ras_apb_clk", };
 
-static void __init spear320_clk_init(void __iomem *soc_config_base,
-				     struct clk *ras_apb_clk)
+static void __init spear320_clk_init(void __iomem *soc_config_base)
 {
 	struct clk *clk;
 
@@ -343,8 +342,6 @@ static void __init spear320_clk_init(void __iomem *soc_config_base,
 			SPEAR320_CONTROL_REG, UART1_PCLK_SHIFT, UART1_PCLK_MASK,
 			0, &_lock);
 	clk_register_clkdev(clk, NULL, "a3000000.serial");
-	/* Enforce ras_apb_clk */
-	clk_set_parent(clk, ras_apb_clk);
 
 	clk = clk_register_mux(NULL, "uart2_clk", uartx_parents,
 			ARRAY_SIZE(uartx_parents),
@@ -352,8 +349,6 @@ static void __init spear320_clk_init(void __iomem *soc_config_base,
 			SPEAR320_EXT_CTRL_REG, SPEAR320_UART2_PCLK_SHIFT,
 			SPEAR320_UARTX_PCLK_MASK, 0, &_lock);
 	clk_register_clkdev(clk, NULL, "a4000000.serial");
-	/* Enforce ras_apb_clk */
-	clk_set_parent(clk, ras_apb_clk);
 
 	clk = clk_register_mux(NULL, "uart3_clk", uartx_parents,
 			ARRAY_SIZE(uartx_parents),
@@ -384,12 +379,12 @@ static void __init spear320_clk_init(void __iomem *soc_config_base,
 	clk_register_clkdev(clk, NULL, "60100000.serial");
 }
 #else
-static inline void spear320_clk_init(void __iomem *sb, struct clk *rc) { }
+static inline void spear320_clk_init(void __iomem *soc_config_base) { }
 #endif
 
 void __init spear3xx_clk_init(void __iomem *misc_base, void __iomem *soc_config_base)
 {
-	struct clk *clk, *clk1, *ras_apb_clk;
+	struct clk *clk, *clk1;
 
 	clk = clk_register_fixed_rate(NULL, "osc_32k_clk", NULL, CLK_IS_ROOT,
 			32000);
@@ -618,7 +613,6 @@ void __init spear3xx_clk_init(void __iomem *misc_base, void __iomem *soc_config_
 	clk = clk_register_gate(NULL, "ras_apb_clk", "apb_clk", 0, RAS_CLK_ENB,
 			RAS_APB_CLK_ENB, 0, &_lock);
 	clk_register_clkdev(clk, "ras_apb_clk", NULL);
-	ras_apb_clk = clk;
 
 	clk = clk_register_gate(NULL, "ras_32k_clk", "osc_32k_clk", 0,
 			RAS_CLK_ENB, RAS_32K_CLK_ENB, 0, &_lock);
@@ -665,5 +659,5 @@ void __init spear3xx_clk_init(void __iomem *misc_base, void __iomem *soc_config_
 	else if (of_machine_is_compatible("st,spear310"))
 		spear310_clk_init();
 	else if (of_machine_is_compatible("st,spear320"))
-		spear320_clk_init(soc_config_base, ras_apb_clk);
+		spear320_clk_init(soc_config_base);
 }

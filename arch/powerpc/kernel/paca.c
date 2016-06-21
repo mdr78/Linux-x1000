@@ -98,9 +98,6 @@ static inline void free_lppacas(void) { }
 /*
  * 3 persistent SLBs are registered here.  The buffer will be zero
  * initially, hence will all be invaild until we actually write them.
- *
- * If you make the number of persistent SLB entries dynamic, please also
- * update PR KVM to flush and restore them accordingly.
  */
 static struct slb_shadow *slb_shadow;
 
@@ -114,14 +111,6 @@ static void __init allocate_slb_shadows(int nr_cpus, int limit)
 static struct slb_shadow * __init init_slb_shadow(int cpu)
 {
 	struct slb_shadow *s = &slb_shadow[cpu];
-
-	/*
-	 * When we come through here to initialise boot_paca, the slb_shadow
-	 * buffers are not allocated yet. That's OK, we'll get one later in
-	 * boot, but make sure we don't corrupt memory at 0.
-	 */
-	if (!slb_shadow)
-		return NULL;
 
 	s->persistent = cpu_to_be32(SLB_NUM_BOLTED);
 	s->buffer_length = cpu_to_be32(sizeof(*s));
@@ -163,8 +152,7 @@ void __init initialise_paca(struct paca_struct *new_paca, int cpu)
 	new_paca->paca_index = cpu;
 	new_paca->kernel_toc = kernel_toc;
 	new_paca->kernelbase = (unsigned long) _stext;
-	/* Only set MSR:IR/DR when MMU is initialized */
-	new_paca->kernel_msr = MSR_KERNEL & ~(MSR_IR | MSR_DR);
+	new_paca->kernel_msr = MSR_KERNEL;
 	new_paca->hw_cpu_id = 0xffff;
 	new_paca->kexec_state = KEXEC_STATE_NONE;
 	new_paca->__current = &init_task;
@@ -204,19 +192,14 @@ static int __initdata paca_size;
 
 void __init allocate_pacas(void)
 {
-	u64 limit;
-	int cpu;
+	int cpu, limit;
 
-	limit = ppc64_rma_size;
-
-#ifdef CONFIG_PPC_BOOK3S_64
 	/*
 	 * We can't take SLB misses on the paca, and we want to access them
 	 * in real mode, so allocate them within the RMA and also within
 	 * the first segment.
 	 */
-	limit = min(0x10000000ULL, limit);
-#endif
+	limit = min(0x10000000ULL, ppc64_rma_size);
 
 	paca_size = PAGE_ALIGN(sizeof(struct paca_struct) * nr_cpu_ids);
 

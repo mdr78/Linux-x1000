@@ -507,7 +507,7 @@ bfa_fcb_pbc_vport_create(struct bfad_s *bfad, struct bfi_pbc_vport_s pbc_vport)
 	struct bfad_vport_s   *vport;
 	int rc;
 
-	vport = kzalloc(sizeof(struct bfad_vport_s), GFP_ATOMIC);
+	vport = kzalloc(sizeof(struct bfad_vport_s), GFP_KERNEL);
 	if (!vport) {
 		bfa_trc(bfad, 0);
 		return;
@@ -1079,18 +1079,22 @@ bfad_start_ops(struct bfad_s *bfad) {
 int
 bfad_worker(void *ptr)
 {
-	struct bfad_s *bfad = ptr;
-	unsigned long flags;
+	struct bfad_s *bfad;
+	unsigned long   flags;
 
-	if (kthread_should_stop())
-		return 0;
+	bfad = (struct bfad_s *)ptr;
 
-	/* Send event BFAD_E_INIT_SUCCESS */
-	bfa_sm_send_event(bfad, BFAD_E_INIT_SUCCESS);
+	while (!kthread_should_stop()) {
 
-	spin_lock_irqsave(&bfad->bfad_lock, flags);
-	bfad->bfad_tsk = NULL;
-	spin_unlock_irqrestore(&bfad->bfad_lock, flags);
+		/* Send event BFAD_E_INIT_SUCCESS */
+		bfa_sm_send_event(bfad, BFAD_E_INIT_SUCCESS);
+
+		spin_lock_irqsave(&bfad->bfad_lock, flags);
+		bfad->bfad_tsk = NULL;
+		spin_unlock_irqrestore(&bfad->bfad_lock, flags);
+
+		break;
+	}
 
 	return 0;
 }
@@ -1215,7 +1219,7 @@ bfad_install_msix_handler(struct bfad_s *bfad)
 int
 bfad_setup_intr(struct bfad_s *bfad)
 {
-	int error;
+	int error = 0;
 	u32 mask = 0, i, num_bit = 0, max_bit = 0;
 	struct msix_entry msix_entries[MAX_MSIX_ENTRY];
 	struct pci_dev *pdev = bfad->pcidev;
@@ -1230,24 +1234,34 @@ bfad_setup_intr(struct bfad_s *bfad)
 	if ((bfa_asic_id_ctc(pdev->device) && !msix_disable_ct) ||
 	   (bfa_asic_id_cb(pdev->device) && !msix_disable_cb)) {
 
-		error = pci_enable_msix_exact(bfad->pcidev,
-					      msix_entries, bfad->nvec);
-		/* In CT1 & CT2, try to allocate just one vector */
-		if (error == -ENOSPC && bfa_asic_id_ctc(pdev->device)) {
-			printk(KERN_WARNING "bfa %s: trying one msix "
-			       "vector failed to allocate %d[%d]\n",
-			       bfad->pci_name, bfad->nvec, error);
-			bfad->nvec = 1;
-			error = pci_enable_msix_exact(bfad->pcidev,
-						      msix_entries, 1);
-		}
-
+		error = pci_enable_msix(bfad->pcidev, msix_entries, bfad->nvec);
 		if (error) {
-			printk(KERN_WARNING "bfad%d: "
-			       "pci_enable_msix_exact failed (%d), "
-			       "use line based.\n",
-				bfad->inst_no, error);
-			goto line_based;
+			/* In CT1 & CT2, try to allocate just one vector */
+			if (bfa_asic_id_ctc(pdev->device)) {
+				printk(KERN_WARNING "bfa %s: trying one msix "
+				       "vector failed to allocate %d[%d]\n",
+				       bfad->pci_name, bfad->nvec, error);
+				bfad->nvec = 1;
+				error = pci_enable_msix(bfad->pcidev,
+						msix_entries, bfad->nvec);
+			}
+
+			/*
+			 * Only error number of vector is available.
+			 * We don't have a mechanism to map multiple
+			 * interrupts into one vector, so even if we
+			 * can try to request less vectors, we don't
+			 * know how to associate interrupt events to
+			 *  vectors. Linux doesn't duplicate vectors
+			 * in the MSIX table for this case.
+			 */
+			if (error) {
+				printk(KERN_WARNING "bfad%d: "
+				       "pci_enable_msix failed (%d), "
+				       "use line based.\n",
+					bfad->inst_no, error);
+				goto line_based;
+			}
 		}
 
 		/* Disable INTX in MSI-X mode */
@@ -1267,18 +1281,20 @@ bfad_setup_intr(struct bfad_s *bfad)
 
 		bfad->bfad_flags |= BFAD_MSIX_ON;
 
-		return 0;
+		return error;
 	}
 
 line_based:
-	error = request_irq(bfad->pcidev->irq, (irq_handler_t)bfad_intx,
-			    BFAD_IRQ_FLAGS, BFAD_DRIVER_NAME, bfad);
-	if (error)
-		return error;
-
+	error = 0;
+	if (request_irq
+	    (bfad->pcidev->irq, (irq_handler_t) bfad_intx, BFAD_IRQ_FLAGS,
+	     BFAD_DRIVER_NAME, bfad) != 0) {
+		/* Enable interrupt handler failed */
+		return 1;
+	}
 	bfad->bfad_flags |= BFAD_INTX_ON;
 
-	return 0;
+	return error;
 }
 
 void

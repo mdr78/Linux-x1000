@@ -18,7 +18,7 @@
 #include <linux/irq.h>
 #include <linux/of_platform.h>
 #include <linux/fsl-diu-fb.h>
-#include <linux/memblock.h>
+#include <linux/bootmem.h>
 #include <sysdev/fsl_soc.h>
 
 #include <asm/cacheflush.h>
@@ -297,13 +297,14 @@ static void __init mpc512x_setup_diu(void)
 	 * and so negatively affect boot time. Instead we reserve the
 	 * already configured frame buffer area so that it won't be
 	 * destroyed. The starting address of the area to reserve and
-	 * also it's length is passed to memblock_reserve(). It will be
+	 * also it's length is passed to reserve_bootmem(). It will be
 	 * freed later on first open of fbdev, when splash image is not
 	 * needed any more.
 	 */
 	if (diu_shared_fb.in_use) {
-		ret = memblock_reserve(diu_shared_fb.fb_phys,
-				       diu_shared_fb.fb_len);
+		ret = reserve_bootmem(diu_shared_fb.fb_phys,
+				      diu_shared_fb.fb_len,
+				      BOOTMEM_EXCLUSIVE);
 		if (ret) {
 			pr_err("%s: reserve bootmem failed\n", __func__);
 			diu_shared_fb.in_use = false;
@@ -336,7 +337,7 @@ void __init mpc512x_init_IRQ(void)
 /*
  * Nodes to do bus probe on, soc and localbus
  */
-static const struct of_device_id of_bus_ids[] __initconst = {
+static struct of_device_id __initdata of_bus_ids[] = {
 	{ .compatible = "fsl,mpc5121-immr", },
 	{ .compatible = "fsl,mpc5121-localbus", },
 	{ .compatible = "fsl,mpc5121-mbx", },

@@ -8,7 +8,6 @@
 #include <linux/kdev_t.h>
 #include <linux/kernel.h>
 #include <linux/blkdev.h>
-#include <linux/backing-dev.h>
 #include <linux/init.h>
 #include <linux/spinlock.h>
 #include <linux/proc_fs.h>
@@ -423,9 +422,9 @@ int blk_alloc_devt(struct hd_struct *part, dev_t *devt)
 	/* allocate ext devt */
 	idr_preload(GFP_KERNEL);
 
-	spin_lock_bh(&ext_devt_lock);
+	spin_lock(&ext_devt_lock);
 	idx = idr_alloc(&ext_devt_idr, part, 0, NR_EXT_DEVT, GFP_NOWAIT);
-	spin_unlock_bh(&ext_devt_lock);
+	spin_unlock(&ext_devt_lock);
 
 	idr_preload_end();
 	if (idx < 0)
@@ -450,9 +449,9 @@ void blk_free_devt(dev_t devt)
 		return;
 
 	if (MAJOR(devt) == BLOCK_EXT_MAJOR) {
-		spin_lock_bh(&ext_devt_lock);
+		spin_lock(&ext_devt_lock);
 		idr_remove(&ext_devt_idr, blk_mangle_minor(MINOR(devt)));
-		spin_unlock_bh(&ext_devt_lock);
+		spin_unlock(&ext_devt_lock);
 	}
 }
 
@@ -630,7 +629,6 @@ void add_disk(struct gendisk *disk)
 	WARN_ON(retval);
 
 	disk_add_events(disk);
-	blk_integrity_add(disk);
 }
 EXPORT_SYMBOL(add_disk);
 
@@ -639,7 +637,6 @@ void del_gendisk(struct gendisk *disk)
 	struct disk_part_iter piter;
 	struct hd_struct *part;
 
-	blk_integrity_del(disk);
 	disk_del_events(disk);
 
 	/* invalidate stuff */
@@ -656,6 +653,7 @@ void del_gendisk(struct gendisk *disk)
 	disk->flags &= ~GENHD_FL_UP;
 
 	sysfs_remove_link(&disk_to_dev(disk)->kobj, "bdi");
+	bdi_unregister(&disk->queue->backing_dev_info);
 	blk_unregister_queue(disk);
 	blk_unregister_region(disk_devt(disk), disk->minors);
 
@@ -693,13 +691,13 @@ struct gendisk *get_gendisk(dev_t devt, int *partno)
 	} else {
 		struct hd_struct *part;
 
-		spin_lock_bh(&ext_devt_lock);
+		spin_lock(&ext_devt_lock);
 		part = idr_find(&ext_devt_idr, blk_mangle_minor(MINOR(devt)));
 		if (part && get_disk(part_to_disk(part))) {
 			*partno = part->partno;
 			disk = part_to_disk(part);
 		}
-		spin_unlock_bh(&ext_devt_lock);
+		spin_unlock(&ext_devt_lock);
 	}
 
 	return disk;
@@ -1072,16 +1070,9 @@ int disk_expand_part_tbl(struct gendisk *disk, int partno)
 	struct disk_part_tbl *old_ptbl = disk->part_tbl;
 	struct disk_part_tbl *new_ptbl;
 	int len = old_ptbl ? old_ptbl->len : 0;
-	int i, target;
+	int target = partno + 1;
 	size_t size;
-
-	/*
-	 * check for int overflow, since we can get here from blkpg_ioctl()
-	 * with a user passed 'partno'.
-	 */
-	target = partno + 1;
-	if (target < 0)
-		return -EINVAL;
+	int i;
 
 	/* disk_max_parts() is zero during initialization, ignore if so */
 	if (disk_max_parts(disk) && target > disk_max_parts(disk))
@@ -1112,7 +1103,8 @@ static void disk_release(struct device *dev)
 	disk_release_events(disk);
 	kfree(disk->random);
 	disk_replace_part_tbl(disk, NULL);
-	hd_free_part(&disk->part0);
+	free_part_stats(&disk->part0);
+	free_part_info(&disk->part0);
 	if (disk->queue)
 		blk_put_queue(disk->queue);
 	kfree(disk);
@@ -1286,11 +1278,7 @@ struct gendisk *alloc_disk_node(int minors, int node_id)
 		 * converted to make use of bd_mutex and sequence counters.
 		 */
 		seqcount_init(&disk->part0.nr_sects_seq);
-		if (hd_ref_init(&disk->part0)) {
-			hd_free_part(&disk->part0);
-			kfree(disk);
-			return NULL;
-		}
+		hd_ref_init(&disk->part0);
 
 		disk->minors = minors;
 		rand_initialize_disk(disk);
@@ -1557,7 +1545,7 @@ void disk_flush_events(struct gendisk *disk, unsigned int mask)
 /**
  * disk_clear_events - synchronously check, clear and return pending events
  * @disk: disk to fetch and clear events from
- * @mask: mask of events to be fetched and cleared
+ * @mask: mask of events to be fetched and clearted
  *
  * Disk events are synchronously checked and pending events in @mask
  * are cleared and returned.  This ignores the block count.

@@ -79,13 +79,12 @@ static int digsig_verify_rsa(struct key *key,
 	unsigned char *out1 = NULL;
 	const char *m;
 	MPI in = NULL, res = NULL, pkey[2];
-	uint8_t *p, *datap;
-	const uint8_t *endp;
-	const struct user_key_payload *ukp;
+	uint8_t *p, *datap, *endp;
+	struct user_key_payload *ukp;
 	struct pubkey_hdr *pkh;
 
 	down_read(&key->sem);
-	ukp = user_key_payload(key);
+	ukp = key->payload.data;
 
 	if (ukp->datalen < sizeof(*pkh))
 		goto err1;
@@ -176,11 +175,10 @@ err1:
  * digsig_verify() - digital signature verification with public key
  * @keyring:	keyring to search key in
  * @sig:	digital signature
- * @siglen:	length of the signature
+ * @sigen:	length of the signature
  * @data:	data
  * @datalen:	length of the data
- *
- * Returns 0 on success, -EINVAL otherwise
+ * @return:	0 on success, -EINVAL otherwise
  *
  * Verifies data integrity against digital signature.
  * Currently only RSA is supported.

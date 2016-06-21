@@ -135,8 +135,10 @@ static int sunfire_led_generic_probe(struct platform_device *pdev,
 	}
 
 	p = devm_kzalloc(&pdev->dev, sizeof(*p), GFP_KERNEL);
-	if (!p)
+	if (!p) {
+		dev_err(&pdev->dev, "Could not allocate struct sunfire_drvdata\n");
 		return -ENOMEM;
+	}
 
 	for (i = 0; i < NUM_LEDS_PER_BOARD; i++) {
 		struct led_classdev *lp = &p->leds[i].led_cdev;
@@ -223,6 +225,7 @@ static struct platform_driver sunfire_clockboard_led_driver = {
 	.remove		= sunfire_led_generic_remove,
 	.driver		= {
 		.name	= "sunfire-clockboard-leds",
+		.owner	= THIS_MODULE,
 	},
 };
 
@@ -231,6 +234,7 @@ static struct platform_driver sunfire_fhc_led_driver = {
 	.remove		= sunfire_led_generic_remove,
 	.driver		= {
 		.name	= "sunfire-fhc-leds",
+		.owner	= THIS_MODULE,
 	},
 };
 

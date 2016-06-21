@@ -50,6 +50,7 @@ static int pwm_beeper_event(struct input_dev *input,
 	}
 
 	if (value == 0) {
+		pwm_config(beeper->pwm, 0, 0);
 		pwm_disable(beeper->pwm);
 	} else {
 		period = HZ_TO_NANOSECONDS(value);
@@ -143,7 +144,8 @@ static int pwm_beeper_remove(struct platform_device *pdev)
 	return 0;
 }
 
-static int __maybe_unused pwm_beeper_suspend(struct device *dev)
+#ifdef CONFIG_PM_SLEEP
+static int pwm_beeper_suspend(struct device *dev)
 {
 	struct pwm_beeper *beeper = dev_get_drvdata(dev);
 
@@ -153,7 +155,7 @@ static int __maybe_unused pwm_beeper_suspend(struct device *dev)
 	return 0;
 }
 
-static int __maybe_unused pwm_beeper_resume(struct device *dev)
+static int pwm_beeper_resume(struct device *dev)
 {
 	struct pwm_beeper *beeper = dev_get_drvdata(dev);
 
@@ -168,12 +170,16 @@ static int __maybe_unused pwm_beeper_resume(struct device *dev)
 static SIMPLE_DEV_PM_OPS(pwm_beeper_pm_ops,
 			 pwm_beeper_suspend, pwm_beeper_resume);
 
+#define PWM_BEEPER_PM_OPS (&pwm_beeper_pm_ops)
+#else
+#define PWM_BEEPER_PM_OPS NULL
+#endif
+
 #ifdef CONFIG_OF
 static const struct of_device_id pwm_beeper_match[] = {
 	{ .compatible = "pwm-beeper", },
 	{ },
 };
-MODULE_DEVICE_TABLE(of, pwm_beeper_match);
 #endif
 
 static struct platform_driver pwm_beeper_driver = {
@@ -181,7 +187,8 @@ static struct platform_driver pwm_beeper_driver = {
 	.remove = pwm_beeper_remove,
 	.driver = {
 		.name	= "pwm-beeper",
-		.pm	= &pwm_beeper_pm_ops,
+		.owner	= THIS_MODULE,
+		.pm	= PWM_BEEPER_PM_OPS,
 		.of_match_table = of_match_ptr(pwm_beeper_match),
 	},
 };

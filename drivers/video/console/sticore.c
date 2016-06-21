@@ -28,7 +28,7 @@
 #include <asm/cacheflush.h>
 #include <asm/grfioctl.h>
 
-#include "../fbdev/sticore.h"
+#include "../sticore.h"
 
 #define STI_DRIVERVERSION "Version 0.9b"
 

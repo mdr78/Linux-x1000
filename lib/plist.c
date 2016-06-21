@@ -25,6 +25,7 @@
 
 #include <linux/bug.h>
 #include <linux/plist.h>
+#include <linux/spinlock.h>
 
 #ifdef CONFIG_DEBUG_PI_LIST
 
@@ -222,7 +223,7 @@ static int  __init plist_test(void)
 	int nr_expect = 0, i, loop;
 	unsigned int r = local_clock();
 
-	printk(KERN_DEBUG "start plist test\n");
+	pr_debug("start plist test\n");
 	plist_head_init(&test_head);
 	for (i = 0; i < ARRAY_SIZE(test_node); i++)
 		plist_node_init(test_node + i, 0);
@@ -254,7 +255,7 @@ static int  __init plist_test(void)
 		plist_test_check(nr_expect);
 	}
 
-	printk(KERN_DEBUG "end plist test\n");
+	pr_debug("end plist test\n");
 	return 0;
 }
 

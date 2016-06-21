@@ -32,8 +32,6 @@ static inline void setup_cputime_one_jiffy(void) { }
 typedef u64 __nocast cputime_t;
 typedef u64 __nocast cputime64_t;
 
-#define cmpxchg_cputime(ptr, old, new) cmpxchg(ptr, old, new)
-
 #ifdef __KERNEL__
 
 /*
@@ -58,10 +56,10 @@ static inline unsigned long cputime_to_jiffies(const cputime_t ct)
 static inline cputime_t cputime_to_scaled(const cputime_t ct)
 {
 	if (cpu_has_feature(CPU_FTR_SPURR) &&
-	    __this_cpu_read(cputime_last_delta))
+	    __get_cpu_var(cputime_last_delta))
 		return (__force u64) ct *
-			__this_cpu_read(cputime_scaled_last_delta) /
-			__this_cpu_read(cputime_last_delta);
+			__get_cpu_var(cputime_scaled_last_delta) /
+			__get_cpu_var(cputime_last_delta);
 	return ct;
 }
 

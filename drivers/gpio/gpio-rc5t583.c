@@ -97,7 +97,7 @@ static int rc5t583_gpio_to_irq(struct gpio_chip *gc, unsigned offset)
 {
 	struct rc5t583_gpio *rc5t583_gpio = to_rc5t583_gpio(gc);
 
-	if (offset < RC5T583_MAX_GPIO)
+	if ((offset >= 0) && (offset < 8))
 		return rc5t583_gpio->rc5t583->irq_base +
 				RC5T583_IRQ_GPIO0 + offset;
 	return -EINVAL;
@@ -119,8 +119,10 @@ static int rc5t583_gpio_probe(struct platform_device *pdev)
 
 	rc5t583_gpio = devm_kzalloc(&pdev->dev, sizeof(*rc5t583_gpio),
 					GFP_KERNEL);
-	if (!rc5t583_gpio)
+	if (!rc5t583_gpio) {
+		dev_warn(&pdev->dev, "Mem allocation for rc5t583_gpio failed");
 		return -ENOMEM;
+	}
 
 	rc5t583_gpio->gpio_chip.label = "gpio-rc5t583",
 	rc5t583_gpio->gpio_chip.owner = THIS_MODULE,
@@ -155,6 +157,7 @@ static int rc5t583_gpio_remove(struct platform_device *pdev)
 static struct platform_driver rc5t583_gpio_driver = {
 	.driver = {
 		.name    = "rc5t583-gpio",
+		.owner   = THIS_MODULE,
 	},
 	.probe		= rc5t583_gpio_probe,
 	.remove		= rc5t583_gpio_remove,

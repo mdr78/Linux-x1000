@@ -92,16 +92,17 @@ static int integrator_set_target(struct cpufreq_policy *policy,
 	 * Bind to the specified CPU.  When this call returns,
 	 * we should be running on the right CPU.
 	 */
-	set_cpus_allowed_ptr(current, cpumask_of(cpu));
+	set_cpus_allowed(current, cpumask_of_cpu(cpu));
 	BUG_ON(cpu != smp_processor_id());
 
 	/* get current setting */
 	cm_osc = __raw_readl(cm_base + INTEGRATOR_HDR_OSC_OFFSET);
 
-	if (machine_is_integrator())
+	if (machine_is_integrator()) {
 		vco.s = (cm_osc >> 8) & 7;
-	else if (machine_is_cintegrator())
+	} else if (machine_is_cintegrator()) {
 		vco.s = 1;
+	}
 	vco.v = cm_osc & 255;
 	vco.r = 22;
 	freqs.old = icst_hz(&cclk_params, vco) / 1000;
@@ -117,11 +118,11 @@ static int integrator_set_target(struct cpufreq_policy *policy,
 	freqs.new = icst_hz(&cclk_params, vco) / 1000;
 
 	if (freqs.old == freqs.new) {
-		set_cpus_allowed_ptr(current, &cpus_allowed);
+		set_cpus_allowed(current, cpus_allowed);
 		return 0;
 	}
 
-	cpufreq_freq_transition_begin(policy, &freqs);
+	cpufreq_notify_transition(policy, &freqs, CPUFREQ_PRECHANGE);
 
 	cm_osc = __raw_readl(cm_base + INTEGRATOR_HDR_OSC_OFFSET);
 
@@ -140,9 +141,9 @@ static int integrator_set_target(struct cpufreq_policy *policy,
 	/*
 	 * Restore the CPUs allowed mask.
 	 */
-	set_cpus_allowed_ptr(current, &cpus_allowed);
+	set_cpus_allowed(current, cpus_allowed);
 
-	cpufreq_freq_transition_end(policy, &freqs, 0);
+	cpufreq_notify_transition(policy, &freqs, CPUFREQ_POSTCHANGE);
 
 	return 0;
 }
@@ -156,22 +157,23 @@ static unsigned int integrator_get(unsigned int cpu)
 
 	cpus_allowed = current->cpus_allowed;
 
-	set_cpus_allowed_ptr(current, cpumask_of(cpu));
+	set_cpus_allowed(current, cpumask_of_cpu(cpu));
 	BUG_ON(cpu != smp_processor_id());
 
 	/* detect memory etc. */
 	cm_osc = __raw_readl(cm_base + INTEGRATOR_HDR_OSC_OFFSET);
 
-	if (machine_is_integrator())
+	if (machine_is_integrator()) {
 		vco.s = (cm_osc >> 8) & 7;
-	else
+	} else {
 		vco.s = 1;
+	}
 	vco.v = cm_osc & 255;
 	vco.r = 22;
 
 	current_freq = icst_hz(&cclk_params, vco) / 1000; /* current freq */
 
-	set_cpus_allowed_ptr(current, &cpus_allowed);
+	set_cpus_allowed(current, cpus_allowed);
 
 	return current_freq;
 }
@@ -201,7 +203,7 @@ static int __init integrator_cpufreq_probe(struct platform_device *pdev)
 	struct resource *res;
 
 	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
-	if (!res)
+        if (!res)
 		return -ENODEV;
 
 	cm_base = devm_ioremap(&pdev->dev, res->start, resource_size(res));
@@ -221,11 +223,10 @@ static const struct of_device_id integrator_cpufreq_match[] = {
 	{ },
 };
 
-MODULE_DEVICE_TABLE(of, integrator_cpufreq_match);
-
 static struct platform_driver integrator_cpufreq_driver = {
 	.driver = {
 		.name = "integrator-cpufreq",
+		.owner = THIS_MODULE,
 		.of_match_table = integrator_cpufreq_match,
 	},
 	.remove = __exit_p(integrator_cpufreq_remove),
@@ -234,6 +235,6 @@ static struct platform_driver integrator_cpufreq_driver = {
 module_platform_driver_probe(integrator_cpufreq_driver,
 			     integrator_cpufreq_probe);
 
-MODULE_AUTHOR("Russell M. King");
-MODULE_DESCRIPTION("cpufreq driver for ARM Integrator CPUs");
-MODULE_LICENSE("GPL");
+MODULE_AUTHOR ("Russell M. King");
+MODULE_DESCRIPTION ("cpufreq driver for ARM Integrator CPUs");
+MODULE_LICENSE ("GPL");

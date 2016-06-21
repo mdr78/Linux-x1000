@@ -202,7 +202,8 @@ struct posix_acl *jffs2_get_acl(struct inode *inode, int type)
 	} else {
 		acl = ERR_PTR(rc);
 	}
-	kfree(value);
+	if (value)
+		kfree(value);
 	if (!IS_ERR(acl))
 		set_cached_acl(inode, type, acl);
 	return acl;

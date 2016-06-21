@@ -176,46 +176,46 @@ static void rs_dbgfs_set_mcs(struct iwl_lq_sta *lq_sta,
  * (2.4 GHz) band.
  */
 
-static const u16 expected_tpt_legacy[IWL_RATE_COUNT] = {
+static s32 expected_tpt_legacy[IWL_RATE_COUNT] = {
 	7, 13, 35, 58, 40, 57, 72, 98, 121, 154, 177, 186, 0
 };
 
-static const u16 expected_tpt_siso20MHz[4][IWL_RATE_COUNT] = {
+static s32 expected_tpt_siso20MHz[4][IWL_RATE_COUNT] = {
 	{0, 0, 0, 0, 42, 0,  76, 102, 124, 159, 183, 193, 202}, /* Norm */
 	{0, 0, 0, 0, 46, 0,  82, 110, 132, 168, 192, 202, 210}, /* SGI */
 	{0, 0, 0, 0, 47, 0,  91, 133, 171, 242, 305, 334, 362}, /* AGG */
 	{0, 0, 0, 0, 52, 0, 101, 145, 187, 264, 330, 361, 390}, /* AGG+SGI */
 };
 
-static const u16 expected_tpt_siso40MHz[4][IWL_RATE_COUNT] = {
+static s32 expected_tpt_siso40MHz[4][IWL_RATE_COUNT] = {
 	{0, 0, 0, 0,  77, 0, 127, 160, 184, 220, 242, 250, 257}, /* Norm */
 	{0, 0, 0, 0,  83, 0, 135, 169, 193, 229, 250, 257, 264}, /* SGI */
 	{0, 0, 0, 0,  94, 0, 177, 249, 313, 423, 512, 550, 586}, /* AGG */
 	{0, 0, 0, 0, 104, 0, 193, 270, 338, 454, 545, 584, 620}, /* AGG+SGI */
 };
 
-static const u16 expected_tpt_mimo2_20MHz[4][IWL_RATE_COUNT] = {
+static s32 expected_tpt_mimo2_20MHz[4][IWL_RATE_COUNT] = {
 	{0, 0, 0, 0,  74, 0, 123, 155, 179, 214, 236, 244, 251}, /* Norm */
 	{0, 0, 0, 0,  81, 0, 131, 164, 188, 223, 243, 251, 257}, /* SGI */
 	{0, 0, 0, 0,  89, 0, 167, 235, 296, 402, 488, 526, 560}, /* AGG */
 	{0, 0, 0, 0,  97, 0, 182, 255, 320, 431, 520, 558, 593}, /* AGG+SGI*/
 };
 
-static const u16 expected_tpt_mimo2_40MHz[4][IWL_RATE_COUNT] = {
+static s32 expected_tpt_mimo2_40MHz[4][IWL_RATE_COUNT] = {
 	{0, 0, 0, 0, 123, 0, 182, 214, 235, 264, 279, 285, 289}, /* Norm */
 	{0, 0, 0, 0, 131, 0, 191, 222, 242, 270, 284, 289, 293}, /* SGI */
 	{0, 0, 0, 0, 171, 0, 305, 410, 496, 634, 731, 771, 805}, /* AGG */
 	{0, 0, 0, 0, 186, 0, 329, 439, 527, 667, 764, 803, 838}, /* AGG+SGI */
 };
 
-static const u16 expected_tpt_mimo3_20MHz[4][IWL_RATE_COUNT] = {
+static s32 expected_tpt_mimo3_20MHz[4][IWL_RATE_COUNT] = {
 	{0, 0, 0, 0,  99, 0, 153, 186, 208, 239, 256, 263, 268}, /* Norm */
 	{0, 0, 0, 0, 106, 0, 162, 194, 215, 246, 262, 268, 273}, /* SGI */
 	{0, 0, 0, 0, 134, 0, 249, 346, 431, 574, 685, 732, 775}, /* AGG */
 	{0, 0, 0, 0, 148, 0, 272, 376, 465, 614, 727, 775, 818}, /* AGG+SGI */
 };
 
-static const u16 expected_tpt_mimo3_40MHz[4][IWL_RATE_COUNT] = {
+static s32 expected_tpt_mimo3_40MHz[4][IWL_RATE_COUNT] = {
 	{0, 0, 0, 0, 152, 0, 211, 239, 255, 279,  290,  294,  297}, /* Norm */
 	{0, 0, 0, 0, 160, 0, 219, 245, 261, 284,  294,  297,  300}, /* SGI */
 	{0, 0, 0, 0, 254, 0, 443, 584, 695, 868,  984, 1030, 1070}, /* AGG */
@@ -1111,7 +1111,7 @@ static void rs_set_expected_tpt_table(struct iwl_lq_sta *lq_sta,
 				      struct iwl_scale_tbl_info *tbl)
 {
 	/* Used to choose among HT tables */
-	const u16 (*ht_tbl_pointer)[IWL_RATE_COUNT];
+	s32 (*ht_tbl_pointer)[IWL_RATE_COUNT];
 
 	/* Check for invalid LQ type */
 	if (WARN_ON_ONCE(!is_legacy(tbl->lq_type) && !is_Ht(tbl->lq_type))) {
@@ -1173,8 +1173,9 @@ static s32 rs_get_best_rate(struct iwl_priv *priv,
 	    &(lq_sta->lq_info[lq_sta->active_tbl]);
 	s32 active_sr = active_tbl->win[index].success_ratio;
 	s32 active_tpt = active_tbl->expected_tpt[index];
+
 	/* expected "search" throughput */
-	const u16 *tpt_tbl = tbl->expected_tpt;
+	s32 *tpt_tbl = tbl->expected_tpt;
 
 	s32 new_rate, high, low, start_hi;
 	u16 high_low;
@@ -1416,11 +1417,11 @@ static int rs_switch_to_siso(struct iwl_priv *priv,
 /*
  * Try to switch to new modulation mode from legacy
  */
-static void rs_move_legacy_other(struct iwl_priv *priv,
-				 struct iwl_lq_sta *lq_sta,
-				 struct ieee80211_conf *conf,
-				 struct ieee80211_sta *sta,
-				 int index)
+static int rs_move_legacy_other(struct iwl_priv *priv,
+				struct iwl_lq_sta *lq_sta,
+				struct ieee80211_conf *conf,
+				struct ieee80211_sta *sta,
+				int index)
 {
 	struct iwl_scale_tbl_info *tbl = &(lq_sta->lq_info[lq_sta->active_tbl]);
 	struct iwl_scale_tbl_info *search_tbl =
@@ -1453,7 +1454,7 @@ static void rs_move_legacy_other(struct iwl_priv *priv,
 			tbl->action = IWL_LEGACY_SWITCH_SISO;
 		break;
 	default:
-		IWL_ERR(priv, "Invalid BT load %d\n", priv->bt_traffic_load);
+		IWL_ERR(priv, "Invalid BT load %d", priv->bt_traffic_load);
 		break;
 	}
 
@@ -1575,7 +1576,7 @@ static void rs_move_legacy_other(struct iwl_priv *priv,
 
 	}
 	search_tbl->lq_type = LQ_NONE;
-	return;
+	return 0;
 
 out:
 	lq_sta->search_better_tbl = 1;
@@ -1584,15 +1585,17 @@ out:
 		tbl->action = IWL_LEGACY_SWITCH_ANTENNA1;
 	if (update_search_tbl_counter)
 		search_tbl->action = tbl->action;
+	return 0;
+
 }
 
 /*
  * Try to switch to new modulation mode from SISO
  */
-static void rs_move_siso_to_other(struct iwl_priv *priv,
-				  struct iwl_lq_sta *lq_sta,
-				  struct ieee80211_conf *conf,
-				  struct ieee80211_sta *sta, int index)
+static int rs_move_siso_to_other(struct iwl_priv *priv,
+				 struct iwl_lq_sta *lq_sta,
+				 struct ieee80211_conf *conf,
+				 struct ieee80211_sta *sta, int index)
 {
 	u8 is_green = lq_sta->is_green;
 	struct iwl_scale_tbl_info *tbl = &(lq_sta->lq_info[lq_sta->active_tbl]);
@@ -1626,7 +1629,7 @@ static void rs_move_siso_to_other(struct iwl_priv *priv,
 			tbl->action = IWL_SISO_SWITCH_ANTENNA1;
 		break;
 	default:
-		IWL_ERR(priv, "Invalid BT load %d\n", priv->bt_traffic_load);
+		IWL_ERR(priv, "Invalid BT load %d", priv->bt_traffic_load);
 		break;
 	}
 
@@ -1745,7 +1748,7 @@ static void rs_move_siso_to_other(struct iwl_priv *priv,
 			break;
 	}
 	search_tbl->lq_type = LQ_NONE;
-	return;
+	return 0;
 
  out:
 	lq_sta->search_better_tbl = 1;
@@ -1754,15 +1757,17 @@ static void rs_move_siso_to_other(struct iwl_priv *priv,
 		tbl->action = IWL_SISO_SWITCH_ANTENNA1;
 	if (update_search_tbl_counter)
 		search_tbl->action = tbl->action;
+
+	return 0;
 }
 
 /*
  * Try to switch to new modulation mode from MIMO2
  */
-static void rs_move_mimo2_to_other(struct iwl_priv *priv,
-				   struct iwl_lq_sta *lq_sta,
-				   struct ieee80211_conf *conf,
-				   struct ieee80211_sta *sta, int index)
+static int rs_move_mimo2_to_other(struct iwl_priv *priv,
+				 struct iwl_lq_sta *lq_sta,
+				 struct ieee80211_conf *conf,
+				 struct ieee80211_sta *sta, int index)
 {
 	s8 is_green = lq_sta->is_green;
 	struct iwl_scale_tbl_info *tbl = &(lq_sta->lq_info[lq_sta->active_tbl]);
@@ -1795,7 +1800,7 @@ static void rs_move_mimo2_to_other(struct iwl_priv *priv,
 			tbl->action = IWL_MIMO2_SWITCH_SISO_A;
 		break;
 	default:
-		IWL_ERR(priv, "Invalid BT load %d\n", priv->bt_traffic_load);
+		IWL_ERR(priv, "Invalid BT load %d", priv->bt_traffic_load);
 		break;
 	}
 
@@ -1913,7 +1918,7 @@ static void rs_move_mimo2_to_other(struct iwl_priv *priv,
 			break;
 	}
 	search_tbl->lq_type = LQ_NONE;
-	return;
+	return 0;
  out:
 	lq_sta->search_better_tbl = 1;
 	tbl->action++;
@@ -1922,15 +1927,17 @@ static void rs_move_mimo2_to_other(struct iwl_priv *priv,
 	if (update_search_tbl_counter)
 		search_tbl->action = tbl->action;
 
+	return 0;
+
 }
 
 /*
  * Try to switch to new modulation mode from MIMO3
  */
-static void rs_move_mimo3_to_other(struct iwl_priv *priv,
-				   struct iwl_lq_sta *lq_sta,
-				   struct ieee80211_conf *conf,
-				   struct ieee80211_sta *sta, int index)
+static int rs_move_mimo3_to_other(struct iwl_priv *priv,
+				 struct iwl_lq_sta *lq_sta,
+				 struct ieee80211_conf *conf,
+				 struct ieee80211_sta *sta, int index)
 {
 	s8 is_green = lq_sta->is_green;
 	struct iwl_scale_tbl_info *tbl = &(lq_sta->lq_info[lq_sta->active_tbl]);
@@ -1963,7 +1970,7 @@ static void rs_move_mimo3_to_other(struct iwl_priv *priv,
 			tbl->action = IWL_MIMO3_SWITCH_SISO_A;
 		break;
 	default:
-		IWL_ERR(priv, "Invalid BT load %d\n", priv->bt_traffic_load);
+		IWL_ERR(priv, "Invalid BT load %d", priv->bt_traffic_load);
 		break;
 	}
 
@@ -2087,7 +2094,7 @@ static void rs_move_mimo3_to_other(struct iwl_priv *priv,
 			break;
 	}
 	search_tbl->lq_type = LQ_NONE;
-	return;
+	return 0;
  out:
 	lq_sta->search_better_tbl = 1;
 	tbl->action++;
@@ -2095,6 +2102,9 @@ static void rs_move_mimo3_to_other(struct iwl_priv *priv,
 		tbl->action = IWL_MIMO3_SWITCH_ANTENNA1;
 	if (update_search_tbl_counter)
 		search_tbl->action = tbl->action;
+
+	return 0;
+
 }
 
 /*
@@ -2700,7 +2710,7 @@ static void rs_initialize_lq(struct iwl_priv *priv,
 	rs_set_expected_tpt_table(lq_sta, tbl);
 	rs_fill_link_cmd(NULL, lq_sta, rate);
 	priv->stations[lq_sta->lq.sta_id].lq = &lq_sta->lq;
-	iwl_send_lq_cmd(priv, ctx, &lq_sta->lq, 0, true);
+	iwl_send_lq_cmd(priv, ctx, &lq_sta->lq, CMD_SYNC, true);
 }
 
 static void rs_get_rate(void *priv_r, struct ieee80211_sta *sta, void *priv_sta,
@@ -3144,13 +3154,12 @@ static ssize_t rs_sta_dbgfs_scale_table_read(struct file *file,
 	desc += sprintf(buff+desc, "lq type %s\n",
 	   (is_legacy(tbl->lq_type)) ? "legacy" : "HT");
 	if (is_Ht(tbl->lq_type)) {
-		desc += sprintf(buff + desc, " %s",
+		desc += sprintf(buff+desc, " %s",
 		   (is_siso(tbl->lq_type)) ? "SISO" :
 		   ((is_mimo2(tbl->lq_type)) ? "MIMO2" : "MIMO3"));
-		desc += sprintf(buff + desc, " %s",
+		   desc += sprintf(buff+desc, " %s",
 		   (tbl->is_ht40) ? "40MHz" : "20MHz");
-		desc += sprintf(buff + desc, " %s %s %s\n",
-		   (tbl->is_SGI) ? "SGI" : "",
+		   desc += sprintf(buff+desc, " %s %s %s\n", (tbl->is_SGI) ? "SGI" : "",
 		   (lq_sta->is_green) ? "GF enabled" : "",
 		   (lq_sta->is_agg) ? "AGG on" : "");
 	}
@@ -3310,8 +3319,8 @@ static void rs_rate_init_stub(void *priv_r, struct ieee80211_supported_band *sba
 			      struct ieee80211_sta *sta, void *priv_sta)
 {
 }
-
-static const struct rate_control_ops rs_ops = {
+static struct rate_control_ops rs_ops = {
+	.module = NULL,
 	.name = RS_NAME,
 	.tx_status = rs_tx_status,
 	.get_rate = rs_get_rate,

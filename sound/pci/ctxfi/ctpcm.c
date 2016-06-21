@@ -217,8 +217,7 @@ static int ct_pcm_playback_prepare(struct snd_pcm_substream *substream)
 		err = atc->pcm_playback_prepare(atc, apcm);
 
 	if (err < 0) {
-		dev_err(atc->card->dev,
-			"Preparing pcm playback failed!!!\n");
+		printk(KERN_ERR "ctxfi: Preparing pcm playback failed!!!\n");
 		return err;
 	}
 
@@ -325,8 +324,7 @@ static int ct_pcm_capture_prepare(struct snd_pcm_substream *substream)
 
 	err = atc->pcm_capture_prepare(atc, apcm);
 	if (err < 0) {
-		dev_err(atc->card->dev,
-			"Preparing pcm capture failed!!!\n");
+		printk(KERN_ERR "ctxfi: Preparing pcm capture failed!!!\n");
 		return err;
 	}
 
@@ -437,8 +435,7 @@ int ct_alsa_pcm_create(struct ct_atc *atc,
 	err = snd_pcm_new(atc->card, "ctxfi", device,
 			  playback_count, capture_count, &pcm);
 	if (err < 0) {
-		dev_err(atc->card->dev, "snd_pcm_new failed!! Err=%d\n",
-			err);
+		printk(KERN_ERR "ctxfi: snd_pcm_new failed!! Err=%d\n", err);
 		return err;
 	}
 

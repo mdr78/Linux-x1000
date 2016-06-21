@@ -303,10 +303,7 @@ static ssize_t aat2870_reg_write_file(struct file *file,
 	while (*start == ' ')
 		start++;
 
-	ret = kstrtoul(start, 16, &addr);
-	if (ret)
-		return ret;
-
+	addr = simple_strtoul(start, &start, 16);
 	if (addr >= AAT2870_REG_NUM) {
 		dev_err(aat2870->dev, "Invalid address, 0x%lx\n", addr);
 		return -EINVAL;
@@ -500,6 +497,7 @@ MODULE_DEVICE_TABLE(i2c, aat2870_i2c_id_table);
 static struct i2c_driver aat2870_i2c_driver = {
 	.driver = {
 		.name	= "aat2870",
+		.owner	= THIS_MODULE,
 		.pm	= &aat2870_pm_ops,
 	},
 	.probe		= aat2870_i2c_probe,

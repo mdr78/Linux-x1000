@@ -31,7 +31,6 @@
 #include <linux/of.h>
 #include <linux/of_platform.h>
 #include <linux/of_address.h>
-#include <linux/of_irq.h>
 
 /**
  * ehci_xilinx_port_handed_over - hand the port out if failed to enable it
@@ -236,6 +235,7 @@ static struct platform_driver ehci_hcd_xilinx_of_driver = {
 	.shutdown	= usb_hcd_platform_shutdown,
 	.driver = {
 		.name = "xilinx-of-ehci",
+		.owner = THIS_MODULE,
 		.of_match_table = ehci_hcd_xilinx_of_match,
 	},
 };

@@ -323,17 +323,24 @@ static ssize_t pm8001_ctl_ib_queue_log_show(struct device *cdev,
 	int offset;
 	char *str = buf;
 	int start = 0;
-#define IB_MEMMAP(c)	\
-		(*(u32 *)((u8 *)pm8001_ha->	\
-		memoryMap.region[IB].virt_ptr +	\
+#define IB_MEMMAP(c)		\
+		(*(u32 *)((u8 *)pm8001_ha->		\
+		memoryMap.region[IB].virt_ptr +		\
 		pm8001_ha->evtlog_ib_offset + (c)))
 
 	for (offset = 0; offset < IB_OB_READ_TIMES; offset++) {
-		str += sprintf(str, "0x%08x\n", IB_MEMMAP(start));
+		if (pm8001_ha->chip_id != chip_8001)
+			str += sprintf(str, "0x%08x\n", IB_MEMMAP(start));
+		else
+			str += sprintf(str, "0x%08x\n", IB_MEMMAP(start));
 		start = start + 4;
 	}
 	pm8001_ha->evtlog_ib_offset += SYSFS_OFFSET;
-	if (((pm8001_ha->evtlog_ib_offset) % (PM80XX_IB_OB_QUEUE_SIZE)) == 0)
+	if ((((pm8001_ha->evtlog_ib_offset) % (PM80XX_IB_OB_QUEUE_SIZE)) == 0)
+		&& (pm8001_ha->chip_id != chip_8001))
+		pm8001_ha->evtlog_ib_offset = 0;
+	if ((((pm8001_ha->evtlog_ib_offset) % (PM8001_IB_OB_QUEUE_SIZE)) == 0)
+		&& (pm8001_ha->chip_id == chip_8001))
 		pm8001_ha->evtlog_ib_offset = 0;
 
 	return str - buf;
@@ -356,17 +363,24 @@ static ssize_t pm8001_ctl_ob_queue_log_show(struct device *cdev,
 	int offset;
 	char *str = buf;
 	int start = 0;
-#define OB_MEMMAP(c)	\
-		(*(u32 *)((u8 *)pm8001_ha->	\
-		memoryMap.region[OB].virt_ptr +	\
+#define OB_MEMMAP(c)		\
+		(*(u32 *)((u8 *)pm8001_ha->		\
+		memoryMap.region[OB].virt_ptr +		\
 		pm8001_ha->evtlog_ob_offset + (c)))
 
 	for (offset = 0; offset < IB_OB_READ_TIMES; offset++) {
-		str += sprintf(str, "0x%08x\n", OB_MEMMAP(start));
+		if (pm8001_ha->chip_id != chip_8001)
+			str += sprintf(str, "0x%08x\n", OB_MEMMAP(start));
+		else
+			str += sprintf(str, "0x%08x\n", OB_MEMMAP(start));
 		start = start + 4;
 	}
 	pm8001_ha->evtlog_ob_offset += SYSFS_OFFSET;
-	if (((pm8001_ha->evtlog_ob_offset) % (PM80XX_IB_OB_QUEUE_SIZE)) == 0)
+	if ((((pm8001_ha->evtlog_ob_offset) % (PM80XX_IB_OB_QUEUE_SIZE)) == 0)
+			&& (pm8001_ha->chip_id != chip_8001))
+		pm8001_ha->evtlog_ob_offset = 0;
+	if ((((pm8001_ha->evtlog_ob_offset) % (PM8001_IB_OB_QUEUE_SIZE)) == 0)
+			&& (pm8001_ha->chip_id == chip_8001))
 		pm8001_ha->evtlog_ob_offset = 0;
 
 	return str - buf;
@@ -385,6 +399,7 @@ static ssize_t pm8001_ctl_bios_version_show(struct device *cdev,
 	struct sas_ha_struct *sha = SHOST_TO_SAS_HA(shost);
 	struct pm8001_hba_info *pm8001_ha = sha->lldd_ha;
 	char *str = buf;
+	void *virt_addr;
 	int bios_index;
 	DECLARE_COMPLETION_ONSTACK(completion);
 	struct pm8001_ioctl_payload payload;
@@ -394,18 +409,13 @@ static ssize_t pm8001_ctl_bios_version_show(struct device *cdev,
 	payload.offset = 0;
 	payload.length = 4096;
 	payload.func_specific = kzalloc(4096, GFP_KERNEL);
-	if (!payload.func_specific)
-		return -ENOMEM;
-	if (PM8001_CHIP_DISP->get_nvmd_req(pm8001_ha, &payload)) {
-		kfree(payload.func_specific);
-		return -ENOMEM;
-	}
+	PM8001_CHIP_DISP->get_nvmd_req(pm8001_ha, &payload);
 	wait_for_completion(&completion);
+	virt_addr = pm8001_ha->memoryMap.region[NVMD].virt_ptr;
 	for (bios_index = BIOSOFFSET; bios_index < BIOS_OFFSET_LIMIT;
 		bios_index++)
 		str += sprintf(str, "%c",
-			*(payload.func_specific+bios_index));
-	kfree(payload.func_specific);
+			*((u8 *)((u8 *)virt_addr+bios_index)));
 	return str - buf;
 }
 static DEVICE_ATTR(bios_version, S_IRUGO, pm8001_ctl_bios_version_show, NULL);
@@ -456,7 +466,7 @@ static DEVICE_ATTR(iop_log, S_IRUGO, pm8001_ctl_iop_log_show, NULL);
 static ssize_t pm8001_ctl_fatal_log_show(struct device *cdev,
 	struct device_attribute *attr, char *buf)
 {
-	ssize_t count;
+	u32 count;
 
 	count = pm80xx_get_fatal_dump(cdev, attr, buf);
 	return count;
@@ -474,7 +484,7 @@ static DEVICE_ATTR(fatal_log, S_IRUGO, pm8001_ctl_fatal_log_show, NULL);
 static ssize_t pm8001_ctl_gsm_log_show(struct device *cdev,
 	struct device_attribute *attr, char *buf)
 {
-	ssize_t count;
+	u32 count;
 
 	count = pm8001_get_gsm_dump(cdev, SYSFS_OFFSET, buf);
 	return count;
@@ -524,19 +534,18 @@ static int pm8001_set_nvmd(struct pm8001_hba_info *pm8001_ha)
 {
 	struct pm8001_ioctl_payload	*payload;
 	DECLARE_COMPLETION_ONSTACK(completion);
-	u8		*ioctlbuffer;
-	u32		ret;
-	u32		length = 1024 * 5 + sizeof(*payload) - 1;
+	u8		*ioctlbuffer = NULL;
+	u32		length = 0;
+	u32		ret = 0;
 
-	if (pm8001_ha->fw_image->size > 4096) {
-		pm8001_ha->fw_status = FAIL_FILE_SIZE;
-		return -EFAULT;
-	}
-
+	length = 1024 * 5 + sizeof(*payload) - 1;
 	ioctlbuffer = kzalloc(length, GFP_KERNEL);
-	if (!ioctlbuffer) {
-		pm8001_ha->fw_status = FAIL_OUT_MEMORY;
+	if (!ioctlbuffer)
 		return -ENOMEM;
+	if ((pm8001_ha->fw_image->size <= 0) ||
+	    (pm8001_ha->fw_image->size > 4096)) {
+		ret = FAIL_FILE_SIZE;
+		goto out;
 	}
 	payload = (struct pm8001_ioctl_payload *)ioctlbuffer;
 	memcpy((u8 *)&payload->func_specific, (u8 *)pm8001_ha->fw_image->data,
@@ -546,10 +555,6 @@ static int pm8001_set_nvmd(struct pm8001_hba_info *pm8001_ha)
 	payload->minor_function = 0x1;
 	pm8001_ha->nvmd_completion = &completion;
 	ret = PM8001_CHIP_DISP->set_nvmd_req(pm8001_ha, payload);
-	if (ret) {
-		pm8001_ha->fw_status = FAIL_OUT_MEMORY;
-		goto out;
-	}
 	wait_for_completion(&completion);
 out:
 	kfree(ioctlbuffer);
@@ -560,31 +565,35 @@ static int pm8001_update_flash(struct pm8001_hba_info *pm8001_ha)
 {
 	struct pm8001_ioctl_payload	*payload;
 	DECLARE_COMPLETION_ONSTACK(completion);
-	u8		*ioctlbuffer;
+	u8		*ioctlbuffer = NULL;
+	u32		length = 0;
 	struct fw_control_info	*fwControl;
-	u32		partitionSize, partitionSizeTmp;
-	u32		loopNumber, loopcount;
-	struct pm8001_fw_image_header *image_hdr;
+	u32		loopNumber, loopcount = 0;
 	u32		sizeRead = 0;
+	u32		partitionSize, partitionSizeTmp;
 	u32		ret = 0;
-	u32		length = 1024 * 16 + sizeof(*payload) - 1;
+	u32		partitionNumber = 0;
+	struct pm8001_fw_image_header *image_hdr;
 
-	if (pm8001_ha->fw_image->size < 28) {
-		pm8001_ha->fw_status = FAIL_FILE_SIZE;
-		return -EFAULT;
-	}
+	length = 1024 * 16 + sizeof(*payload) - 1;
 	ioctlbuffer = kzalloc(length, GFP_KERNEL);
-	if (!ioctlbuffer) {
-		pm8001_ha->fw_status = FAIL_OUT_MEMORY;
-		return -ENOMEM;
-	}
 	image_hdr = (struct pm8001_fw_image_header *)pm8001_ha->fw_image->data;
+	if (!ioctlbuffer)
+		return -ENOMEM;
+	if (pm8001_ha->fw_image->size < 28) {
+		ret = FAIL_FILE_SIZE;
+		goto out;
+	}
+
 	while (sizeRead < pm8001_ha->fw_image->size) {
 		partitionSizeTmp =
 			*(u32 *)((u8 *)&image_hdr->image_length + sizeRead);
 		partitionSize = be32_to_cpu(partitionSizeTmp);
-		loopcount = DIV_ROUND_UP(partitionSize + HEADER_LEN,
-					IOCTL_BUF_SIZE);
+		loopcount = (partitionSize + HEADER_LEN)/IOCTL_BUF_SIZE;
+		if (loopcount % IOCTL_BUF_SIZE)
+			loopcount++;
+		if (loopcount == 0)
+			loopcount++;
 		for (loopNumber = 0; loopNumber < loopcount; loopNumber++) {
 			payload = (struct pm8001_ioctl_payload *)ioctlbuffer;
 			payload->length = 1024*16;
@@ -616,18 +625,18 @@ static int pm8001_update_flash(struct pm8001_hba_info *pm8001_ha)
 
 		pm8001_ha->nvmd_completion = &completion;
 		ret = PM8001_CHIP_DISP->fw_flash_update_req(pm8001_ha, payload);
-		if (ret) {
-			pm8001_ha->fw_status = FAIL_OUT_MEMORY;
-			goto out;
-		}
 		wait_for_completion(&completion);
-		if (fwControl->retcode > FLASH_UPDATE_IN_PROGRESS) {
-			pm8001_ha->fw_status = fwControl->retcode;
-			ret = -EFAULT;
-			goto out;
-		}
+		if (ret || (fwControl->retcode > FLASH_UPDATE_IN_PROGRESS)) {
+			ret = fwControl->retcode;
+			kfree(ioctlbuffer);
+			ioctlbuffer = NULL;
+			break;
 		}
 	}
+	if (ret)
+		break;
+	partitionNumber++;
+}
 out:
 	kfree(ioctlbuffer);
 	return ret;
@@ -642,29 +651,22 @@ static ssize_t pm8001_store_update_fw(struct device *cdev,
 	char *cmd_ptr, *filename_ptr;
 	int res, i;
 	int flash_command = FLASH_CMD_NONE;
-	int ret;
-
+	int err = 0;
 	if (!capable(CAP_SYS_ADMIN))
 		return -EACCES;
 
-	/* this test protects us from running two flash processes at once,
-	 * so we should start with this test */
-	if (pm8001_ha->fw_status == FLASH_IN_PROGRESS)
-		return -EINPROGRESS;
-	pm8001_ha->fw_status = FLASH_IN_PROGRESS;
-
 	cmd_ptr = kzalloc(count*2, GFP_KERNEL);
+
 	if (!cmd_ptr) {
-		pm8001_ha->fw_status = FAIL_OUT_MEMORY;
-		return -ENOMEM;
+		err = FAIL_OUT_MEMORY;
+		goto out;
 	}
 
 	filename_ptr = cmd_ptr + count;
 	res = sscanf(buf, "%s %s", cmd_ptr, filename_ptr);
 	if (res != 2) {
-		pm8001_ha->fw_status = FAIL_PARAMETERS;
-		ret = -EINVAL;
-		goto out;
+		err = FAIL_PARAMETERS;
+		goto out1;
 	}
 
 	for (i = 0; flash_command_table[i].code != FLASH_CMD_NONE; i++) {
@@ -675,38 +677,50 @@ static ssize_t pm8001_store_update_fw(struct device *cdev,
 		}
 	}
 	if (flash_command == FLASH_CMD_NONE) {
-		pm8001_ha->fw_status = FAIL_PARAMETERS;
-		ret = -EINVAL;
-		goto out;
+		err = FAIL_PARAMETERS;
+		goto out1;
 	}
 
-	ret = request_firmware(&pm8001_ha->fw_image,
+	if (pm8001_ha->fw_status == FLASH_IN_PROGRESS) {
+		err = FLASH_IN_PROGRESS;
+		goto out1;
+	}
+	err = request_firmware(&pm8001_ha->fw_image,
 			       filename_ptr,
 			       pm8001_ha->dev);
 
-	if (ret) {
+	if (err) {
 		PM8001_FAIL_DBG(pm8001_ha,
-			pm8001_printk(
-			"Failed to load firmware image file %s,	error %d\n",
-			filename_ptr, ret));
-		pm8001_ha->fw_status = FAIL_OPEN_BIOS_FILE;
-		goto out;
+			pm8001_printk("Failed to load firmware image file %s,"
+			" error %d\n", filename_ptr, err));
+		err = FAIL_OPEN_BIOS_FILE;
+		goto out1;
 	}
 
-	if (FLASH_CMD_UPDATE == flash_command)
-		ret = pm8001_update_flash(pm8001_ha);
-	else
-		ret = pm8001_set_nvmd(pm8001_ha);
-
+	switch (flash_command) {
+	case FLASH_CMD_UPDATE:
+		pm8001_ha->fw_status = FLASH_IN_PROGRESS;
+		err = pm8001_update_flash(pm8001_ha);
+		break;
+	case FLASH_CMD_SET_NVMD:
+		pm8001_ha->fw_status = FLASH_IN_PROGRESS;
+		err = pm8001_set_nvmd(pm8001_ha);
+		break;
+	default:
+		pm8001_ha->fw_status = FAIL_PARAMETERS;
+		err = FAIL_PARAMETERS;
+		break;
+	}
 	release_firmware(pm8001_ha->fw_image);
-out:
+out1:
 	kfree(cmd_ptr);
+out:
+	pm8001_ha->fw_status = err;
 
-	if (ret)
-		return ret;
-
-	pm8001_ha->fw_status = FLASH_OK;
-	return count;
+	if (!err)
+		return count;
+	else
+		return -err;
 }
 
 static ssize_t pm8001_show_update_fw(struct device *cdev,
@@ -729,7 +743,7 @@ static ssize_t pm8001_show_update_fw(struct device *cdev,
 			flash_error_table[i].reason);
 }
 
-static DEVICE_ATTR(update_fw, S_IRUGO|S_IWUSR|S_IWGRP,
+static DEVICE_ATTR(update_fw, S_IRUGO|S_IWUGO,
 	pm8001_show_update_fw, pm8001_store_update_fw);
 struct device_attribute *pm8001_host_attrs[] = {
 	&dev_attr_interface_rev,

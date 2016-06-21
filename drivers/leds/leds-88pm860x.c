@@ -11,6 +11,7 @@
  */
 
 #include <linux/kernel.h>
+#include <linux/init.h>
 #include <linux/of.h>
 #include <linux/platform_device.h>
 #include <linux/i2c.h>
@@ -130,9 +131,10 @@ static int pm860x_led_dt_init(struct platform_device *pdev,
 	struct device_node *nproot, *np;
 	int iset = 0;
 
-	if (!pdev->dev.parent->of_node)
+	nproot = of_node_get(pdev->dev.parent->of_node);
+	if (!nproot)
 		return -ENODEV;
-	nproot = of_get_child_by_name(pdev->dev.parent->of_node, "leds");
+	nproot = of_find_node_by_name(nproot, "leds");
 	if (!nproot) {
 		dev_err(&pdev->dev, "failed to find leds node\n");
 		return -ENODEV;
@@ -142,7 +144,6 @@ static int pm860x_led_dt_init(struct platform_device *pdev,
 			of_property_read_u32(np, "marvell,88pm860x-iset",
 					     &iset);
 			data->iset = PM8606_LED_CURRENT(iset);
-			of_node_put(np);
 			break;
 		}
 	}
@@ -238,6 +239,7 @@ static int pm860x_led_remove(struct platform_device *pdev)
 static struct platform_driver pm860x_led_driver = {
 	.driver	= {
 		.name	= "88pm860x-led",
+		.owner	= THIS_MODULE,
 	},
 	.probe	= pm860x_led_probe,
 	.remove	= pm860x_led_remove,

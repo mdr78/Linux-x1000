@@ -24,6 +24,8 @@
 #include "hci.h"
 #include "gdm_qos.h"
 
+#define B2H(x)		__be16_to_cpu(x)
+
 #define MAX_FREE_LIST_CNT		32
 static struct {
 	struct list_head head;
@@ -46,7 +48,7 @@ static void *alloc_qos_entry(void)
 	spin_lock_irqsave(&qos_free_list.lock, flags);
 	if (qos_free_list.cnt) {
 		entry = list_entry(qos_free_list.head.prev, struct qos_entry_s,
-				   list);
+					list);
 		list_del(&entry->list);
 		qos_free_list.cnt--;
 		spin_unlock_irqrestore(&qos_free_list.lock, flags);
@@ -54,12 +56,13 @@ static void *alloc_qos_entry(void)
 	}
 	spin_unlock_irqrestore(&qos_free_list.lock, flags);
 
-	return kmalloc(sizeof(*entry), GFP_ATOMIC);
+	entry = kmalloc(sizeof(struct qos_entry_s), GFP_ATOMIC);
+	return entry;
 }
 
 static void free_qos_entry(void *entry)
 {
-	struct qos_entry_s *qentry = entry;
+	struct qos_entry_s *qentry = (struct qos_entry_s *) entry;
 	unsigned long flags;
 
 	spin_lock_irqsave(&qos_free_list.lock, flags);
@@ -97,7 +100,7 @@ void gdm_qos_init(void *nic_ptr)
 	for (i = 0; i < QOS_MAX; i++) {
 		INIT_LIST_HEAD(&qcb->qos_list[i]);
 		qcb->csr[i].qos_buf_count = 0;
-		qcb->csr[i].enabled = false;
+		qcb->csr[i].enabled = 0;
 	}
 
 	qcb->qos_list_cnt = 0;
@@ -124,7 +127,7 @@ void gdm_qos_release_list(void *nic_ptr)
 
 	for (i = 0; i < QOS_MAX; i++) {
 		qcb->csr[i].qos_buf_count = 0;
-		qcb->csr[i].enabled = false;
+		qcb->csr[i].enabled = 0;
 	}
 
 	qcb->qos_list_cnt = 0;
@@ -139,24 +142,24 @@ void gdm_qos_release_list(void *nic_ptr)
 	free_qos_entry_list(&free_list);
 }
 
-static int chk_ipv4_rule(struct gdm_wimax_csr_s *csr, u8 *stream, u8 *port)
+static u32 chk_ipv4_rule(struct gdm_wimax_csr_s *csr, u8 *Stream, u8 *port)
 {
 	int i;
 
 	if (csr->classifier_rule_en&IPTYPEOFSERVICE) {
-		if (((stream[1] & csr->ip2s_mask) < csr->ip2s_lo) ||
-		    ((stream[1] & csr->ip2s_mask) > csr->ip2s_hi))
+		if (((Stream[1] & csr->ip2s_mask) < csr->ip2s_lo) ||
+		((Stream[1] & csr->ip2s_mask) > csr->ip2s_hi))
 			return 1;
 	}
 
 	if (csr->classifier_rule_en&PROTOCOL) {
-		if (stream[9] != csr->protocol)
+		if (Stream[9] != csr->protocol)
 			return 1;
 	}
 
 	if (csr->classifier_rule_en&IPMASKEDSRCADDRESS) {
 		for (i = 0; i < 4; i++) {
-			if ((stream[12 + i] & csr->ipsrc_addrmask[i]) !=
+			if ((Stream[12 + i] & csr->ipsrc_addrmask[i]) !=
 			(csr->ipsrc_addr[i] & csr->ipsrc_addrmask[i]))
 				return 1;
 		}
@@ -164,7 +167,7 @@ static int chk_ipv4_rule(struct gdm_wimax_csr_s *csr, u8 *stream, u8 *port)
 
 	if (csr->classifier_rule_en&IPMASKEDDSTADDRESS) {
 		for (i = 0; i < 4; i++) {
-			if ((stream[16 + i] & csr->ipdst_addrmask[i]) !=
+			if ((Stream[16 + i] & csr->ipdst_addrmask[i]) !=
 			(csr->ipdst_addr[i] & csr->ipdst_addrmask[i]))
 				return 1;
 		}
@@ -185,32 +188,33 @@ static int chk_ipv4_rule(struct gdm_wimax_csr_s *csr, u8 *stream, u8 *port)
 	return 0;
 }
 
-static int get_qos_index(struct nic *nic, u8 *iph, u8 *tcpudph)
+static u32 get_qos_index(struct nic *nic, u8 *iph, u8 *tcpudph)
 {
-	int ip_ver, i;
+	u32	IP_Ver, Header_Len, i;
 	struct qos_cb_s *qcb = &nic->qos;
 
-	if (!iph || !tcpudph)
+	if (iph == NULL || tcpudph == NULL)
 		return -1;
 
-	ip_ver = (iph[0]>>4)&0xf;
+	IP_Ver = (iph[0]>>4)&0xf;
+	Header_Len = iph[0]&0xf;
 
-	if (ip_ver != 4)
-		return -1;
-
-	for (i = 0; i < QOS_MAX; i++) {
-		if (!qcb->csr[i].enabled)
-			continue;
-		if (!qcb->csr[i].classifier_rule_en)
-			continue;
-		if (chk_ipv4_rule(&qcb->csr[i], iph, tcpudph) == 0)
-			return i;
+	if (IP_Ver == 4) {
+		for (i = 0; i < QOS_MAX; i++) {
+			if (qcb->csr[i].enabled) {
+				if (qcb->csr[i].classifier_rule_en) {
+					if (chk_ipv4_rule(&qcb->csr[i], iph,
+					tcpudph) == 0)
+						return i;
+				}
+			}
+		}
 	}
 
 	return -1;
 }
 
-static void extract_qos_list(struct nic *nic, struct list_head *head)
+static u32 extract_qos_list(struct nic *nic, struct list_head *head)
 {
 	struct qos_cb_s *qcb = &nic->qos;
 	struct qos_entry_s *entry;
@@ -219,22 +223,25 @@ static void extract_qos_list(struct nic *nic, struct list_head *head)
 	INIT_LIST_HEAD(head);
 
 	for (i = 0; i < QOS_MAX; i++) {
-		if (!qcb->csr[i].enabled)
-			continue;
-		if (qcb->csr[i].qos_buf_count >= qcb->qos_limit_size)
-			continue;
-		if (list_empty(&qcb->qos_list[i]))
-			continue;
+		if (qcb->csr[i].enabled) {
+			if (qcb->csr[i].qos_buf_count < qcb->qos_limit_size) {
+				if (!list_empty(&qcb->qos_list[i])) {
+					entry = list_entry(
+					qcb->qos_list[i].prev,
+					struct qos_entry_s, list);
+					list_move_tail(&entry->list, head);
+					qcb->csr[i].qos_buf_count++;
 
-		entry = list_entry(qcb->qos_list[i].prev, struct qos_entry_s,
-				   list);
-
-		list_move_tail(&entry->list, head);
-		qcb->csr[i].qos_buf_count++;
-
-		if (!list_empty(&qcb->qos_list[i]))
-			netdev_warn(nic->netdev, "Index(%d) is piled!!\n", i);
+					if (!list_empty(&qcb->qos_list[i]))
+						netdev_warn(nic->netdev,
+							    "Index(%d) is piled!!\n",
+							    i);
+				}
+			}
+		}
 	}
+
+	return 0;
 }
 
 static void send_qos_list(struct nic *nic, struct list_head *head)
@@ -254,16 +261,16 @@ int gdm_qos_send_hci_pkt(struct sk_buff *skb, struct net_device *dev)
 	int index;
 	struct qos_cb_s *qcb = &nic->qos;
 	unsigned long flags;
-	struct ethhdr *ethh = (struct ethhdr *)(skb->data + HCI_HEADER_SIZE);
-	struct iphdr *iph = (struct iphdr *)((char *)ethh + ETH_HLEN);
+	struct ethhdr *ethh = (struct ethhdr *) (skb->data + HCI_HEADER_SIZE);
+	struct iphdr *iph = (struct iphdr *) ((char *) ethh + ETH_HLEN);
 	struct tcphdr *tcph;
 	struct qos_entry_s *entry = NULL;
 	struct list_head send_list;
 	int ret = 0;
 
-	tcph = (struct tcphdr *)iph + iph->ihl*4;
+	tcph = (struct tcphdr *) iph + iph->ihl*4;
 
-	if (ethh->h_proto == cpu_to_be16(ETH_P_IP)) {
+	if (B2H(ethh->h_proto) == ETH_P_IP) {
 		if (qcb->qos_list_cnt && !qos_free_list.cnt) {
 			entry = alloc_qos_entry();
 			entry->skb = skb;
@@ -274,7 +281,7 @@ int gdm_qos_send_hci_pkt(struct sk_buff *skb, struct net_device *dev)
 
 		spin_lock_irqsave(&qcb->qos_lock, flags);
 		if (qcb->qos_list_cnt) {
-			index = get_qos_index(nic, (u8 *)iph, (u8 *)tcph);
+			index = get_qos_index(nic, (u8 *)iph, (u8 *) tcph);
 			if (index == -1)
 				index = qcb->qos_null_idx;
 
@@ -300,19 +307,19 @@ out:
 	return ret;
 }
 
-static int get_csr(struct qos_cb_s *qcb, u32 sfid, int mode)
+static u32 get_csr(struct qos_cb_s *qcb, u32 SFID, int mode)
 {
 	int i;
 
 	for (i = 0; i < qcb->qos_list_cnt; i++) {
-		if (qcb->csr[i].sfid == sfid)
+		if (qcb->csr[i].SFID == SFID)
 			return i;
 	}
 
 	if (mode) {
 		for (i = 0; i < QOS_MAX; i++) {
-			if (!qcb->csr[i].enabled) {
-				qcb->csr[i].enabled = true;
+			if (qcb->csr[i].enabled == 0) {
+				qcb->csr[i].enabled = 1;
 				qcb->qos_list_cnt++;
 				return i;
 			}
@@ -328,25 +335,24 @@ static int get_csr(struct qos_cb_s *qcb, u32 sfid, int mode)
 void gdm_recv_qos_hci_packet(void *nic_ptr, u8 *buf, int size)
 {
 	struct nic *nic = nic_ptr;
-	int i, index, pos;
-	u32 sfid;
-	u8 sub_cmd_evt;
+	u32 i, SFID, index, pos;
+	u8 subCmdEvt;
 	struct qos_cb_s *qcb = &nic->qos;
 	struct qos_entry_s *entry, *n;
 	struct list_head send_list;
 	struct list_head free_list;
 	unsigned long flags;
 
-	sub_cmd_evt = (u8)buf[4];
+	subCmdEvt = (u8)buf[4];
 
-	if (sub_cmd_evt == QOS_REPORT) {
+	if (subCmdEvt == QOS_REPORT) {
 		spin_lock_irqsave(&qcb->qos_lock, flags);
 		for (i = 0; i < qcb->qos_list_cnt; i++) {
-			sfid = ((buf[(i*5)+6]<<24)&0xff000000);
-			sfid += ((buf[(i*5)+7]<<16)&0xff0000);
-			sfid += ((buf[(i*5)+8]<<8)&0xff00);
-			sfid += (buf[(i*5)+9]);
-			index = get_csr(qcb, sfid, 0);
+			SFID = ((buf[(i*5)+6]<<24)&0xff000000);
+			SFID += ((buf[(i*5)+7]<<16)&0xff0000);
+			SFID += ((buf[(i*5)+8]<<8)&0xff00);
+			SFID += (buf[(i*5)+9]);
+			index = get_csr(qcb, SFID, 0);
 			if (index == -1) {
 				spin_unlock_irqrestore(&qcb->qos_lock, flags);
 				netdev_err(nic->netdev, "QoS ERROR: No SF\n");
@@ -361,27 +367,27 @@ void gdm_recv_qos_hci_packet(void *nic_ptr, u8 *buf, int size)
 		return;
 	}
 
-	/* sub_cmd_evt == QOS_ADD || sub_cmd_evt == QOS_CHANG_DEL */
+	/* subCmdEvt == QOS_ADD || subCmdEvt == QOS_CHANG_DEL */
 	pos = 6;
-	sfid = ((buf[pos++]<<24)&0xff000000);
-	sfid += ((buf[pos++]<<16)&0xff0000);
-	sfid += ((buf[pos++]<<8)&0xff00);
-	sfid += (buf[pos++]);
+	SFID = ((buf[pos++]<<24)&0xff000000);
+	SFID += ((buf[pos++]<<16)&0xff0000);
+	SFID += ((buf[pos++]<<8)&0xff00);
+	SFID += (buf[pos++]);
 
-	index = get_csr(qcb, sfid, 1);
+	index = get_csr(qcb, SFID, 1);
 	if (index == -1) {
 		netdev_err(nic->netdev,
-			   "QoS ERROR: csr Update Error / Wrong index (%d)\n",
+			   "QoS ERROR: csr Update Error / Wrong index (%d) \n",
 			   index);
 		return;
 	}
 
-	if (sub_cmd_evt == QOS_ADD) {
+	if (subCmdEvt == QOS_ADD) {
 		netdev_dbg(nic->netdev, "QOS_ADD SFID = 0x%x, index=%d\n",
-			   sfid, index);
+			   SFID, index);
 
 		spin_lock_irqsave(&qcb->qos_lock, flags);
-		qcb->csr[index].sfid = sfid;
+		qcb->csr[index].SFID = SFID;
 		qcb->csr[index].classifier_rule_en = ((buf[pos++]<<8)&0xff00);
 		qcb->csr[index].classifier_rule_en += buf[pos++];
 		if (qcb->csr[index].classifier_rule_en == 0)
@@ -417,19 +423,19 @@ void gdm_recv_qos_hci_packet(void *nic_ptr, u8 *buf, int size)
 
 		qcb->qos_limit_size = 254/qcb->qos_list_cnt;
 		spin_unlock_irqrestore(&qcb->qos_lock, flags);
-	} else if (sub_cmd_evt == QOS_CHANGE_DEL) {
+	} else if (subCmdEvt == QOS_CHANGE_DEL) {
 		netdev_dbg(nic->netdev, "QOS_CHANGE_DEL SFID = 0x%x, index=%d\n",
-			   sfid, index);
+			   SFID, index);
 
 		INIT_LIST_HEAD(&free_list);
 
 		spin_lock_irqsave(&qcb->qos_lock, flags);
-		qcb->csr[index].enabled = false;
+		qcb->csr[index].enabled = 0;
 		qcb->qos_list_cnt--;
 		qcb->qos_limit_size = 254/qcb->qos_list_cnt;
 
 		list_for_each_entry_safe(entry, n, &qcb->qos_list[index],
-					 list) {
+					list) {
 			list_move_tail(&entry->list, &free_list);
 		}
 		spin_unlock_irqrestore(&qcb->qos_lock, flags);

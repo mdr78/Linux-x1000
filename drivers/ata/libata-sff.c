@@ -1333,19 +1333,7 @@ void ata_sff_flush_pio_task(struct ata_port *ap)
 	DPRINTK("ENTER\n");
 
 	cancel_delayed_work_sync(&ap->sff_pio_task);
-
-	/*
-	 * We wanna reset the HSM state to IDLE.  If we do so without
-	 * grabbing the port lock, critical sections protected by it which
-	 * expect the HSM state to stay stable may get surprised.  For
-	 * example, we may set IDLE in between the time
-	 * __ata_sff_port_intr() checks for HSM_ST_IDLE and before it calls
-	 * ata_sff_hsm_move() causing ata_sff_hsm_move() to BUG().
-	 */
-	spin_lock_irq(ap->lock);
 	ap->hsm_task_state = HSM_ST_IDLE;
-	spin_unlock_irq(ap->lock);
-
 	ap->sff_pio_task_link = NULL;
 
 	if (ata_msg_ctl(ap))
@@ -2443,6 +2431,15 @@ int ata_pci_sff_activate_host(struct ata_host *host,
 		mask = (1 << 2) | (1 << 0);
 		if ((tmp8 & mask) != mask)
 			legacy_mode = 1;
+#if defined(CONFIG_NO_ATA_LEGACY)
+		/* Some platforms with PCI limits cannot address compat
+		   port space. In that case we punt if their firmware has
+		   left a device in compatibility mode */
+		if (legacy_mode) {
+			printk(KERN_ERR "ata: Compatibility mode ATA is not supported on this platform, skipping.\n");
+			return -EOPNOTSUPP;
+		}
+#endif
 	}
 
 	if (!devres_open_group(dev, NULL, GFP_KERNEL))
@@ -3220,11 +3217,11 @@ void ata_pci_bmdma_init(struct ata_host *host)
 	 * ->sff_irq_clear method.  Try to initialize bmdma_addr
 	 * regardless of dma masks.
 	 */
-	rc = dma_set_mask(&pdev->dev, ATA_DMA_MASK);
+	rc = pci_set_dma_mask(pdev, ATA_DMA_MASK);
 	if (rc)
 		ata_bmdma_nodma(host, "failed to set dma mask");
 	if (!rc) {
-		rc = dma_set_coherent_mask(&pdev->dev, ATA_DMA_MASK);
+		rc = pci_set_consistent_dma_mask(pdev, ATA_DMA_MASK);
 		if (rc)
 			ata_bmdma_nodma(host,
 					"failed to set consistent dma mask");

@@ -16,7 +16,6 @@
  */
 
 #include "drm_flip_work.h"
-#include <drm/drm_plane_helper.h>
 
 #include "tilcdc_drv.h"
 #include "tilcdc_regs.h"
@@ -37,9 +36,6 @@ struct tilcdc_crtc {
 
 	/* for deferred fb unref's: */
 	struct drm_flip_work unref_work;
-
-	/* Only set if an external encoder is connected */
-	bool simulate_vesa_sync;
 };
 #define to_tilcdc_crtc(x) container_of(x, struct tilcdc_crtc, base)
 
@@ -78,7 +74,7 @@ static void set_scanout(struct drm_crtc *crtc, int n)
 		drm_flip_work_queue(&tilcdc_crtc->unref_work, tilcdc_crtc->scanout[n]);
 		drm_flip_work_commit(&tilcdc_crtc->unref_work, priv->wq);
 	}
-	tilcdc_crtc->scanout[n] = crtc->primary->fb;
+	tilcdc_crtc->scanout[n] = crtc->fb;
 	drm_framebuffer_reference(tilcdc_crtc->scanout[n]);
 	tilcdc_crtc->dirty &= ~stat[n];
 	pm_runtime_put_sync(dev->dev);
@@ -88,7 +84,7 @@ static void update_scanout(struct drm_crtc *crtc)
 {
 	struct tilcdc_crtc *tilcdc_crtc = to_tilcdc_crtc(crtc);
 	struct drm_device *dev = crtc->dev;
-	struct drm_framebuffer *fb = crtc->primary->fb;
+	struct drm_framebuffer *fb = crtc->fb;
 	struct drm_gem_cma_object *gem;
 	unsigned int depth, bpp;
 
@@ -138,12 +134,11 @@ static void stop(struct drm_crtc *crtc)
 	tilcdc_clear(dev, LCDC_RASTER_CTRL_REG, LCDC_RASTER_ENABLE);
 }
 
-static void tilcdc_crtc_dpms(struct drm_crtc *crtc, int mode);
 static void tilcdc_crtc_destroy(struct drm_crtc *crtc)
 {
 	struct tilcdc_crtc *tilcdc_crtc = to_tilcdc_crtc(crtc);
 
-	tilcdc_crtc_dpms(crtc, DRM_MODE_DPMS_OFF);
+	WARN_ON(tilcdc_crtc->dpms == DRM_MODE_DPMS_ON);
 
 	drm_crtc_cleanup(crtc);
 	drm_flip_work_cleanup(&tilcdc_crtc->unref_work);
@@ -164,7 +159,7 @@ static int tilcdc_crtc_page_flip(struct drm_crtc *crtc,
 		return -EBUSY;
 	}
 
-	crtc->primary->fb = fb;
+	crtc->fb = fb;
 	tilcdc_crtc->event = event;
 	update_scanout(crtc);
 
@@ -217,28 +212,6 @@ static bool tilcdc_crtc_mode_fixup(struct drm_crtc *crtc,
 		const struct drm_display_mode *mode,
 		struct drm_display_mode *adjusted_mode)
 {
-	struct tilcdc_crtc *tilcdc_crtc = to_tilcdc_crtc(crtc);
-
-	if (!tilcdc_crtc->simulate_vesa_sync)
-		return true;
-
-	/*
-	 * tilcdc does not generate VESA-compliant sync but aligns
-	 * VS on the second edge of HS instead of first edge.
-	 * We use adjusted_mode, to fixup sync by aligning both rising
-	 * edges and add HSKEW offset to fix the sync.
-	 */
-	adjusted_mode->hskew = mode->hsync_end - mode->hsync_start;
-	adjusted_mode->flags |= DRM_MODE_FLAG_HSKEW;
-
-	if (mode->flags & DRM_MODE_FLAG_NHSYNC) {
-		adjusted_mode->flags |= DRM_MODE_FLAG_PHSYNC;
-		adjusted_mode->flags &= ~DRM_MODE_FLAG_NHSYNC;
-	} else {
-		adjusted_mode->flags |= DRM_MODE_FLAG_NHSYNC;
-		adjusted_mode->flags &= ~DRM_MODE_FLAG_PHSYNC;
-	}
-
 	return true;
 }
 
@@ -366,7 +339,7 @@ static int tilcdc_crtc_mode_set(struct drm_crtc *crtc,
 	if (priv->rev == 2) {
 		unsigned int depth, bpp;
 
-		drm_fb_get_bpp_depth(crtc->primary->fb->pixel_format, &depth, &bpp);
+		drm_fb_get_bpp_depth(crtc->fb->pixel_format, &depth, &bpp);
 		switch (bpp) {
 		case 16:
 			break;
@@ -559,14 +532,6 @@ void tilcdc_crtc_set_panel_info(struct drm_crtc *crtc,
 	tilcdc_crtc->info = info;
 }
 
-void tilcdc_crtc_set_simulate_vesa_sync(struct drm_crtc *crtc,
-					bool simulate_vesa_sync)
-{
-	struct tilcdc_crtc *tilcdc_crtc = to_tilcdc_crtc(crtc);
-
-	tilcdc_crtc->simulate_vesa_sync = simulate_vesa_sync;
-}
-
 void tilcdc_crtc_update_clk(struct drm_crtc *crtc)
 {
 	struct tilcdc_crtc *tilcdc_crtc = to_tilcdc_crtc(crtc);
@@ -699,8 +664,12 @@ struct drm_crtc *tilcdc_crtc_create(struct drm_device *dev)
 	tilcdc_crtc->dpms = DRM_MODE_DPMS_OFF;
 	init_waitqueue_head(&tilcdc_crtc->frame_done_wq);
 
-	drm_flip_work_init(&tilcdc_crtc->unref_work,
+	ret = drm_flip_work_init(&tilcdc_crtc->unref_work, 16,
 			"unref", unref_worker);
+	if (ret) {
+		dev_err(dev->dev, "could not allocate unref FIFO\n");
+		goto fail;
+	}
 
 	ret = drm_crtc_init(dev, crtc, &tilcdc_crtc_funcs);
 	if (ret < 0)

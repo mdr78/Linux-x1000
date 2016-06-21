@@ -7,6 +7,7 @@
 #include <linux/of_device.h>
 #include <linux/module.h>
 #include <linux/spi/pxa2xx_spi.h>
+#include <linux/clk.h>
 #include <linux/clk-provider.h>
 
 #include <linux/dmaengine.h>
@@ -61,7 +62,7 @@ static struct pxa_spi_info spi_info_configs[] = {
 		.max_clk_rate = 3686400,
 	},
 	[PORT_BYT] = {
-		.type = LPSS_BYT_SSP,
+		.type = LPSS_SSP,
 		.port_id = 0,
 		.num_chipselect = 1,
 		.max_clk_rate = 50000000,
@@ -69,7 +70,7 @@ static struct pxa_spi_info spi_info_configs[] = {
 		.rx_param = &byt_rx_param,
 	},
 	[PORT_BSW0] = {
-		.type = LPSS_BYT_SSP,
+		.type = LPSS_SSP,
 		.port_id = 0,
 		.num_chipselect = 1,
 		.max_clk_rate = 50000000,
@@ -77,7 +78,7 @@ static struct pxa_spi_info spi_info_configs[] = {
 		.rx_param = &bsw0_rx_param,
 	},
 	[PORT_BSW1] = {
-		.type = LPSS_BYT_SSP,
+		.type = LPSS_SSP,
 		.port_id = 1,
 		.num_chipselect = 1,
 		.max_clk_rate = 50000000,
@@ -85,7 +86,7 @@ static struct pxa_spi_info spi_info_configs[] = {
 		.rx_param = &bsw1_rx_param,
 	},
 	[PORT_BSW2] = {
-		.type = LPSS_BYT_SSP,
+		.type = LPSS_SSP,
 		.port_id = 2,
 		.num_chipselect = 1,
 		.max_clk_rate = 50000000,
@@ -95,7 +96,7 @@ static struct pxa_spi_info spi_info_configs[] = {
 	[PORT_QUARK_X1000] = {
 		.type = QUARK_X1000_SSP,
 		.port_id = -1,
-		.num_chipselect = 1,
+		.num_chipselect = 4,
 		.max_clk_rate = 50000000,
 	},
 };
@@ -158,6 +159,9 @@ static int pxa2xx_spi_pci_probe(struct pci_dev *dev,
 	}
 	ssp->irq = dev->irq;
 	ssp->port_id = (c->port_id >= 0) ? c->port_id : dev->devfn;
+#ifdef CONFIG_X86_INTEL_QUARK
+	ssp->port_id = PCI_FUNC(ssp->port_id);
+#endif
 	ssp->type = c->type;
 
 	snprintf(buf, sizeof(buf), "pxa2xx-spi.%d", ssp->port_id);
@@ -169,7 +173,6 @@ static int pxa2xx_spi_pci_probe(struct pci_dev *dev,
 	memset(&pi, 0, sizeof(pi));
 	pi.parent = &dev->dev;
 	pi.name = "pxa2xx-spi";
-	pi.fwnode = dev->dev.fwnode;
 	pi.id = ssp->port_id;
 	pi.data = &spi_pdata;
 	pi.size_data = sizeof(spi_pdata);

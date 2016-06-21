@@ -30,6 +30,7 @@
 #include <linux/types.h>
 #include <linux/timer.h>
 #include <linux/watchdog.h>
+#include <linux/init.h>
 #include <linux/platform_device.h>
 #include <linux/interrupt.h>
 #include <linux/clk.h>
@@ -41,8 +42,6 @@
 #include <linux/of.h>
 #include <linux/mfd/syscon.h>
 #include <linux/regmap.h>
-#include <linux/reboot.h>
-#include <linux/delay.h>
 
 #define S3C2410_WTCON		0x00
 #define S3C2410_WTDAT		0x04
@@ -130,7 +129,6 @@ struct s3c2410_wdt {
 	unsigned long		wtdat_save;
 	struct watchdog_device	wdt_device;
 	struct notifier_block	freq_transition;
-	struct notifier_block	restart_handler;
 	struct s3c2410_wdt_variant *drv_data;
 	struct regmap *pmureg;
 };
@@ -158,15 +156,6 @@ static const struct s3c2410_wdt_variant drv_data_exynos5420 = {
 	.quirks = QUIRK_HAS_PMU_CONFIG | QUIRK_HAS_RST_STAT,
 };
 
-static const struct s3c2410_wdt_variant drv_data_exynos7 = {
-	.disable_reg = EXYNOS5_WDT_DISABLE_REG_OFFSET,
-	.mask_reset_reg = EXYNOS5_WDT_MASK_RESET_REG_OFFSET,
-	.mask_bit = 23,
-	.rst_stat_reg = EXYNOS5_RST_STAT_REG_OFFSET,
-	.rst_stat_bit = 23,	/* A57 WDTRESET */
-	.quirks = QUIRK_HAS_PMU_CONFIG | QUIRK_HAS_RST_STAT,
-};
-
 static const struct of_device_id s3c2410_wdt_match[] = {
 	{ .compatible = "samsung,s3c2410-wdt",
 	  .data = &drv_data_s3c2410 },
@@ -174,8 +163,6 @@ static const struct of_device_id s3c2410_wdt_match[] = {
 	  .data = &drv_data_exynos5250 },
 	{ .compatible = "samsung,exynos5420-wdt",
 	  .data = &drv_data_exynos5420 },
-	{ .compatible = "samsung,exynos7-wdt",
-	  .data = &drv_data_exynos7 },
 	{},
 };
 MODULE_DEVICE_TABLE(of, s3c2410_wdt_match);
@@ -452,31 +439,6 @@ static inline void s3c2410wdt_cpufreq_deregister(struct s3c2410_wdt *wdt)
 }
 #endif
 
-static int s3c2410wdt_restart(struct notifier_block *this,
-			      unsigned long mode, void *cmd)
-{
-	struct s3c2410_wdt *wdt = container_of(this, struct s3c2410_wdt,
-					       restart_handler);
-	void __iomem *wdt_base = wdt->reg_base;
-
-	/* disable watchdog, to be safe  */
-	writel(0, wdt_base + S3C2410_WTCON);
-
-	/* put initial values into count and data */
-	writel(0x80, wdt_base + S3C2410_WTCNT);
-	writel(0x80, wdt_base + S3C2410_WTDAT);
-
-	/* set the watchdog to go and reset... */
-	writel(S3C2410_WTCON_ENABLE | S3C2410_WTCON_DIV16 |
-		S3C2410_WTCON_RSTEN | S3C2410_WTCON_PRESCALE(0x20),
-		wdt_base + S3C2410_WTCON);
-
-	/* wait for reset to assert... */
-	mdelay(500);
-
-	return NOTIFY_DONE;
-}
-
 static inline unsigned int s3c2410wdt_get_bootstatus(struct s3c2410_wdt *wdt)
 {
 	unsigned int rst_stat;
@@ -564,11 +526,7 @@ static int s3c2410wdt_probe(struct platform_device *pdev)
 		goto err;
 	}
 
-	ret = clk_prepare_enable(wdt->clock);
-	if (ret < 0) {
-		dev_err(dev, "failed to enable clock\n");
-		return ret;
-	}
+	clk_prepare_enable(wdt->clock);
 
 	ret = s3c2410wdt_cpufreq_register(wdt);
 	if (ret < 0) {
@@ -607,7 +565,6 @@ static int s3c2410wdt_probe(struct platform_device *pdev)
 	watchdog_set_nowayout(&wdt->wdt_device, nowayout);
 
 	wdt->wdt_device.bootstatus = s3c2410wdt_get_bootstatus(wdt);
-	wdt->wdt_device.parent = &pdev->dev;
 
 	ret = watchdog_register_device(&wdt->wdt_device);
 	if (ret) {
@@ -632,12 +589,6 @@ static int s3c2410wdt_probe(struct platform_device *pdev)
 
 	platform_set_drvdata(pdev, wdt);
 
-	wdt->restart_handler.notifier_call = s3c2410wdt_restart;
-	wdt->restart_handler.priority = 128;
-	ret = register_restart_handler(&wdt->restart_handler);
-	if (ret)
-		pr_err("cannot register restart handler, %d\n", ret);
-
 	/* print out a statement of readiness */
 
 	wtcon = readl(wdt->reg_base + S3C2410_WTCON);
@@ -657,6 +608,7 @@ static int s3c2410wdt_probe(struct platform_device *pdev)
 
  err_clk:
 	clk_disable_unprepare(wdt->clock);
+	wdt->clock = NULL;
 
  err:
 	return ret;
@@ -667,8 +619,6 @@ static int s3c2410wdt_remove(struct platform_device *dev)
 	int ret;
 	struct s3c2410_wdt *wdt = platform_get_drvdata(dev);
 
-	unregister_restart_handler(&wdt->restart_handler);
-
 	ret = s3c2410wdt_mask_and_disable_reset(wdt, true);
 	if (ret < 0)
 		return ret;
@@ -678,6 +628,7 @@ static int s3c2410wdt_remove(struct platform_device *dev)
 	s3c2410wdt_cpufreq_deregister(wdt);
 
 	clk_disable_unprepare(wdt->clock);
+	wdt->clock = NULL;
 
 	return 0;
 }
@@ -742,6 +693,7 @@ static struct platform_driver s3c2410wdt_driver = {
 	.shutdown	= s3c2410wdt_shutdown,
 	.id_table	= s3c2410_wdt_ids,
 	.driver		= {
+		.owner	= THIS_MODULE,
 		.name	= "s3c2410-wdt",
 		.pm	= &s3c2410wdt_pm_ops,
 		.of_match_table	= of_match_ptr(s3c2410_wdt_match),

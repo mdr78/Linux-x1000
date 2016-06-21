@@ -625,7 +625,7 @@ static void tusb_omap_dma_release(struct dma_channel *channel)
 	channel = NULL;
 }
 
-void tusb_dma_controller_destroy(struct dma_controller *c)
+void dma_controller_destroy(struct dma_controller *c)
 {
 	struct tusb_omap_dma	*tusb_dma;
 	int			i;
@@ -644,10 +644,8 @@ void tusb_dma_controller_destroy(struct dma_controller *c)
 
 	kfree(tusb_dma);
 }
-EXPORT_SYMBOL_GPL(tusb_dma_controller_destroy);
 
-struct dma_controller *
-tusb_dma_controller_create(struct musb *musb, void __iomem *base)
+struct dma_controller *dma_controller_create(struct musb *musb, void __iomem *base)
 {
 	void __iomem		*tbase = musb->ctrl_base;
 	struct tusb_omap_dma	*tusb_dma;
@@ -679,7 +677,7 @@ tusb_dma_controller_create(struct musb *musb, void __iomem *base)
 	tusb_dma->controller.channel_program = tusb_omap_dma_program;
 	tusb_dma->controller.channel_abort = tusb_omap_dma_abort;
 
-	if (musb->tusb_revision >= TUSB_REV_30)
+	if (tusb_get_revision(musb) >= TUSB_REV_30)
 		tusb_dma->multichannel = 1;
 
 	for (i = 0; i < MAX_DMAREQ; i++) {
@@ -703,8 +701,7 @@ tusb_dma_controller_create(struct musb *musb, void __iomem *base)
 	return &tusb_dma->controller;
 
 cleanup:
-	musb_dma_controller_destroy(&tusb_dma->controller);
+	dma_controller_destroy(&tusb_dma->controller);
 out:
 	return NULL;
 }
-EXPORT_SYMBOL_GPL(tusb_dma_controller_create);

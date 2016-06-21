@@ -257,6 +257,7 @@ static int cfv_rx_poll(struct napi_struct *napi, int quota)
 	struct vringh_kiov *riov = &cfv->ctx.riov;
 	unsigned int skb_len;
 
+again:
 	do {
 		skb = NULL;
 
@@ -321,6 +322,7 @@ exit:
 		    napi_schedule_prep(napi)) {
 			vringh_notify_disable_kern(cfv->vr_rx);
 			__napi_schedule(napi);
+			goto again;
 		}
 		break;
 
@@ -659,7 +661,7 @@ static int cfv_probe(struct virtio_device *vdev)
 	int err = -EINVAL;
 
 	netdev = alloc_netdev(sizeof(struct cfv_info), cfv_netdev_name,
-			      NET_NAME_UNKNOWN, cfv_netdev_setup);
+			      cfv_netdev_setup);
 	if (!netdev)
 		return -ENOMEM;
 

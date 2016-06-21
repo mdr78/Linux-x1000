@@ -476,12 +476,13 @@ static void __lpc_get_mac(struct netdata_local *pldat, u8 *mac)
 	mac[5] = tmp >> 8;
 }
 
-static void __lpc_eth_clock_enable(struct netdata_local *pldat, bool enable)
+static void __lpc_eth_clock_enable(struct netdata_local *pldat,
+				   bool enable)
 {
 	if (enable)
-		clk_prepare_enable(pldat->clk);
+		clk_enable(pldat->clk);
 	else
-		clk_disable_unprepare(pldat->clk);
+		clk_disable(pldat->clk);
 }
 
 static void __lpc_params_setup(struct netdata_local *pldat)
@@ -1219,9 +1220,6 @@ static int lpc_eth_open(struct net_device *ndev)
 
 	__lpc_eth_clock_enable(pldat, true);
 
-	/* Suspended PHY makes LPC ethernet core block, so resume now */
-	phy_resume(pldat->phy_dev);
-
 	/* Reset and initialize */
 	__lpc_eth_reset(pldat);
 	__lpc_eth_init(pldat);
@@ -1326,7 +1324,7 @@ static int lpc_eth_drv_probe(struct platform_device *pdev)
 	/* Get platform resources */
 	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
 	irq = platform_get_irq(pdev, 0);
-	if (!res || irq < 0) {
+	if ((!res) || (irq < 0) || (irq >= NR_IRQS)) {
 		dev_err(&pdev->dev, "error getting resources.\n");
 		ret = -ENXIO;
 		goto err_exit;
@@ -1363,7 +1361,7 @@ static int lpc_eth_drv_probe(struct platform_device *pdev)
 	__lpc_eth_clock_enable(pldat, true);
 
 	/* Map IO space */
-	pldat->net_base = ioremap(res->start, resource_size(res));
+	pldat->net_base = ioremap(res->start, res->end - res->start + 1);
 	if (!pldat->net_base) {
 		dev_err(&pdev->dev, "failed to map registers\n");
 		ret = -ENOMEM;
@@ -1375,6 +1373,9 @@ static int lpc_eth_drv_probe(struct platform_device *pdev)
 		dev_err(&pdev->dev, "error requesting interrupt.\n");
 		goto err_out_iounmap;
 	}
+
+	/* Fill in the fields of the device structure with ethernet values. */
+	ether_setup(ndev);
 
 	/* Setup driver functions */
 	ndev->netdev_ops = &lpc_netdev_ops;
@@ -1416,8 +1417,10 @@ static int lpc_eth_drv_probe(struct platform_device *pdev)
 	}
 	pldat->dma_buff_base_p = dma_handle;
 
-	netdev_dbg(ndev, "IO address space     :%pR\n", res);
-	netdev_dbg(ndev, "IO address size      :%d\n", resource_size(res));
+	netdev_dbg(ndev, "IO address start     :0x%08x\n",
+			res->start);
+	netdev_dbg(ndev, "IO address size      :%d\n",
+			res->end - res->start + 1);
 	netdev_dbg(ndev, "IO address (mapped)  :0x%p\n",
 			pldat->net_base);
 	netdev_dbg(ndev, "IRQ number           :%d\n", ndev->irq);
@@ -1493,7 +1496,7 @@ err_out_free_irq:
 err_out_iounmap:
 	iounmap(pldat->net_base);
 err_out_disable_clocks:
-	clk_disable_unprepare(pldat->clk);
+	clk_disable(pldat->clk);
 	clk_put(pldat->clk);
 err_out_free_dev:
 	free_netdev(ndev);
@@ -1518,7 +1521,7 @@ static int lpc_eth_drv_remove(struct platform_device *pdev)
 	iounmap(pldat->net_base);
 	mdiobus_unregister(pldat->mii_bus);
 	mdiobus_free(pldat->mii_bus);
-	clk_disable_unprepare(pldat->clk);
+	clk_disable(pldat->clk);
 	clk_put(pldat->clk);
 	free_netdev(ndev);
 
@@ -1539,7 +1542,7 @@ static int lpc_eth_drv_suspend(struct platform_device *pdev,
 		if (netif_running(ndev)) {
 			netif_device_detach(ndev);
 			__lpc_eth_shutdown(pldat);
-			clk_disable_unprepare(pldat->clk);
+			clk_disable(pldat->clk);
 
 			/*
 			 * Reset again now clock is disable to be sure

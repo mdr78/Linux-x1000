@@ -28,7 +28,6 @@
 #include <asm/mmu_context.h>
 #include <asm/hw_irq.h>
 #include "trace_pr.h"
-#include "book3s.h"
 
 #define PTE_SIZE 12
 
@@ -59,7 +58,7 @@ static struct kvmppc_sid_map *find_sid_vsid(struct kvm_vcpu *vcpu, u64 gvsid)
 	struct kvmppc_sid_map *map;
 	u16 sid_map_mask;
 
-	if (kvmppc_get_msr(vcpu) & MSR_PR)
+	if (vcpu->arch.shared->msr & MSR_PR)
 		gvsid |= VSID_PR;
 
 	sid_map_mask = kvmppc_sid_hash(vcpu, gvsid);
@@ -105,10 +104,9 @@ int kvmppc_mmu_map_page(struct kvm_vcpu *vcpu, struct kvmppc_pte *orig_pte,
 	smp_rmb();
 
 	/* Get host physical address for gpa */
-	pfn = kvmppc_gpa_to_pfn(vcpu, orig_pte->raddr, iswrite, &writable);
+	pfn = kvmppc_gfn_to_pfn(vcpu, gfn, iswrite, &writable);
 	if (is_error_noslot_pfn(pfn)) {
-		printk(KERN_INFO "Couldn't get guest page for gpa %lx!\n",
-		       orig_pte->raddr);
+		printk(KERN_INFO "Couldn't get guest page for gfn %lx!\n", gfn);
 		r = -EINVAL;
 		goto out;
 	}
@@ -232,7 +230,7 @@ static struct kvmppc_sid_map *create_sid_map(struct kvm_vcpu *vcpu, u64 gvsid)
 	u16 sid_map_mask;
 	static int backwards_map = 0;
 
-	if (kvmppc_get_msr(vcpu) & MSR_PR)
+	if (vcpu->arch.shared->msr & MSR_PR)
 		gvsid |= VSID_PR;
 
 	/* We might get collisions that trap in preceding order, so let's
@@ -273,8 +271,11 @@ static int kvmppc_mmu_next_segment(struct kvm_vcpu *vcpu, ulong esid)
 	int found_inval = -1;
 	int r;
 
+	if (!svcpu->slb_max)
+		svcpu->slb_max = 1;
+
 	/* Are we overwriting? */
-	for (i = 0; i < svcpu->slb_max; i++) {
+	for (i = 1; i < svcpu->slb_max; i++) {
 		if (!(svcpu->slb[i].esid & SLB_ESID_V))
 			found_inval = i;
 		else if ((svcpu->slb[i].esid & ESID_MASK) == esid) {
@@ -284,7 +285,7 @@ static int kvmppc_mmu_next_segment(struct kvm_vcpu *vcpu, ulong esid)
 	}
 
 	/* Found a spare entry that was invalidated before */
-	if (found_inval >= 0) {
+	if (found_inval > 0) {
 		r = found_inval;
 		goto out;
 	}
@@ -358,7 +359,7 @@ void kvmppc_mmu_flush_segment(struct kvm_vcpu *vcpu, ulong ea, ulong seg_size)
 	ulong seg_mask = -seg_size;
 	int i;
 
-	for (i = 0; i < svcpu->slb_max; i++) {
+	for (i = 1; i < svcpu->slb_max; i++) {
 		if ((svcpu->slb[i].esid & SLB_ESID_V) &&
 		    (svcpu->slb[i].esid & seg_mask) == ea) {
 			/* Invalidate this entry */
@@ -372,7 +373,7 @@ void kvmppc_mmu_flush_segment(struct kvm_vcpu *vcpu, ulong ea, ulong seg_size)
 void kvmppc_mmu_flush_segments(struct kvm_vcpu *vcpu)
 {
 	struct kvmppc_book3s_shadow_vcpu *svcpu = svcpu_get(vcpu);
-	svcpu->slb_max = 0;
+	svcpu->slb_max = 1;
 	svcpu->slb[0].esid = 0;
 	svcpu_put(svcpu);
 }

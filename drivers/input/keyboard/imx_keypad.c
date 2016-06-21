@@ -5,6 +5,8 @@
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 as
  * published by the Free Software Foundation.
+ *
+ * <<Power management needs to be implemented>>.
  */
 
 #include <linux/clk.h>
@@ -413,7 +415,7 @@ open_err:
 }
 
 #ifdef CONFIG_OF
-static const struct of_device_id imx_keypad_of_match[] = {
+static struct of_device_id imx_keypad_of_match[] = {
 	{ .compatible = "fsl,imx21-kpp", },
 	{ /* sentinel */ }
 };
@@ -437,7 +439,7 @@ static int imx_keypad_probe(struct platform_device *pdev)
 	irq = platform_get_irq(pdev, 0);
 	if (irq < 0) {
 		dev_err(&pdev->dev, "no irq defined in platform data\n");
-		return irq;
+		return -EINVAL;
 	}
 
 	input_dev = devm_input_allocate_device(&pdev->dev);
@@ -446,7 +448,8 @@ static int imx_keypad_probe(struct platform_device *pdev)
 		return -ENOMEM;
 	}
 
-	keypad = devm_kzalloc(&pdev->dev, sizeof(*keypad), GFP_KERNEL);
+	keypad = devm_kzalloc(&pdev->dev, sizeof(struct imx_keypad),
+			     GFP_KERNEL);
 	if (!keypad) {
 		dev_err(&pdev->dev, "not enough memory for driver data\n");
 		return -ENOMEM;
@@ -504,9 +507,7 @@ static int imx_keypad_probe(struct platform_device *pdev)
 	input_set_drvdata(input_dev, keypad);
 
 	/* Ensure that the keypad will stay dormant until opened */
-	error = clk_prepare_enable(keypad->clk);
-	if (error)
-		return error;
+	clk_prepare_enable(keypad->clk);
 	imx_keypad_inhibit(keypad);
 	clk_disable_unprepare(keypad->clk);
 
@@ -530,7 +531,8 @@ static int imx_keypad_probe(struct platform_device *pdev)
 	return 0;
 }
 
-static int __maybe_unused imx_kbd_suspend(struct device *dev)
+#ifdef CONFIG_PM_SLEEP
+static int imx_kbd_suspend(struct device *dev)
 {
 	struct platform_device *pdev = to_platform_device(dev);
 	struct imx_keypad *kbd = platform_get_drvdata(pdev);
@@ -550,7 +552,7 @@ static int __maybe_unused imx_kbd_suspend(struct device *dev)
 	return 0;
 }
 
-static int __maybe_unused imx_kbd_resume(struct device *dev)
+static int imx_kbd_resume(struct device *dev)
 {
 	struct platform_device *pdev = to_platform_device(dev);
 	struct imx_keypad *kbd = platform_get_drvdata(pdev);
@@ -573,12 +575,14 @@ err_clk:
 
 	return ret;
 }
+#endif
 
 static SIMPLE_DEV_PM_OPS(imx_kbd_pm_ops, imx_kbd_suspend, imx_kbd_resume);
 
 static struct platform_driver imx_keypad_driver = {
 	.driver		= {
 		.name	= "imx-keypad",
+		.owner	= THIS_MODULE,
 		.pm	= &imx_kbd_pm_ops,
 		.of_match_table = of_match_ptr(imx_keypad_of_match),
 	},

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2013-2014 Samsung Electronics Co., Ltd
+ * Copyright (c) 2013 Samsung Electronics Co., Ltd
  *	http://www.samsung.com
  *
  *  Copyright (C) 2013 Google, Inc
@@ -15,100 +15,38 @@
  *  GNU General Public License for more details.
  */
 
-#define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
-
 #include <linux/module.h>
 #include <linux/i2c.h>
+#include <linux/slab.h>
 #include <linux/bcd.h>
+#include <linux/bitops.h>
 #include <linux/regmap.h>
 #include <linux/rtc.h>
+#include <linux/delay.h>
 #include <linux/platform_device.h>
 #include <linux/mfd/samsung/core.h>
 #include <linux/mfd/samsung/irq.h>
 #include <linux/mfd/samsung/rtc.h>
-#include <linux/mfd/samsung/s2mps14.h>
 
 /*
  * Maximum number of retries for checking changes in UDR field
- * of S5M_RTC_UDR_CON register (to limit possible endless loop).
+ * of SEC_RTC_UDR_CON register (to limit possible endless loop).
  *
  * After writing to RTC registers (setting time or alarm) read the UDR field
- * in S5M_RTC_UDR_CON register. UDR is auto-cleared when data have
+ * in SEC_RTC_UDR_CON register. UDR is auto-cleared when data have
  * been transferred.
  */
 #define UDR_READ_RETRY_CNT	5
 
-/* Registers used by the driver which are different between chipsets. */
-struct s5m_rtc_reg_config {
-	/* Number of registers used for setting time/alarm0/alarm1 */
-	unsigned int regs_count;
-	/* First register for time, seconds */
-	unsigned int time;
-	/* RTC control register */
-	unsigned int ctrl;
-	/* First register for alarm 0, seconds */
-	unsigned int alarm0;
-	/* First register for alarm 1, seconds */
-	unsigned int alarm1;
-	/*
-	 * Register for update flag (UDR). Typically setting UDR field to 1
-	 * will enable update of time or alarm register. Then it will be
-	 * auto-cleared after successful update.
-	 */
-	unsigned int rtc_udr_update;
-	/* Mask for UDR field in 'rtc_udr_update' register */
-	unsigned int rtc_udr_mask;
-};
-
-/* Register map for S5M8763 and S5M8767 */
-static const struct s5m_rtc_reg_config s5m_rtc_regs = {
-	.regs_count		= 8,
-	.time			= S5M_RTC_SEC,
-	.ctrl			= S5M_ALARM1_CONF,
-	.alarm0			= S5M_ALARM0_SEC,
-	.alarm1			= S5M_ALARM1_SEC,
-	.rtc_udr_update		= S5M_RTC_UDR_CON,
-	.rtc_udr_mask		= S5M_RTC_UDR_MASK,
-};
-
-/*
- * Register map for S2MPS14.
- * It may be also suitable for S2MPS11 but this was not tested.
- */
-static const struct s5m_rtc_reg_config s2mps_rtc_regs = {
-	.regs_count		= 7,
-	.time			= S2MPS_RTC_SEC,
-	.ctrl			= S2MPS_RTC_CTRL,
-	.alarm0			= S2MPS_ALARM0_SEC,
-	.alarm1			= S2MPS_ALARM1_SEC,
-	.rtc_udr_update		= S2MPS_RTC_UDR_CON,
-	.rtc_udr_mask		= S2MPS_RTC_WUDR_MASK,
-};
-
 struct s5m_rtc_info {
 	struct device *dev;
-	struct i2c_client *i2c;
 	struct sec_pmic_dev *s5m87xx;
 	struct regmap *regmap;
 	struct rtc_device *rtc_dev;
 	int irq;
-	enum sec_device_type device_type;
+	int device_type;
 	int rtc_24hr_mode;
-	const struct s5m_rtc_reg_config	*regs;
-};
-
-static const struct regmap_config s5m_rtc_regmap_config = {
-	.reg_bits = 8,
-	.val_bits = 8,
-
-	.max_register = S5M_RTC_REG_MAX,
-};
-
-static const struct regmap_config s2mps14_rtc_regmap_config = {
-	.reg_bits = 8,
-	.val_bits = 8,
-
-	.max_register = S2MPS_RTC_REG_MAX,
+	bool wtsr_smpl;
 };
 
 static void s5m8767_data_to_tm(u8 *data, struct rtc_time *tm,
@@ -148,7 +86,7 @@ static int s5m8767_tm_to_data(struct rtc_time *tm, u8 *data)
 	data[RTC_YEAR1] = tm->tm_year > 100 ? (tm->tm_year - 100) : 0;
 
 	if (tm->tm_year < 100) {
-		pr_err("RTC cannot handle the year %d\n",
+		pr_err("s5m8767 RTC cannot handle the year %d.\n",
 		       1900 + tm->tm_year);
 		return -EINVAL;
 	} else {
@@ -166,9 +104,8 @@ static inline int s5m8767_wait_for_udr_update(struct s5m_rtc_info *info)
 	unsigned int data;
 
 	do {
-		ret = regmap_read(info->regmap, info->regs->rtc_udr_update,
-				&data);
-	} while (--retry && (data & info->regs->rtc_udr_mask) && !ret);
+		ret = regmap_read(info->regmap, SEC_RTC_UDR_CON, &data);
+	} while (--retry && (data & RTC_UDR_MASK) && !ret);
 
 	if (!retry)
 		dev_err(info->dev, "waiting for UDR update, reached max number of retries\n");
@@ -176,54 +113,21 @@ static inline int s5m8767_wait_for_udr_update(struct s5m_rtc_info *info)
 	return ret;
 }
 
-static inline int s5m_check_peding_alarm_interrupt(struct s5m_rtc_info *info,
-		struct rtc_wkalrm *alarm)
-{
-	int ret;
-	unsigned int val;
-
-	switch (info->device_type) {
-	case S5M8767X:
-	case S5M8763X:
-		ret = regmap_read(info->regmap, S5M_RTC_STATUS, &val);
-		val &= S5M_ALARM0_STATUS;
-		break;
-	case S2MPS14X:
-	case S2MPS13X:
-		ret = regmap_read(info->s5m87xx->regmap_pmic, S2MPS14_REG_ST2,
-				&val);
-		val &= S2MPS_ALARM0_STATUS;
-		break;
-	default:
-		return -EINVAL;
-	}
-	if (ret < 0)
-		return ret;
-
-	if (val)
-		alarm->pending = 1;
-	else
-		alarm->pending = 0;
-
-	return 0;
-}
-
 static inline int s5m8767_rtc_set_time_reg(struct s5m_rtc_info *info)
 {
 	int ret;
 	unsigned int data;
 
-	ret = regmap_read(info->regmap, info->regs->rtc_udr_update, &data);
+	ret = regmap_read(info->regmap, SEC_RTC_UDR_CON, &data);
 	if (ret < 0) {
 		dev_err(info->dev, "failed to read update reg(%d)\n", ret);
 		return ret;
 	}
 
-	data |= info->regs->rtc_udr_mask;
-	if (info->device_type == S5M8763X || info->device_type == S5M8767X)
-		data |= S5M_RTC_TIME_EN_MASK;
+	data |= RTC_TIME_EN_MASK;
+	data |= RTC_UDR_MASK;
 
-	ret = regmap_write(info->regmap, info->regs->rtc_udr_update, data);
+	ret = regmap_write(info->regmap, SEC_RTC_UDR_CON, data);
 	if (ret < 0) {
 		dev_err(info->dev, "failed to write update reg(%d)\n", ret);
 		return ret;
@@ -239,30 +143,17 @@ static inline int s5m8767_rtc_set_alarm_reg(struct s5m_rtc_info *info)
 	int ret;
 	unsigned int data;
 
-	ret = regmap_read(info->regmap, info->regs->rtc_udr_update, &data);
+	ret = regmap_read(info->regmap, SEC_RTC_UDR_CON, &data);
 	if (ret < 0) {
 		dev_err(info->dev, "%s: fail to read update reg(%d)\n",
 			__func__, ret);
 		return ret;
 	}
 
-	data |= info->regs->rtc_udr_mask;
-	switch (info->device_type) {
-	case S5M8763X:
-	case S5M8767X:
-		data &= ~S5M_RTC_TIME_EN_MASK;
-		break;
-	case S2MPS14X:
-		data |= S2MPS_RTC_RUDR_MASK;
-		break;
-	case S2MPS13X:
-		data |= S2MPS13_RTC_AUDR_MASK;
-		break;
-	default:
-		return -EINVAL;
-	}
+	data &= ~RTC_TIME_EN_MASK;
+	data |= RTC_UDR_MASK;
 
-	ret = regmap_write(info->regmap, info->regs->rtc_udr_update, data);
+	ret = regmap_write(info->regmap, SEC_RTC_UDR_CON, data);
 	if (ret < 0) {
 		dev_err(info->dev, "%s: fail to write update reg(%d)\n",
 			__func__, ret);
@@ -270,11 +161,6 @@ static inline int s5m8767_rtc_set_alarm_reg(struct s5m_rtc_info *info)
 	}
 
 	ret = s5m8767_wait_for_udr_update(info);
-
-	/* On S2MPS13 the AUDR is not auto-cleared */
-	if (info->device_type == S2MPS13X)
-		regmap_update_bits(info->regmap, info->regs->rtc_udr_update,
-				   S2MPS13_RTC_AUDR_MASK, 0);
 
 	return ret;
 }
@@ -314,22 +200,10 @@ static void s5m8763_tm_to_data(struct rtc_time *tm, u8 *data)
 static int s5m_rtc_read_time(struct device *dev, struct rtc_time *tm)
 {
 	struct s5m_rtc_info *info = dev_get_drvdata(dev);
-	u8 data[info->regs->regs_count];
+	u8 data[8];
 	int ret;
 
-	if (info->device_type == S2MPS14X || info->device_type == S2MPS13X) {
-		ret = regmap_update_bits(info->regmap,
-				info->regs->rtc_udr_update,
-				S2MPS_RTC_RUDR_MASK, S2MPS_RTC_RUDR_MASK);
-		if (ret) {
-			dev_err(dev,
-				"Failed to prepare registers for time reading: %d\n",
-				ret);
-			return ret;
-		}
-	}
-	ret = regmap_bulk_read(info->regmap, info->regs->time, data,
-			info->regs->regs_count);
+	ret = regmap_bulk_read(info->regmap, SEC_RTC_SEC, data, 8);
 	if (ret < 0)
 		return ret;
 
@@ -339,8 +213,6 @@ static int s5m_rtc_read_time(struct device *dev, struct rtc_time *tm)
 		break;
 
 	case S5M8767X:
-	case S2MPS14X:
-	case S2MPS13X:
 		s5m8767_data_to_tm(data, tm, info->rtc_24hr_mode);
 		break;
 
@@ -358,7 +230,7 @@ static int s5m_rtc_read_time(struct device *dev, struct rtc_time *tm)
 static int s5m_rtc_set_time(struct device *dev, struct rtc_time *tm)
 {
 	struct s5m_rtc_info *info = dev_get_drvdata(dev);
-	u8 data[info->regs->regs_count];
+	u8 data[8];
 	int ret = 0;
 
 	switch (info->device_type) {
@@ -366,8 +238,6 @@ static int s5m_rtc_set_time(struct device *dev, struct rtc_time *tm)
 		s5m8763_tm_to_data(tm, data);
 		break;
 	case S5M8767X:
-	case S2MPS14X:
-	case S2MPS13X:
 		ret = s5m8767_tm_to_data(tm, data);
 		break;
 	default:
@@ -381,8 +251,7 @@ static int s5m_rtc_set_time(struct device *dev, struct rtc_time *tm)
 		1900 + tm->tm_year, 1 + tm->tm_mon, tm->tm_mday,
 		tm->tm_hour, tm->tm_min, tm->tm_sec, tm->tm_wday);
 
-	ret = regmap_raw_write(info->regmap, info->regs->time, data,
-			info->regs->regs_count);
+	ret = regmap_raw_write(info->regmap, SEC_RTC_SEC, data, 8);
 	if (ret < 0)
 		return ret;
 
@@ -394,61 +263,70 @@ static int s5m_rtc_set_time(struct device *dev, struct rtc_time *tm)
 static int s5m_rtc_read_alarm(struct device *dev, struct rtc_wkalrm *alrm)
 {
 	struct s5m_rtc_info *info = dev_get_drvdata(dev);
-	u8 data[info->regs->regs_count];
+	u8 data[8];
 	unsigned int val;
 	int ret, i;
 
-	ret = regmap_bulk_read(info->regmap, info->regs->alarm0, data,
-			info->regs->regs_count);
+	ret = regmap_bulk_read(info->regmap, SEC_ALARM0_SEC, data, 8);
 	if (ret < 0)
 		return ret;
 
 	switch (info->device_type) {
 	case S5M8763X:
 		s5m8763_data_to_tm(data, &alrm->time);
-		ret = regmap_read(info->regmap, S5M_ALARM0_CONF, &val);
+		ret = regmap_read(info->regmap, SEC_ALARM0_CONF, &val);
 		if (ret < 0)
 			return ret;
 
 		alrm->enabled = !!val;
+
+		ret = regmap_read(info->regmap, SEC_RTC_STATUS, &val);
+		if (ret < 0)
+			return ret;
+
 		break;
 
 	case S5M8767X:
-	case S2MPS14X:
-	case S2MPS13X:
 		s5m8767_data_to_tm(data, &alrm->time, info->rtc_24hr_mode);
+		dev_dbg(dev, "%s: %d/%d/%d %d:%d:%d(%d)\n", __func__,
+			1900 + alrm->time.tm_year, 1 + alrm->time.tm_mon,
+			alrm->time.tm_mday, alrm->time.tm_hour,
+			alrm->time.tm_min, alrm->time.tm_sec,
+			alrm->time.tm_wday);
+
 		alrm->enabled = 0;
-		for (i = 0; i < info->regs->regs_count; i++) {
+		for (i = 0; i < 7; i++) {
 			if (data[i] & ALARM_ENABLE_MASK) {
 				alrm->enabled = 1;
 				break;
 			}
 		}
+
+		alrm->pending = 0;
+		ret = regmap_read(info->regmap, SEC_RTC_STATUS, &val);
+		if (ret < 0)
+			return ret;
 		break;
 
 	default:
 		return -EINVAL;
 	}
 
-	dev_dbg(dev, "%s: %d/%d/%d %d:%d:%d(%d)\n", __func__,
-		1900 + alrm->time.tm_year, 1 + alrm->time.tm_mon,
-		alrm->time.tm_mday, alrm->time.tm_hour,
-		alrm->time.tm_min, alrm->time.tm_sec,
-		alrm->time.tm_wday);
-
-	ret = s5m_check_peding_alarm_interrupt(info, alrm);
+	if (val & ALARM0_STATUS)
+		alrm->pending = 1;
+	else
+		alrm->pending = 0;
 
 	return 0;
 }
 
 static int s5m_rtc_stop_alarm(struct s5m_rtc_info *info)
 {
-	u8 data[info->regs->regs_count];
+	u8 data[8];
 	int ret, i;
 	struct rtc_time tm;
 
-	ret = regmap_bulk_read(info->regmap, info->regs->alarm0, data,
-			info->regs->regs_count);
+	ret = regmap_bulk_read(info->regmap, SEC_ALARM0_SEC, data, 8);
 	if (ret < 0)
 		return ret;
 
@@ -459,17 +337,14 @@ static int s5m_rtc_stop_alarm(struct s5m_rtc_info *info)
 
 	switch (info->device_type) {
 	case S5M8763X:
-		ret = regmap_write(info->regmap, S5M_ALARM0_CONF, 0);
+		ret = regmap_write(info->regmap, SEC_ALARM0_CONF, 0);
 		break;
 
 	case S5M8767X:
-	case S2MPS14X:
-	case S2MPS13X:
-		for (i = 0; i < info->regs->regs_count; i++)
+		for (i = 0; i < 7; i++)
 			data[i] &= ~ALARM_ENABLE_MASK;
 
-		ret = regmap_raw_write(info->regmap, info->regs->alarm0, data,
-				info->regs->regs_count);
+		ret = regmap_raw_write(info->regmap, SEC_ALARM0_SEC, data, 8);
 		if (ret < 0)
 			return ret;
 
@@ -487,12 +362,11 @@ static int s5m_rtc_stop_alarm(struct s5m_rtc_info *info)
 static int s5m_rtc_start_alarm(struct s5m_rtc_info *info)
 {
 	int ret;
-	u8 data[info->regs->regs_count];
+	u8 data[8];
 	u8 alarm0_conf;
 	struct rtc_time tm;
 
-	ret = regmap_bulk_read(info->regmap, info->regs->alarm0, data,
-			info->regs->regs_count);
+	ret = regmap_bulk_read(info->regmap, SEC_ALARM0_SEC, data, 8);
 	if (ret < 0)
 		return ret;
 
@@ -504,12 +378,10 @@ static int s5m_rtc_start_alarm(struct s5m_rtc_info *info)
 	switch (info->device_type) {
 	case S5M8763X:
 		alarm0_conf = 0x77;
-		ret = regmap_write(info->regmap, S5M_ALARM0_CONF, alarm0_conf);
+		ret = regmap_write(info->regmap, SEC_ALARM0_CONF, alarm0_conf);
 		break;
 
 	case S5M8767X:
-	case S2MPS14X:
-	case S2MPS13X:
 		data[RTC_SEC] |= ALARM_ENABLE_MASK;
 		data[RTC_MIN] |= ALARM_ENABLE_MASK;
 		data[RTC_HOUR] |= ALARM_ENABLE_MASK;
@@ -521,8 +393,7 @@ static int s5m_rtc_start_alarm(struct s5m_rtc_info *info)
 		if (data[RTC_YEAR1] & 0x7f)
 			data[RTC_YEAR1] |= ALARM_ENABLE_MASK;
 
-		ret = regmap_raw_write(info->regmap, info->regs->alarm0, data,
-				info->regs->regs_count);
+		ret = regmap_raw_write(info->regmap, SEC_ALARM0_SEC, data, 8);
 		if (ret < 0)
 			return ret;
 		ret = s5m8767_rtc_set_alarm_reg(info);
@@ -539,7 +410,7 @@ static int s5m_rtc_start_alarm(struct s5m_rtc_info *info)
 static int s5m_rtc_set_alarm(struct device *dev, struct rtc_wkalrm *alrm)
 {
 	struct s5m_rtc_info *info = dev_get_drvdata(dev);
-	u8 data[info->regs->regs_count];
+	u8 data[8];
 	int ret;
 
 	switch (info->device_type) {
@@ -548,8 +419,6 @@ static int s5m_rtc_set_alarm(struct device *dev, struct rtc_wkalrm *alrm)
 		break;
 
 	case S5M8767X:
-	case S2MPS14X:
-	case S2MPS13X:
 		s5m8767_tm_to_data(&alrm->time, data);
 		break;
 
@@ -566,8 +435,7 @@ static int s5m_rtc_set_alarm(struct device *dev, struct rtc_wkalrm *alrm)
 	if (ret < 0)
 		return ret;
 
-	ret = regmap_raw_write(info->regmap, info->regs->alarm0, data,
-			info->regs->regs_count);
+	ret = regmap_raw_write(info->regmap, SEC_ALARM0_SEC, data, 8);
 	if (ret < 0)
 		return ret;
 
@@ -609,54 +477,74 @@ static const struct rtc_class_ops s5m_rtc_ops = {
 	.alarm_irq_enable = s5m_rtc_alarm_irq_enable,
 };
 
+static void s5m_rtc_enable_wtsr(struct s5m_rtc_info *info, bool enable)
+{
+	int ret;
+	ret = regmap_update_bits(info->regmap, SEC_WTSR_SMPL_CNTL,
+				 WTSR_ENABLE_MASK,
+				 enable ? WTSR_ENABLE_MASK : 0);
+	if (ret < 0)
+		dev_err(info->dev, "%s: fail to update WTSR reg(%d)\n",
+			__func__, ret);
+}
+
+static void s5m_rtc_enable_smpl(struct s5m_rtc_info *info, bool enable)
+{
+	int ret;
+	ret = regmap_update_bits(info->regmap, SEC_WTSR_SMPL_CNTL,
+				 SMPL_ENABLE_MASK,
+				 enable ? SMPL_ENABLE_MASK : 0);
+	if (ret < 0)
+		dev_err(info->dev, "%s: fail to update SMPL reg(%d)\n",
+			__func__, ret);
+}
+
 static int s5m8767_rtc_init_reg(struct s5m_rtc_info *info)
 {
 	u8 data[2];
+	unsigned int tp_read;
 	int ret;
+	struct rtc_time tm;
 
-	switch (info->device_type) {
-	case S5M8763X:
-	case S5M8767X:
-		/* UDR update time. Default of 7.32 ms is too long. */
-		ret = regmap_update_bits(info->regmap, S5M_RTC_UDR_CON,
-				S5M_RTC_UDR_T_MASK, S5M_RTC_UDR_T_450_US);
-		if (ret < 0)
-			dev_err(info->dev, "%s: fail to change UDR time: %d\n",
-					__func__, ret);
-
-		/* Set RTC control register : Binary mode, 24hour mode */
-		data[0] = (1 << BCD_EN_SHIFT) | (1 << MODEL24_SHIFT);
-		data[1] = (0 << BCD_EN_SHIFT) | (1 << MODEL24_SHIFT);
-
-		ret = regmap_raw_write(info->regmap, S5M_ALARM0_CONF, data, 2);
-		break;
-
-	case S2MPS14X:
-	case S2MPS13X:
-		data[0] = (0 << BCD_EN_SHIFT) | (1 << MODEL24_SHIFT);
-		ret = regmap_write(info->regmap, info->regs->ctrl, data[0]);
-		if (ret < 0)
-			break;
-
-		/*
-		 * Should set WUDR & (RUDR or AUDR) bits to high after writing
-		 * RTC_CTRL register like writing Alarm registers. We can't find
-		 * the description from datasheet but vendor code does that
-		 * really.
-		 */
-		ret = s5m8767_rtc_set_alarm_reg(info);
-		break;
-
-	default:
-		return -EINVAL;
+	ret = regmap_read(info->regmap, SEC_RTC_UDR_CON, &tp_read);
+	if (ret < 0) {
+		dev_err(info->dev, "%s: fail to read control reg(%d)\n",
+			__func__, ret);
+		return ret;
 	}
 
+	/* Set RTC control register : Binary mode, 24hour mode */
+	data[0] = (1 << BCD_EN_SHIFT) | (1 << MODEL24_SHIFT);
+	data[1] = (0 << BCD_EN_SHIFT) | (1 << MODEL24_SHIFT);
+
 	info->rtc_24hr_mode = 1;
+	ret = regmap_raw_write(info->regmap, SEC_ALARM0_CONF, data, 2);
 	if (ret < 0) {
 		dev_err(info->dev, "%s: fail to write controlm reg(%d)\n",
 			__func__, ret);
 		return ret;
 	}
+
+	/* In first boot time, Set rtc time to 1/1/2012 00:00:00(SUN) */
+	if ((tp_read & RTC_TCON_MASK) == 0) {
+		dev_dbg(info->dev, "rtc init\n");
+		tm.tm_sec = 0;
+		tm.tm_min = 0;
+		tm.tm_hour = 0;
+		tm.tm_wday = 0;
+		tm.tm_mday = 1;
+		tm.tm_mon = 0;
+		tm.tm_year = 112;
+		tm.tm_yday = 0;
+		tm.tm_isdst = 0;
+		ret = s5m_rtc_set_time(info->dev, &tm);
+	}
+
+	ret = regmap_update_bits(info->regmap, SEC_RTC_UDR_CON,
+				 RTC_TCON_MASK, tp_read | RTC_TCON_MASK);
+	if (ret < 0)
+		dev_err(info->dev, "%s: fail to update TCON reg(%d)\n",
+			__func__, ret);
 
 	return ret;
 }
@@ -666,8 +554,7 @@ static int s5m_rtc_probe(struct platform_device *pdev)
 	struct sec_pmic_dev *s5m87xx = dev_get_drvdata(pdev->dev.parent);
 	struct sec_platform_data *pdata = s5m87xx->pdata;
 	struct s5m_rtc_info *info;
-	const struct regmap_config *regmap_cfg;
-	int ret, alarm_irq;
+	int ret;
 
 	if (!pdata) {
 		dev_err(pdev->dev.parent, "Platform data not supplied\n");
@@ -678,101 +565,78 @@ static int s5m_rtc_probe(struct platform_device *pdev)
 	if (!info)
 		return -ENOMEM;
 
-	switch (platform_get_device_id(pdev)->driver_data) {
-	case S2MPS14X:
-	case S2MPS13X:
-		regmap_cfg = &s2mps14_rtc_regmap_config;
-		info->regs = &s2mps_rtc_regs;
-		alarm_irq = S2MPS14_IRQ_RTCA0;
-		break;
-	case S5M8763X:
-		regmap_cfg = &s5m_rtc_regmap_config;
-		info->regs = &s5m_rtc_regs;
-		alarm_irq = S5M8763_IRQ_ALARM0;
-		break;
-	case S5M8767X:
-		regmap_cfg = &s5m_rtc_regmap_config;
-		info->regs = &s5m_rtc_regs;
-		alarm_irq = S5M8767_IRQ_RTCA1;
-		break;
-	default:
-		dev_err(&pdev->dev,
-				"Device type %lu is not supported by RTC driver\n",
-				platform_get_device_id(pdev)->driver_data);
-		return -ENODEV;
-	}
-
-	info->i2c = i2c_new_dummy(s5m87xx->i2c->adapter, RTC_I2C_ADDR);
-	if (!info->i2c) {
-		dev_err(&pdev->dev, "Failed to allocate I2C for RTC\n");
-		return -ENODEV;
-	}
-
-	info->regmap = devm_regmap_init_i2c(info->i2c, regmap_cfg);
-	if (IS_ERR(info->regmap)) {
-		ret = PTR_ERR(info->regmap);
-		dev_err(&pdev->dev, "Failed to allocate RTC register map: %d\n",
-				ret);
-		goto err;
-	}
-
 	info->dev = &pdev->dev;
 	info->s5m87xx = s5m87xx;
-	info->device_type = platform_get_device_id(pdev)->driver_data;
+	info->regmap = s5m87xx->regmap_rtc;
+	info->device_type = s5m87xx->device_type;
+	info->wtsr_smpl = s5m87xx->wtsr_smpl;
 
-	if (s5m87xx->irq_data) {
-		info->irq = regmap_irq_get_virq(s5m87xx->irq_data, alarm_irq);
-		if (info->irq <= 0) {
-			ret = -EINVAL;
-			dev_err(&pdev->dev, "Failed to get virtual IRQ %d\n",
-				alarm_irq);
-			goto err;
-		}
+	switch (pdata->device_type) {
+	case S5M8763X:
+		info->irq = regmap_irq_get_virq(s5m87xx->irq_data,
+				S5M8763_IRQ_ALARM0);
+		break;
+
+	case S5M8767X:
+		info->irq = regmap_irq_get_virq(s5m87xx->irq_data,
+				S5M8767_IRQ_RTCA1);
+		break;
+
+	default:
+		ret = -EINVAL;
+		dev_err(&pdev->dev, "Unsupported device type: %d\n", ret);
+		return ret;
 	}
 
 	platform_set_drvdata(pdev, info);
 
 	ret = s5m8767_rtc_init_reg(info);
 
+	if (info->wtsr_smpl) {
+		s5m_rtc_enable_wtsr(info, true);
+		s5m_rtc_enable_smpl(info, true);
+	}
+
 	device_init_wakeup(&pdev->dev, 1);
 
 	info->rtc_dev = devm_rtc_device_register(&pdev->dev, "s5m-rtc",
 						 &s5m_rtc_ops, THIS_MODULE);
 
-	if (IS_ERR(info->rtc_dev)) {
-		ret = PTR_ERR(info->rtc_dev);
-		goto err;
-	}
-
-	if (!info->irq) {
-		dev_info(&pdev->dev, "Alarm IRQ not available\n");
-		return 0;
-	}
+	if (IS_ERR(info->rtc_dev))
+		return PTR_ERR(info->rtc_dev);
 
 	ret = devm_request_threaded_irq(&pdev->dev, info->irq, NULL,
 					s5m_rtc_alarm_irq, 0, "rtc-alarm0",
 					info);
-	if (ret < 0) {
+	if (ret < 0)
 		dev_err(&pdev->dev, "Failed to request alarm IRQ: %d: %d\n",
 			info->irq, ret);
-		goto err;
-	}
-
-	return 0;
-
-err:
-	i2c_unregister_device(info->i2c);
 
 	return ret;
 }
 
-static int s5m_rtc_remove(struct platform_device *pdev)
+static void s5m_rtc_shutdown(struct platform_device *pdev)
 {
 	struct s5m_rtc_info *info = platform_get_drvdata(pdev);
-
-	i2c_unregister_device(info->i2c);
-
-	return 0;
+	int i;
+	unsigned int val = 0;
+	if (info->wtsr_smpl) {
+		for (i = 0; i < 3; i++) {
+			s5m_rtc_enable_wtsr(info, false);
+			regmap_read(info->regmap, SEC_WTSR_SMPL_CNTL, &val);
+			pr_debug("%s: WTSR_SMPL reg(0x%02x)\n", __func__, val);
+			if (val & WTSR_ENABLE_MASK)
+				pr_emerg("%s: fail to disable WTSR\n",
+					 __func__);
+			else {
+				pr_info("%s: success to disable WTSR\n",
+					__func__);
+				break;
+			}
+		}
+	}
+	/* Disable SMPL when power off */
+	s5m_rtc_enable_smpl(info, false);
 }
 
 #ifdef CONFIG_PM_SLEEP
@@ -781,7 +645,7 @@ static int s5m_rtc_resume(struct device *dev)
 	struct s5m_rtc_info *info = dev_get_drvdata(dev);
 	int ret = 0;
 
-	if (info->irq && device_may_wakeup(dev))
+	if (device_may_wakeup(dev))
 		ret = disable_irq_wake(info->irq);
 
 	return ret;
@@ -792,7 +656,7 @@ static int s5m_rtc_suspend(struct device *dev)
 	struct s5m_rtc_info *info = dev_get_drvdata(dev);
 	int ret = 0;
 
-	if (info->irq && device_may_wakeup(dev))
+	if (device_may_wakeup(dev))
 		ret = enable_irq_wake(info->irq);
 
 	return ret;
@@ -802,20 +666,17 @@ static int s5m_rtc_suspend(struct device *dev)
 static SIMPLE_DEV_PM_OPS(s5m_rtc_pm_ops, s5m_rtc_suspend, s5m_rtc_resume);
 
 static const struct platform_device_id s5m_rtc_id[] = {
-	{ "s5m-rtc",		S5M8767X },
-	{ "s2mps13-rtc",	S2MPS13X },
-	{ "s2mps14-rtc",	S2MPS14X },
-	{ },
+	{ "s5m-rtc", 0 },
 };
-MODULE_DEVICE_TABLE(platform, s5m_rtc_id);
 
 static struct platform_driver s5m_rtc_driver = {
 	.driver		= {
 		.name	= "s5m-rtc",
+		.owner	= THIS_MODULE,
 		.pm	= &s5m_rtc_pm_ops,
 	},
 	.probe		= s5m_rtc_probe,
-	.remove		= s5m_rtc_remove,
+	.shutdown	= s5m_rtc_shutdown,
 	.id_table	= s5m_rtc_id,
 };
 
@@ -823,6 +684,6 @@ module_platform_driver(s5m_rtc_driver);
 
 /* Module information */
 MODULE_AUTHOR("Sangbeom Kim <sbkim73@samsung.com>");
-MODULE_DESCRIPTION("Samsung S5M/S2MPS14 RTC driver");
+MODULE_DESCRIPTION("Samsung S5M RTC driver");
 MODULE_LICENSE("GPL");
 MODULE_ALIAS("platform:s5m-rtc");

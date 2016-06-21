@@ -93,8 +93,12 @@ void csc_dump_regs(struct csc_data *csc)
 {
 	struct device *dev = &csc->pdev->dev;
 
-#define DUMPREG(r) dev_dbg(dev, "%-35s %08x\n", #r, \
-	ioread32(csc->base + CSC_##r))
+	u32 read_reg(struct csc_data *csc, int offset)
+	{
+		return ioread32(csc->base + offset);
+	}
+
+#define DUMPREG(r) dev_dbg(dev, "%-35s %08x\n", #r, read_reg(csc, CSC_##r))
 
 	DUMPREG(CSC00);
 	DUMPREG(CSC01);
@@ -176,16 +180,16 @@ struct csc_data *csc_create(struct platform_device *pdev)
 	csc->pdev = pdev;
 
 	csc->res = platform_get_resource_byname(pdev, IORESOURCE_MEM,
-			"csc");
+			"vpe_csc");
 	if (csc->res == NULL) {
 		dev_err(&pdev->dev, "missing platform resources data\n");
 		return ERR_PTR(-ENODEV);
 	}
 
 	csc->base = devm_ioremap_resource(&pdev->dev, csc->res);
-	if (IS_ERR(csc->base)) {
+	if (!csc->base) {
 		dev_err(&pdev->dev, "failed to ioremap\n");
-		return ERR_CAST(csc->base);
+		return ERR_PTR(-ENOMEM);
 	}
 
 	return csc;

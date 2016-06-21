@@ -1,4 +1,3 @@
-
 /*
  * xHCI host controller driver
  *
@@ -28,7 +27,6 @@
 #include <linux/timer.h>
 #include <linux/kernel.h>
 #include <linux/usb/hcd.h>
-#include <linux/io-64-nonatomic-lo-hi.h>
 
 /* Code sharing between pci-quirks and xhci hcd */
 #include	"xhci-ext-caps.h"
@@ -57,7 +55,6 @@
  * @hcc_params:		HCCPARAMS - Capability Parameters
  * @db_off:		DBOFF - Doorbell array offset
  * @run_regs_off:	RTSOFF - Runtime register space offset
- * @hcc_params2:	HCCPARAMS2 Capability Parameters 2, xhci 1.1 only
  */
 struct xhci_cap_regs {
 	__le32	hc_capbase;
@@ -67,7 +64,6 @@ struct xhci_cap_regs {
 	__le32	hcc_params;
 	__le32	db_off;
 	__le32	run_regs_off;
-	__le32	hcc_params2; /* xhci 1.1 */
 	/* Reserved up to (CAPLENGTH - 0x1C) */
 };
 
@@ -92,10 +88,9 @@ struct xhci_cap_regs {
 #define HCS_IST(p)		(((p) >> 0) & 0xf)
 /* bits 4:7, max number of Event Ring segments */
 #define HCS_ERST_MAX(p)		(((p) >> 4) & 0xf)
-/* bits 21:25 Hi 5 bits of Scratchpad buffers SW must allocate for the HW */
 /* bit 26 Scratchpad restore - for save/restore HW state - not used yet */
-/* bits 27:31 Lo 5 bits of Scratchpad buffers SW must allocate for the HW */
-#define HCS_MAX_SCRATCHPAD(p)   ((((p) >> 16) & 0x3e0) | (((p) >> 27) & 0x1f))
+/* bits 27:31 number of Scratchpad buffers SW must allocate for the HW */
+#define HCS_MAX_SCRATCHPAD(p)   (((p) >> 27) & 0x1f)
 
 /* HCSPARAMS3 - hcs_params3 - bitmasks */
 /* bits 0:7, Max U1 to U0 latency for the roothub ports */
@@ -122,10 +117,6 @@ struct xhci_cap_regs {
 #define HCC_LTC(p)		((p) & (1 << 6))
 /* true: no secondary Stream ID Support */
 #define HCC_NSS(p)		((p) & (1 << 7))
-/* true: HC supports Stopped - Short Packet */
-#define HCC_SPC(p)		((p) & (1 << 9))
-/* true: HC has Contiguous Frame ID Capability */
-#define HCC_CFC(p)		((p) & (1 << 11))
 /* Max size for Primary Stream Arrays - 2^(n+1), where n is bits 12:15 */
 #define HCC_MAX_PSA(p)		(1 << ((((p) >> 12) & 0xf) + 1))
 /* Extended Capabilities pointer from PCI base - section 5.3.6 */
@@ -137,21 +128,6 @@ struct xhci_cap_regs {
 /* run_regs_off bitmask - bits 0:4 reserved */
 #define	RTSOFF_MASK	(~0x1f)
 
-/* HCCPARAMS2 - hcc_params2 - bitmasks */
-/* true: HC supports U3 entry Capability */
-#define	HCC2_U3C(p)		((p) & (1 << 0))
-/* true: HC supports Configure endpoint command Max exit latency too large */
-#define	HCC2_CMC(p)		((p) & (1 << 1))
-/* true: HC supports Force Save context Capability */
-#define	HCC2_FSC(p)		((p) & (1 << 2))
-/* true: HC supports Compliance Transition Capability */
-#define	HCC2_CTC(p)		((p) & (1 << 3))
-/* true: HC support Large ESIT payload Capability > 48k */
-#define	HCC2_LEC(p)		((p) & (1 << 4))
-/* true: HC support Configuration Information Capability */
-#define	HCC2_CIC(p)		((p) & (1 << 5))
-/* true: HC support Extended TBC Capability, Isoc burst count > 65535 */
-#define	HCC2_ETC(p)		((p) & (1 << 6))
 
 /* Number of registers per port */
 #define	NUM_PORT_REGS	4
@@ -287,11 +263,7 @@ struct xhci_op_regs {
 /* CONFIG - Configure Register - config_reg bitmasks */
 /* bits 0:7 - maximum number of device slots enabled (NumSlotsEn) */
 #define MAX_DEVS(p)	((p) & 0xff)
-/* bit 8: U3 Entry Enabled, assert PLC when root port enters U3, xhci 1.1 */
-#define CONFIG_U3E		(1 << 8)
-/* bit 9: Configuration Information Enable, xhci 1.1 */
-#define CONFIG_CIE		(1 << 9)
-/* bits 10:31 - reserved and should be preserved */
+/* bits 8:31 - reserved and should be preserved */
 
 /* PORTSC - Port Status and Control Register - port_status_base bitmasks */
 /* true: device connected */
@@ -311,7 +283,6 @@ struct xhci_op_regs {
 #define XDEV_U0		(0x0 << 5)
 #define XDEV_U2		(0x2 << 5)
 #define XDEV_U3		(0x3 << 5)
-#define XDEV_INACTIVE	(0x6 << 5)
 #define XDEV_RESUME	(0xf << 5)
 /* true: port has power (see HCC_PPC) */
 #define PORT_POWER	(1 << 9)
@@ -328,16 +299,11 @@ struct xhci_op_regs {
 #define	XDEV_LS			(0x2 << 10)
 #define	XDEV_HS			(0x3 << 10)
 #define	XDEV_SS			(0x4 << 10)
-#define	XDEV_SSP		(0x5 << 10)
 #define DEV_UNDEFSPEED(p)	(((p) & DEV_SPEED_MASK) == (0x0<<10))
 #define DEV_FULLSPEED(p)	(((p) & DEV_SPEED_MASK) == XDEV_FS)
 #define DEV_LOWSPEED(p)		(((p) & DEV_SPEED_MASK) == XDEV_LS)
 #define DEV_HIGHSPEED(p)	(((p) & DEV_SPEED_MASK) == XDEV_HS)
 #define DEV_SUPERSPEED(p)	(((p) & DEV_SPEED_MASK) == XDEV_SS)
-#define DEV_SUPERSPEEDPLUS(p)	(((p) & DEV_SPEED_MASK) == XDEV_SSP)
-#define DEV_SUPERSPEED_ANY(p)	(((p) & DEV_SPEED_MASK) >= XDEV_SS)
-#define DEV_PORT_SPEED(p)	(((p) >> 10) & 0x0f)
-
 /* Bits 20:23 in the Slot Context are the speed for the device */
 #define	SLOT_SPEED_FS		(XDEV_FS << 10)
 #define	SLOT_SPEED_LS		(XDEV_LS << 10)
@@ -392,7 +358,7 @@ struct xhci_op_regs {
 /* wake on over-current (enable) */
 #define PORT_WKOC_E	(1 << 27)
 /* bits 28:29 reserved */
-/* true: device is non-removable - for USB 3.0 roothub emulation */
+/* true: device is removable - for USB 3.0 roothub emulation */
 #define PORT_DEV_REMOVE	(1 << 30)
 /* Initiate a warm port reset - complete when PORT_WRC is '1' */
 #define PORT_WR		(1 << 31)
@@ -421,9 +387,6 @@ struct xhci_op_regs {
 #define	PORT_L1DS(p)		(((p) & 0xff) << 8)
 #define	PORT_HLE		(1 << 16)
 
-/* USB3 Protocol PORTLI  Port Link Information */
-#define PORT_RX_LANES(p)	(((p) >> 16) & 0xf)
-#define PORT_TX_LANES(p)	(((p) >> 20) & 0xf)
 
 /* USB2 Protocol PORTHLPMC */
 #define PORT_HIRDM(p)((p) & 3)
@@ -549,22 +512,8 @@ struct xhci_protocol_caps {
 };
 
 #define	XHCI_EXT_PORT_MAJOR(x)	(((x) >> 24) & 0xff)
-#define	XHCI_EXT_PORT_MINOR(x)	(((x) >> 16) & 0xff)
-#define	XHCI_EXT_PORT_PSIC(x)	(((x) >> 28) & 0x0f)
 #define	XHCI_EXT_PORT_OFF(x)	((x) & 0xff)
 #define	XHCI_EXT_PORT_COUNT(x)	(((x) >> 8) & 0xff)
-
-#define	XHCI_EXT_PORT_PSIV(x)	(((x) >> 0) & 0x0f)
-#define	XHCI_EXT_PORT_PSIE(x)	(((x) >> 4) & 0x03)
-#define	XHCI_EXT_PORT_PLT(x)	(((x) >> 6) & 0x03)
-#define	XHCI_EXT_PORT_PFD(x)	(((x) >> 8) & 0x01)
-#define	XHCI_EXT_PORT_LP(x)	(((x) >> 14) & 0x03)
-#define	XHCI_EXT_PORT_PSIM(x)	(((x) >> 16) & 0xffff)
-
-#define PLT_MASK        (0x03 << 6)
-#define PLT_SYM         (0x00 << 6)
-#define PLT_ASYM_RX     (0x02 << 6)
-#define PLT_ASYM_TX     (0x03 << 6)
 
 /**
  * struct xhci_container_ctx
@@ -754,7 +703,6 @@ struct xhci_ep_ctx {
 
 /* deq bitmasks */
 #define EP_CTX_CYCLE_MASK		(1 << 0)
-#define SCTX_DEQ_MASK			(~0xfL)
 
 
 /**
@@ -939,8 +887,6 @@ struct xhci_virt_ep {
 	/* Bandwidth checking storage */
 	struct xhci_bw_info	bw_info;
 	struct list_head	bw_endpoint_list;
-	/* Isoch Frame ID checking storage */
-	int			next_frame_id;
 };
 
 enum xhci_overhead_type {
@@ -990,6 +936,9 @@ struct xhci_virt_device {
 #define	XHCI_MAX_RINGS_CACHED	31
 	struct xhci_virt_ep		eps[31];
 	struct completion		cmd_completion;
+	/* Status of the last command issued for this device */
+	u32				cmd_status;
+	struct list_head		cmd_list;
 	u8				fake_port;
 	u8				real_port;
 	struct xhci_interval_bw_table	*bw_table;
@@ -1109,8 +1058,8 @@ struct xhci_transfer_event {
 #define COMP_STOP	26
 /* Same as COMP_EP_STOPPED, but the transferred length in the event is invalid */
 #define COMP_STOP_INVAL	27
-/* Same as COMP_EP_STOPPED, but a short packet detected */
-#define COMP_STOP_SHORT	28
+/* Control Abort Error - Debug Capability - control pipe aborted */
+#define COMP_DBG_ABORT	28
 /* Max Exit Latency Too Large Error */
 #define COMP_MEL_ERR	29
 /* TRB type 30 reserved */
@@ -1167,10 +1116,9 @@ enum xhci_setup_dev {
 #define TRB_TO_SUSPEND_PORT(p)		(((p) & (1 << 23)) >> 23)
 #define LAST_EP_INDEX			30
 
-/* Set TR Dequeue Pointer command TRB fields, 6.4.3.9 */
+/* Set TR Dequeue Pointer command TRB fields */
 #define TRB_TO_STREAM_ID(p)		((((p) & (0xffff << 16)) >> 16))
 #define STREAM_ID_FOR_TRB(p)		((((p)) & 0xffff) << 16)
-#define SCT_FOR_TRB(p)			(((p) << 1) & 0x7)
 
 
 /* Port Status Change Event TRB fields */
@@ -1180,8 +1128,6 @@ enum xhci_setup_dev {
 /* Normal TRB fields */
 /* transfer_len bitmasks - bits 0:16 */
 #define	TRB_LEN(p)		((p) & 0x1ffff)
-/* TD Size, packets remaining in this TD, bits 21:17 (5 bits, so max 31) */
-#define TRB_TD_SIZE(p)          (min((p), (u32)31) << 17)
 /* Interrupter Target - which MSI-X vector to target the completion event at */
 #define TRB_INTR_TARGET(p)	(((p) & 0x3ff) << 22)
 #define GET_INTR_TARGET(p)	(((p) >> 22) & 0x3ff)
@@ -1217,7 +1163,6 @@ enum xhci_setup_dev {
 
 /* Isochronous TRB specific fields */
 #define TRB_SIA			(1<<31)
-#define TRB_FRAME_ID(p)		(((p) & 0x7ff) << 20)
 
 struct xhci_generic_trb {
 	__le32 field[4];
@@ -1321,7 +1266,7 @@ union xhci_trb {
  * since the command ring is 64-byte aligned.
  * It must also be greater than 16.
  */
-#define TRBS_PER_SEGMENT	256
+#define TRBS_PER_SEGMENT	64
 /* Allow two commands + a link TRB, along with any reserved command TRBs */
 #define MAX_RSVD_CMD_TRBS	(TRBS_PER_SEGMENT - 3)
 #define TRB_SEGMENT_SIZE	(TRBS_PER_SEGMENT*16)
@@ -1344,8 +1289,6 @@ struct xhci_td {
 	struct xhci_segment	*start_seg;
 	union xhci_trb		*first_trb;
 	union xhci_trb		*last_trb;
-	/* actual_length of the URB has already been set */
-	bool			urb_length_set;
 };
 
 /* xHCI command default timeout value */
@@ -1353,6 +1296,7 @@ struct xhci_td {
 
 /* command descriptor */
 struct xhci_cd {
+	struct list_head	cancel_cmd_list;
 	struct xhci_command	*command;
 	union xhci_trb		*cmd_trb;
 };
@@ -1395,7 +1339,6 @@ struct xhci_ring {
 	unsigned int		num_trbs_free_temp;
 	enum xhci_ring_type	type;
 	bool			last_td_was_short;
-	struct radix_tree_root	*trb_address_map;
 };
 
 struct xhci_erst_entry {
@@ -1494,14 +1437,6 @@ static inline unsigned int hcd_index(struct usb_hcd *hcd)
 		return 1;
 }
 
-struct xhci_hub {
-	u8	maj_rev;
-	u8	min_rev;
-	u32	*psi;		/* array of protocol speed ID entries */
-	u8	psi_count;
-	u8	psi_uid_count;
-};
-
 /* There is one xhci_hcd structure per controller */
 struct xhci_hcd {
 	struct usb_hcd *main_hcd;
@@ -1519,7 +1454,6 @@ struct xhci_hcd {
 	__u32		hcs_params2;
 	__u32		hcs_params3;
 	__u32		hcc_params;
-	__u32		hcc_params2;
 
 	spinlock_t	lock;
 
@@ -1548,10 +1482,8 @@ struct xhci_hcd {
 #define CMD_RING_STATE_RUNNING         (1 << 0)
 #define CMD_RING_STATE_ABORTED         (1 << 1)
 #define CMD_RING_STATE_STOPPED         (1 << 2)
-	struct list_head        cmd_list;
+	struct list_head        cancel_cmd_list;
 	unsigned int		cmd_ring_reserved_trbs;
-	struct timer_list	cmd_timer;
-	struct xhci_command	*current_cmd;
 	struct xhci_ring	*event_ring;
 	struct xhci_erst	erst;
 	/* Scratchpad */
@@ -1560,8 +1492,6 @@ struct xhci_hcd {
 	struct list_head	lpm_failed_devs;
 
 	/* slot enabling and address device helpers */
-	/* these are not thread safe so use mutex */
-	struct mutex mutex;
 	struct completion	addr_dev;
 	int slot_id;
 	/* For USB 3.0 LPM enable/disable. */
@@ -1627,9 +1557,6 @@ struct xhci_hcd {
 #define XHCI_PLAT		(1 << 16)
 #define XHCI_SLOW_SUSPEND	(1 << 17)
 #define XHCI_SPURIOUS_WAKEUP	(1 << 18)
-/* For controllers with a broken beyond repair streams implementation */
-#define XHCI_BROKEN_STREAMS	(1 << 19)
-#define XHCI_PME_STUCK_QUIRK	(1 << 20)
 	unsigned int		num_active_eps;
 	unsigned int		limit_active_eps;
 	/* There are two roothubs to keep track of bus suspend info for */
@@ -1641,8 +1568,6 @@ struct xhci_hcd {
 	unsigned int		num_usb3_ports;
 	/* Array of pointers to USB 2.0 PORTSC registers */
 	__le32 __iomem		**usb2_ports;
-	struct xhci_hub		usb2_rhub;
-	struct xhci_hub		usb3_rhub;
 	unsigned int		num_usb2_ports;
 	/* support xHCI 0.96 spec USB2 software LPM */
 	unsigned		sw_lpm_support:1;
@@ -1658,26 +1583,10 @@ struct xhci_hcd {
 #define COMP_MODE_RCVRY_MSECS 2000
 };
 
-/* Platform specific overrides to generic XHCI hc_driver ops */
-struct xhci_driver_overrides {
-	size_t extra_priv_size;
-	int (*reset)(struct usb_hcd *hcd);
-	int (*start)(struct usb_hcd *hcd);
-};
-
-#define	XHCI_CFC_DELAY		10
-
 /* convert between an HCD pointer and the corresponding EHCI_HCD */
 static inline struct xhci_hcd *hcd_to_xhci(struct usb_hcd *hcd)
 {
-	struct usb_hcd *primary_hcd;
-
-	if (usb_hcd_is_primary_hcd(hcd))
-		primary_hcd = hcd;
-	else
-		primary_hcd = hcd->primary_hcd;
-
-	return (struct xhci_hcd *) (primary_hcd->hcd_priv);
+	return *((struct xhci_hcd **) (hcd->hcd_priv));
 }
 
 static inline struct usb_hcd *xhci_to_hcd(struct xhci_hcd *xhci)
@@ -1693,8 +1602,6 @@ static inline struct usb_hcd *xhci_to_hcd(struct xhci_hcd *xhci)
 	dev_warn(xhci_to_hcd(xhci)->self.controller , fmt , ## args)
 #define xhci_warn_ratelimited(xhci, fmt, args...) \
 	dev_warn_ratelimited(xhci_to_hcd(xhci)->self.controller , fmt , ## args)
-#define xhci_info(xhci, fmt, args...) \
-	dev_info(xhci_to_hcd(xhci)->self.controller , fmt , ## args)
 
 /*
  * Registers should always be accessed with double word or quad word accesses.
@@ -1708,12 +1615,20 @@ static inline struct usb_hcd *xhci_to_hcd(struct xhci_hcd *xhci)
 static inline u64 xhci_read_64(const struct xhci_hcd *xhci,
 		__le64 __iomem *regs)
 {
-	return lo_hi_readq(regs);
+	__u32 __iomem *ptr = (__u32 __iomem *) regs;
+	u64 val_lo = readl(ptr);
+	u64 val_hi = readl(ptr + 1);
+	return val_lo + (val_hi << 32);
 }
 static inline void xhci_write_64(struct xhci_hcd *xhci,
 				 const u64 val, __le64 __iomem *regs)
 {
-	lo_hi_writeq(val, regs);
+	__u32 __iomem *ptr = (__u32 __iomem *) regs;
+	u32 val_lo = lower_32_bits(val);
+	u32 val_hi = upper_32_bits(val);
+
+	writel(val_lo, ptr);
+	writel(val_hi, ptr + 1);
 }
 
 static inline int xhci_link_trb_quirk(struct xhci_hcd *xhci)
@@ -1794,7 +1709,8 @@ void xhci_free_stream_info(struct xhci_hcd *xhci,
 void xhci_setup_streams_ep_input_ctx(struct xhci_hcd *xhci,
 		struct xhci_ep_ctx *ep_ctx,
 		struct xhci_stream_info *stream_info);
-void xhci_setup_no_streams_ep_input_ctx(struct xhci_ep_ctx *ep_ctx,
+void xhci_setup_no_streams_ep_input_ctx(struct xhci_hcd *xhci,
+		struct xhci_ep_ctx *ep_ctx,
 		struct xhci_virt_ep *ep);
 void xhci_free_device_endpoint_resources(struct xhci_hcd *xhci,
 	struct xhci_virt_device *virt_dev, bool drop_control_ep);
@@ -1808,13 +1724,34 @@ struct xhci_ring *xhci_stream_id_to_ring(
 struct xhci_command *xhci_alloc_command(struct xhci_hcd *xhci,
 		bool allocate_in_ctx, bool allocate_completion,
 		gfp_t mem_flags);
-void xhci_urb_free_priv(struct urb_priv *urb_priv);
+void xhci_urb_free_priv(struct xhci_hcd *xhci, struct urb_priv *urb_priv);
 void xhci_free_command(struct xhci_hcd *xhci,
 		struct xhci_command *command);
 
+#ifdef CONFIG_PCI
+/* xHCI PCI glue */
+int xhci_register_pci(void);
+void xhci_unregister_pci(void);
+#else
+static inline int xhci_register_pci(void) { return 0; }
+static inline void xhci_unregister_pci(void) {}
+#endif
+
+#if defined(CONFIG_USB_XHCI_PLATFORM) \
+	|| defined(CONFIG_USB_XHCI_PLATFORM_MODULE)
+int xhci_register_plat(void);
+void xhci_unregister_plat(void);
+#else
+static inline int xhci_register_plat(void)
+{ return 0; }
+static inline void xhci_unregister_plat(void)
+{  }
+#endif
+
 /* xHCI host controller glue */
 typedef void (*xhci_get_quirks_t)(struct device *, struct xhci_hcd *);
-int xhci_handshake(void __iomem *ptr, u32 mask, u32 done, int usec);
+int xhci_handshake(struct xhci_hcd *xhci, void __iomem *ptr,
+		u32 mask, u32 done, int usec);
 void xhci_quiesce(struct xhci_hcd *xhci);
 int xhci_halt(struct xhci_hcd *xhci);
 int xhci_reset(struct xhci_hcd *xhci);
@@ -1823,8 +1760,6 @@ int xhci_run(struct usb_hcd *hcd);
 void xhci_stop(struct usb_hcd *hcd);
 void xhci_shutdown(struct usb_hcd *hcd);
 int xhci_gen_setup(struct usb_hcd *hcd, xhci_get_quirks_t get_quirks);
-void xhci_init_driver(struct hc_driver *drv,
-		      const struct xhci_driver_overrides *over);
 
 #ifdef	CONFIG_PM
 int xhci_suspend(struct xhci_hcd *xhci, bool do_wakeup);
@@ -1867,19 +1802,18 @@ void xhci_reset_bandwidth(struct usb_hcd *hcd, struct usb_device *udev);
 
 /* xHCI ring, segment, TRB, and TD functions */
 dma_addr_t xhci_trb_virt_to_dma(struct xhci_segment *seg, union xhci_trb *trb);
-struct xhci_segment *trb_in_td(struct xhci_hcd *xhci,
-		struct xhci_segment *start_seg, union xhci_trb *start_trb,
-		union xhci_trb *end_trb, dma_addr_t suspect_dma, bool debug);
+struct xhci_segment *trb_in_td(struct xhci_segment *start_seg,
+		union xhci_trb *start_trb, union xhci_trb *end_trb,
+		dma_addr_t suspect_dma);
 int xhci_is_vendor_info_code(struct xhci_hcd *xhci, unsigned int trb_comp_code);
 void xhci_ring_cmd_db(struct xhci_hcd *xhci);
-int xhci_queue_slot_control(struct xhci_hcd *xhci, struct xhci_command *cmd,
-		u32 trb_type, u32 slot_id);
-int xhci_queue_address_device(struct xhci_hcd *xhci, struct xhci_command *cmd,
-		dma_addr_t in_ctx_ptr, u32 slot_id, enum xhci_setup_dev);
-int xhci_queue_vendor_command(struct xhci_hcd *xhci, struct xhci_command *cmd,
+int xhci_queue_slot_control(struct xhci_hcd *xhci, u32 trb_type, u32 slot_id);
+int xhci_queue_address_device(struct xhci_hcd *xhci, dma_addr_t in_ctx_ptr,
+		u32 slot_id, enum xhci_setup_dev);
+int xhci_queue_vendor_command(struct xhci_hcd *xhci,
 		u32 field1, u32 field2, u32 field3, u32 field4);
-int xhci_queue_stop_endpoint(struct xhci_hcd *xhci, struct xhci_command *cmd,
-		int slot_id, unsigned int ep_index, int suspend);
+int xhci_queue_stop_endpoint(struct xhci_hcd *xhci, int slot_id,
+		unsigned int ep_index, int suspend);
 int xhci_queue_ctrl_tx(struct xhci_hcd *xhci, gfp_t mem_flags, struct urb *urb,
 		int slot_id, unsigned int ep_index);
 int xhci_queue_bulk_tx(struct xhci_hcd *xhci, gfp_t mem_flags, struct urb *urb,
@@ -1888,15 +1822,13 @@ int xhci_queue_intr_tx(struct xhci_hcd *xhci, gfp_t mem_flags, struct urb *urb,
 		int slot_id, unsigned int ep_index);
 int xhci_queue_isoc_tx_prepare(struct xhci_hcd *xhci, gfp_t mem_flags,
 		struct urb *urb, int slot_id, unsigned int ep_index);
-int xhci_queue_configure_endpoint(struct xhci_hcd *xhci,
-		struct xhci_command *cmd, dma_addr_t in_ctx_ptr, u32 slot_id,
-		bool command_must_succeed);
-int xhci_queue_evaluate_context(struct xhci_hcd *xhci, struct xhci_command *cmd,
-		dma_addr_t in_ctx_ptr, u32 slot_id, bool command_must_succeed);
-int xhci_queue_reset_ep(struct xhci_hcd *xhci, struct xhci_command *cmd,
-		int slot_id, unsigned int ep_index);
-int xhci_queue_reset_device(struct xhci_hcd *xhci, struct xhci_command *cmd,
-		u32 slot_id);
+int xhci_queue_configure_endpoint(struct xhci_hcd *xhci, dma_addr_t in_ctx_ptr,
+		u32 slot_id, bool command_must_succeed);
+int xhci_queue_evaluate_context(struct xhci_hcd *xhci, dma_addr_t in_ctx_ptr,
+		u32 slot_id, bool command_must_succeed);
+int xhci_queue_reset_ep(struct xhci_hcd *xhci, int slot_id,
+		unsigned int ep_index);
+int xhci_queue_reset_device(struct xhci_hcd *xhci, u32 slot_id);
 void xhci_find_new_dequeue_state(struct xhci_hcd *xhci,
 		unsigned int slot_id, unsigned int ep_index,
 		unsigned int stream_id, struct xhci_td *cur_td,
@@ -1906,16 +1838,16 @@ void xhci_queue_new_dequeue_state(struct xhci_hcd *xhci,
 		unsigned int stream_id,
 		struct xhci_dequeue_state *deq_state);
 void xhci_cleanup_stalled_ring(struct xhci_hcd *xhci,
-		unsigned int ep_index, struct xhci_td *td);
+		struct usb_device *udev, unsigned int ep_index);
 void xhci_queue_config_ep_quirk(struct xhci_hcd *xhci,
 		unsigned int slot_id, unsigned int ep_index,
 		struct xhci_dequeue_state *deq_state);
 void xhci_stop_endpoint_command_watchdog(unsigned long arg);
-void xhci_handle_command_timeout(unsigned long data);
-
+int xhci_cancel_cmd(struct xhci_hcd *xhci, struct xhci_command *command,
+		union xhci_trb *cmd_trb);
 void xhci_ring_ep_doorbell(struct xhci_hcd *xhci, unsigned int slot_id,
 		unsigned int ep_index, unsigned int stream_id);
-void xhci_cleanup_command_queue(struct xhci_hcd *xhci);
+union xhci_trb *xhci_find_next_enqueue(struct xhci_ring *ring);
 
 /* xHCI roothub code */
 void xhci_set_link_state(struct xhci_hcd *xhci, __le32 __iomem **port_array,
@@ -1945,8 +1877,11 @@ int xhci_find_slot_id_by_port(struct usb_hcd *hcd, struct xhci_hcd *xhci,
 void xhci_ring_device(struct xhci_hcd *xhci, int slot_id);
 
 /* xHCI contexts */
-struct xhci_input_control_ctx *xhci_get_input_control_ctx(struct xhci_container_ctx *ctx);
+struct xhci_input_control_ctx *xhci_get_input_control_ctx(struct xhci_hcd *xhci, struct xhci_container_ctx *ctx);
 struct xhci_slot_ctx *xhci_get_slot_ctx(struct xhci_hcd *xhci, struct xhci_container_ctx *ctx);
 struct xhci_ep_ctx *xhci_get_ep_ctx(struct xhci_hcd *xhci, struct xhci_container_ctx *ctx, unsigned int ep_index);
+
+/* xHCI quirks */
+bool xhci_compliance_mode_recovery_timer_quirk_check(void);
 
 #endif /* __LINUX_XHCI_HCD_H */

@@ -984,8 +984,7 @@ static int snd_ps3_driver_probe(struct ps3_system_bus_device *dev)
 	}
 
 	/* create card instance */
-	ret = snd_card_new(&dev->core, index, id, THIS_MODULE,
-			   0, &the_card.card);
+	ret = snd_card_create(index, id, THIS_MODULE, 0, &the_card.card);
 	if (ret < 0)
 		goto clean_irq;
 
@@ -1044,7 +1043,7 @@ static int snd_ps3_driver_probe(struct ps3_system_bus_device *dev)
 	if (!the_card.null_buffer_start_vaddr) {
 		pr_info("%s: nullbuffer alloc failed\n", __func__);
 		ret = -ENOMEM;
-		goto clean_card;
+		goto clean_preallocate;
 	}
 	pr_debug("%s: null vaddr=%p dma=%#llx\n", __func__,
 		 the_card.null_buffer_start_vaddr,
@@ -1053,6 +1052,7 @@ static int snd_ps3_driver_probe(struct ps3_system_bus_device *dev)
 	snd_ps3_init_avsetting(&the_card);
 
 	/* register the card */
+	snd_card_set_dev(the_card.card, &dev->core);
 	ret = snd_card_register(the_card.card);
 	if (ret < 0)
 		goto clean_dma_map;
@@ -1066,6 +1066,8 @@ clean_dma_map:
 			  PAGE_SIZE,
 			  the_card.null_buffer_start_vaddr,
 			  the_card.null_buffer_start_dma_addr);
+clean_preallocate:
+	snd_pcm_lib_preallocate_free_for_all(the_card.pcm);
 clean_card:
 	snd_card_free(the_card.card);
 clean_irq:

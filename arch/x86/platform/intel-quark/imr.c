@@ -75,6 +75,24 @@ struct imr_regs {
 #define phys_to_imr(x)	((x) >> IMR_SHIFT)
 
 /**
+ * module parameter
+ *
+ * If imr_lock is true, lock all the IMRs.
+ */
+static int imr_lock = 1;
+module_param(imr_lock, int, S_IRUGO|S_IWUSR);
+MODULE_PARM_DESC(imr_lock, "lock all IMRs (default=on)");
+
+/**
+ * module parameter
+ *
+ * If imr_enable is zero, do not setup kernel runtime data IMR.
+ */
+static int imr_enable = 1;
+module_param(imr_enable, int, S_IRUGO|S_IWUSR);
+MODULE_PARM_DESC(imr_enable, "enable IMRs for kernel runtime data(default=on)");
+
+/**
  * imr_is_enabled - true if an IMR is enabled false otherwise.
  *
  * Determines if an IMR is enabled based on address range and read/write
@@ -391,6 +409,9 @@ int imr_add_range(phys_addr_t base, size_t size,
 		if (ret)
 			goto failed;
 
+		if (imr.addr_lo & IMR_LOCK)
+			continue;
+
 		/* Find overlap @ base or end of requested range. */
 		ret = -EINVAL;
 		if (imr_is_enabled(&imr)) {
@@ -435,7 +456,6 @@ failed:
 	mutex_unlock(&idev->lock);
 	return ret;
 }
-EXPORT_SYMBOL_GPL(imr_add_range);
 
 /**
  * __imr_remove_range - delete an Isolated Memory Region.
@@ -549,7 +569,6 @@ int imr_remove_range(phys_addr_t base, size_t size)
 {
 	return __imr_remove_range(-1, base, size);
 }
-EXPORT_SYMBOL_GPL(imr_remove_range);
 
 /**
  * imr_clear - delete an Isolated Memory Region by index
@@ -570,6 +589,30 @@ static inline int imr_clear(int reg)
 }
 
 /**
+ * intel_qrk_imr_lockall
+ *
+ * lock up all un-locked IMRs
+ */
+static void intel_qrk_imr_lockall(struct imr_device *idev)
+{
+	int i = 0;
+	uint32_t temp_addr;
+	struct imr_regs imr;
+
+	/* Cycle through IMRs locking whichever are unlocked */
+	for (i = 0; i < idev->max_imr; i++) {
+		imr_read(idev, i, &imr);
+
+		temp_addr = imr.addr_lo;
+		if (!(temp_addr & IMR_LOCK)) {
+			pr_debug("%s: locking IMR %d\n", __func__, i);
+			temp_addr |= IMR_LOCK;
+			imr_write(idev, i, &imr, true);
+		}
+	}
+}
+
+/**
  * imr_fixup_memmap - Tear down IMRs used during bootup.
  *
  * BIOS and Grub both setup IMRs around compressed kernel, initrd memory
@@ -586,7 +629,7 @@ static inline int imr_clear(int reg)
 static void __init imr_fixup_memmap(struct imr_device *idev)
 {
 	phys_addr_t base = virt_to_phys(&_text);
-	size_t size = virt_to_phys(&__end_rodata) - base;
+	size_t size = virt_to_phys(&__init_begin) - base;
 	int i;
 	int ret;
 
@@ -594,18 +637,22 @@ static void __init imr_fixup_memmap(struct imr_device *idev)
 	for (i = 0; i < idev->max_imr; i++)
 		imr_clear(i);
 
+
 	/*
 	 * Setup a locked IMR around the physical extent of the kernel
 	 * from the beginning of the .text secton to the end of the
-	 * .rodata section as one physically contiguous block.
+	 * .init_begin section as one physically contiguous block.
 	 */
-	ret = imr_add_range(base, size, IMR_CPU, IMR_CPU, true);
-	if (ret < 0) {
-		pr_err("unable to setup IMR for kernel: (%p - %p)\n",
-			&_text, &__end_rodata);
-	} else {
-		pr_info("protecting kernel .text - .rodata: %zu KiB (%p - %p)\n",
-			size / 1024, &_text, &__end_rodata);
+	if(imr_enable) {
+		ret = imr_add_range(base, size, IMR_CPU|IMR_ESRAM_FLUSH,
+				IMR_CPU|IMR_ESRAM_FLUSH|IMR_CPU_SNOOP, true);
+		if (ret < 0) {
+			pr_err("unable to setup IMR for kernel: (%p - %p)\n",
+					&_text, &__init_begin);
+		} else {
+			pr_info("protecting kernel .text - .init_begin: %zu KiB (%p - %p)\n",
+					size / 1024, &_text, &__init_begin);
+		}
 	}
 
 }
@@ -637,7 +684,13 @@ static int __init imr_init(void)
 	ret = imr_debugfs_register(idev);
 	if (ret != 0)
 		pr_warn("debugfs register failed!\n");
+
 	imr_fixup_memmap(idev);
+
+	if (imr_lock) {
+		intel_qrk_imr_lockall(idev);
+	}
+
 	return 0;
 }
 

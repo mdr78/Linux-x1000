@@ -15,6 +15,7 @@
  */
 #include <linux/kernel.h>
 #include <linux/module.h>
+#include <linux/init.h>
 #include <linux/blkdev.h>
 #include <scsi/scsi_host.h>
 #include <linux/ata.h>
@@ -99,9 +100,13 @@ static int pata_imx_probe(struct platform_device *pdev)
 	struct resource *io_res;
 	int ret;
 
+	io_res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
+	if (io_res == NULL)
+		return -EINVAL;
+
 	irq = platform_get_irq(pdev, 0);
-	if (irq < 0)
-		return irq;
+	if (irq <= 0)
+		return -EINVAL;
 
 	priv = devm_kzalloc(&pdev->dev,
 				sizeof(struct pata_imx_priv), GFP_KERNEL);
@@ -131,10 +136,11 @@ static int pata_imx_probe(struct platform_device *pdev)
 	ap->pio_mask = ATA_PIO0;
 	ap->flags |= ATA_FLAG_SLAVE_POSS;
 
-	io_res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
-	priv->host_regs = devm_ioremap_resource(&pdev->dev, io_res);
-	if (IS_ERR(priv->host_regs)) {
-		ret = PTR_ERR(priv->host_regs);
+	priv->host_regs = devm_ioremap(&pdev->dev, io_res->start,
+		resource_size(io_res));
+	if (!priv->host_regs) {
+		dev_err(&pdev->dev, "failed to map IO/CTL base\n");
+		ret = -EBUSY;
 		goto err;
 	}
 
@@ -221,9 +227,12 @@ static int pata_imx_resume(struct device *dev)
 
 	return 0;
 }
-#endif
 
-static SIMPLE_DEV_PM_OPS(pata_imx_pm_ops, pata_imx_suspend, pata_imx_resume);
+static const struct dev_pm_ops pata_imx_pm_ops = {
+	.suspend	= pata_imx_suspend,
+	.resume		= pata_imx_resume,
+};
+#endif
 
 static const struct of_device_id imx_pata_dt_ids[] = {
 	{
@@ -240,7 +249,10 @@ static struct platform_driver pata_imx_driver = {
 	.driver = {
 		.name		= DRV_NAME,
 		.of_match_table	= imx_pata_dt_ids,
+		.owner		= THIS_MODULE,
+#ifdef CONFIG_PM_SLEEP
 		.pm		= &pata_imx_pm_ops,
+#endif
 	},
 };
 

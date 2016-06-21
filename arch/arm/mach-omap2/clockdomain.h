@@ -18,6 +18,7 @@
 
 #include "powerdomain.h"
 #include "clock.h"
+#include "omap_hwmod.h"
 
 /*
  * Clockdomain flags
@@ -96,8 +97,6 @@ struct clkdm_dep {
 
 /* Possible flags for struct clockdomain._flags */
 #define _CLKDM_FLAG_HWSUP_ENABLED		BIT(0)
-
-struct omap_hwmod;
 
 /**
  * struct clockdomain - OMAP clockdomain
@@ -216,8 +215,6 @@ extern void __init omap242x_clockdomains_init(void);
 extern void __init omap243x_clockdomains_init(void);
 extern void __init omap3xxx_clockdomains_init(void);
 extern void __init am33xx_clockdomains_init(void);
-extern void __init ti814x_clockdomains_init(void);
-extern void __init ti816x_clockdomains_init(void);
 extern void __init omap44xx_clockdomains_init(void);
 extern void __init omap54xx_clockdomains_init(void);
 extern void __init dra7xx_clockdomains_init(void);

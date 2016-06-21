@@ -224,7 +224,7 @@ static inline unsigned int lpf_count_to_us(unsigned int count)
 }
 
 /*
- * FIFO register pulse width count computations
+ * FIFO register pulse width count compuations
  */
 static u32 clock_divider_to_resolution(u16 divider)
 {

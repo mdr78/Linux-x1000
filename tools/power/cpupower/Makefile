@@ -62,7 +62,7 @@ LIB_MAJ=			0.0.0
 LIB_MIN=			0
 
 PACKAGE =			cpupower
-PACKAGE_BUGREPORT =		linux-pm@vger.kernel.org
+PACKAGE_BUGREPORT =		cpufreq@vger.kernel.org
 LANGUAGES = 			de fr it cs pt
 
 
@@ -274,8 +274,6 @@ install-man:
 	$(INSTALL_DATA) -D man/cpupower.1 $(DESTDIR)${mandir}/man1/cpupower.1
 	$(INSTALL_DATA) -D man/cpupower-frequency-set.1 $(DESTDIR)${mandir}/man1/cpupower-frequency-set.1
 	$(INSTALL_DATA) -D man/cpupower-frequency-info.1 $(DESTDIR)${mandir}/man1/cpupower-frequency-info.1
-	$(INSTALL_DATA) -D man/cpupower-idle-set.1 $(DESTDIR)${mandir}/man1/cpupower-idle-set.1
-	$(INSTALL_DATA) -D man/cpupower-idle-info.1 $(DESTDIR)${mandir}/man1/cpupower-idle-info.1
 	$(INSTALL_DATA) -D man/cpupower-set.1 $(DESTDIR)${mandir}/man1/cpupower-set.1
 	$(INSTALL_DATA) -D man/cpupower-info.1 $(DESTDIR)${mandir}/man1/cpupower-info.1
 	$(INSTALL_DATA) -D man/cpupower-monitor.1 $(DESTDIR)${mandir}/man1/cpupower-monitor.1
@@ -297,12 +295,8 @@ uninstall:
 	- rm -f $(DESTDIR)${libdir}/libcpupower.*
 	- rm -f $(DESTDIR)${includedir}/cpufreq.h
 	- rm -f $(DESTDIR)${bindir}/utils/cpupower
-	- rm -f $(DESTDIR)${mandir}/man1/cpupower.1
-	- rm -f $(DESTDIR)${mandir}/man1/cpupower-frequency-set.1
-	- rm -f $(DESTDIR)${mandir}/man1/cpupower-frequency-info.1
-	- rm -f $(DESTDIR)${mandir}/man1/cpupower-set.1
-	- rm -f $(DESTDIR)${mandir}/man1/cpupower-info.1
-	- rm -f $(DESTDIR)${mandir}/man1/cpupower-monitor.1
+	- rm -f $(DESTDIR)${mandir}/man1/cpufreq-set.1
+	- rm -f $(DESTDIR)${mandir}/man1/cpufreq-info.1
 	- for HLANG in $(LANGUAGES); do \
 		rm -f $(DESTDIR)${localedir}/$$HLANG/LC_MESSAGES/cpupower.mo; \
 	  done;

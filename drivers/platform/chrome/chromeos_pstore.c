@@ -16,13 +16,23 @@
 static struct dmi_system_id chromeos_pstore_dmi_table[] __initdata = {
 	{
 		/*
-		 * Today all Chromebooks/boxes ship with Google_* as version and
+		 * Today all Chromebooks/boxes ship with GOOGLE as vendor and
 		 * coreboot as bios vendor. No other systems with this
 		 * combination are known to date.
 		 */
 		.matches = {
+			DMI_MATCH(DMI_SYS_VENDOR, "GOOGLE"),
 			DMI_MATCH(DMI_BIOS_VENDOR, "coreboot"),
-			DMI_MATCH(DMI_BIOS_VERSION, "Google_"),
+		},
+	},
+	{
+		/*
+		 * The first Samsung Chromebox and Chromebook Series 5 550 use
+		 * coreboot but with Samsung as the system vendor.
+		 */
+		.matches = {
+			DMI_MATCH(DMI_SYS_VENDOR, "SAMSUNG"),
+			DMI_MATCH(DMI_BIOS_VENDOR, "coreboot"),
 		},
 	},
 	{

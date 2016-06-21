@@ -26,8 +26,6 @@
 #ifndef __SAVAGE_DRV_H__
 #define __SAVAGE_DRV_H__
 
-#include <drm/drm_legacy.h>
-
 #define DRIVER_AUTHOR	"Felix Kuehling"
 
 #define DRIVER_NAME	"savage"

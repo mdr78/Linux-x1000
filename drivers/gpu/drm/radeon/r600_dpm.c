@@ -24,7 +24,6 @@
 
 #include "drmP.h"
 #include "radeon.h"
-#include "radeon_asic.h"
 #include "r600d.h"
 #include "r600_dpm.h"
 #include "atom.h"
@@ -188,7 +187,7 @@ u32 r600_dpm_get_vrefresh(struct radeon_device *rdev)
 		list_for_each_entry(crtc, &dev->mode_config.crtc_list, head) {
 			radeon_crtc = to_radeon_crtc(crtc);
 			if (crtc->enabled && radeon_crtc->enabled && radeon_crtc->hw_mode.clock) {
-				vrefresh = drm_mode_vrefresh(&radeon_crtc->hw_mode);
+				vrefresh = radeon_crtc->hw_mode.vrefresh;
 				break;
 			}
 		}
@@ -811,7 +810,6 @@ union power_info {
 union fan_info {
 	struct _ATOM_PPLIB_FANTABLE fan;
 	struct _ATOM_PPLIB_FANTABLE2 fan2;
-	struct _ATOM_PPLIB_FANTABLE3 fan3;
 };
 
 static int r600_parse_clk_voltage_dep_table(struct radeon_clock_voltage_dependency_table *radeon_table,
@@ -835,26 +833,6 @@ static int r600_parse_clk_voltage_dep_table(struct radeon_clock_voltage_dependen
 			((u8 *)entry + sizeof(ATOM_PPLIB_Clock_Voltage_Dependency_Record));
 	}
 	radeon_table->count = atom_table->ucNumEntries;
-
-	return 0;
-}
-
-int r600_get_platform_caps(struct radeon_device *rdev)
-{
-	struct radeon_mode_info *mode_info = &rdev->mode_info;
-	union power_info *power_info;
-	int index = GetIndexIntoMasterTable(DATA, PowerPlayInfo);
-        u16 data_offset;
-	u8 frev, crev;
-
-	if (!atom_parse_data_header(mode_info->atom_context, index, NULL,
-				   &frev, &crev, &data_offset))
-		return -EINVAL;
-	power_info = (union power_info *)(mode_info->atom_context->bios + data_offset);
-
-	rdev->pm.dpm.platform_caps = le32_to_cpu(power_info->pplib.ulPlatformCaps);
-	rdev->pm.dpm.backbias_response_time = le16_to_cpu(power_info->pplib.usBackbiasTime);
-	rdev->pm.dpm.voltage_response_time = le16_to_cpu(power_info->pplib.usVoltageTime);
 
 	return 0;
 }
@@ -901,14 +879,6 @@ int r600_parse_extended_power_table(struct radeon_device *rdev)
 			else
 				rdev->pm.dpm.fan.t_max = 10900;
 			rdev->pm.dpm.fan.cycle_delay = 100000;
-			if (fan_info->fan.ucFanTableFormat >= 3) {
-				rdev->pm.dpm.fan.control_mode = fan_info->fan3.ucFanControlMode;
-				rdev->pm.dpm.fan.default_max_fan_pwm =
-					le16_to_cpu(fan_info->fan3.usFanPWMMax);
-				rdev->pm.dpm.fan.default_fan_output_sensitivity = 4836;
-				rdev->pm.dpm.fan.fan_output_sensitivity =
-					le16_to_cpu(fan_info->fan3.usFanOutputSensitivity);
-			}
 			rdev->pm.dpm.fan.ucode_fan_control = true;
 		}
 	}
@@ -1076,15 +1046,7 @@ int r600_parse_extended_power_table(struct radeon_device *rdev)
 				(mode_info->atom_context->bios + data_offset +
 				 le16_to_cpu(ext_hdr->usVCETableOffset) + 1 +
 				 1 + array->ucNumEntries * sizeof(VCEClockInfo));
-			ATOM_PPLIB_VCE_State_Table *states =
-				(ATOM_PPLIB_VCE_State_Table *)
-				(mode_info->atom_context->bios + data_offset +
-				 le16_to_cpu(ext_hdr->usVCETableOffset) + 1 +
-				 1 + (array->ucNumEntries * sizeof (VCEClockInfo)) +
-				 1 + (limits->numEntries * sizeof(ATOM_PPLIB_VCE_Clock_Voltage_Limit_Record)));
 			ATOM_PPLIB_VCE_Clock_Voltage_Limit_Record *entry;
-			ATOM_PPLIB_VCE_State_Record *state_entry;
-			VCEClockInfo *vce_clk;
 			u32 size = limits->numEntries *
 				sizeof(struct radeon_vce_clock_voltage_dependency_entry);
 			rdev->pm.dpm.dyn_state.vce_clock_voltage_dependency_table.entries =
@@ -1096,9 +1058,8 @@ int r600_parse_extended_power_table(struct radeon_device *rdev)
 			rdev->pm.dpm.dyn_state.vce_clock_voltage_dependency_table.count =
 				limits->numEntries;
 			entry = &limits->entries[0];
-			state_entry = &states->entries[0];
 			for (i = 0; i < limits->numEntries; i++) {
-				vce_clk = (VCEClockInfo *)
+				VCEClockInfo *vce_clk = (VCEClockInfo *)
 					((u8 *)&array->entries[0] +
 					 (entry->ucVCEClockInfoIndex * sizeof(VCEClockInfo)));
 				rdev->pm.dpm.dyn_state.vce_clock_voltage_dependency_table.entries[i].evclk =
@@ -1109,23 +1070,6 @@ int r600_parse_extended_power_table(struct radeon_device *rdev)
 					le16_to_cpu(entry->usVoltage);
 				entry = (ATOM_PPLIB_VCE_Clock_Voltage_Limit_Record *)
 					((u8 *)entry + sizeof(ATOM_PPLIB_VCE_Clock_Voltage_Limit_Record));
-			}
-			for (i = 0; i < states->numEntries; i++) {
-				if (i >= RADEON_MAX_VCE_LEVELS)
-					break;
-				vce_clk = (VCEClockInfo *)
-					((u8 *)&array->entries[0] +
-					 (state_entry->ucVCEClockInfoIndex * sizeof(VCEClockInfo)));
-				rdev->pm.dpm.vce_states[i].evclk =
-					le16_to_cpu(vce_clk->usEVClkLow) | (vce_clk->ucEVClkHigh << 16);
-				rdev->pm.dpm.vce_states[i].ecclk =
-					le16_to_cpu(vce_clk->usECClkLow) | (vce_clk->ucECClkHigh << 16);
-				rdev->pm.dpm.vce_states[i].clk_idx =
-					state_entry->ucClockInfoIndex & 0x3f;
-				rdev->pm.dpm.vce_states[i].pstate =
-					(state_entry->ucClockInfoIndex & 0xc0) >> 6;
-				state_entry = (ATOM_PPLIB_VCE_State_Record *)
-					((u8 *)state_entry + sizeof(ATOM_PPLIB_VCE_State_Record));
 			}
 		}
 		if ((le16_to_cpu(ext_hdr->usSize) >= SIZE_OF_ATOM_PPLIB_EXTENDEDHEADER_V3) &&

@@ -37,6 +37,7 @@ int v4l2_device_register(struct device *dev, struct v4l2_device *v4l2_dev)
 
 	INIT_LIST_HEAD(&v4l2_dev->subdevs);
 	spin_lock_init(&v4l2_dev->lock);
+	mutex_init(&v4l2_dev->ioctl_lock);
 	v4l2_prio_init(&v4l2_dev->prio);
 	kref_init(&v4l2_dev->ref);
 	get_device(dev);
@@ -157,17 +158,7 @@ int v4l2_device_register_subdev(struct v4l2_device *v4l2_dev,
 	/* Warn if we apparently re-register a subdev */
 	WARN_ON(sd->v4l2_dev != NULL);
 
-	/*
-	 * The reason to acquire the module here is to avoid unloading
-	 * a module of sub-device which is registered to a media
-	 * device. To make it possible to unload modules for media
-	 * devices that also register sub-devices, do not
-	 * try_module_get() such sub-device owners.
-	 */
-	sd->owner_v4l2_dev = v4l2_dev->dev && v4l2_dev->dev->driver &&
-		sd->owner == v4l2_dev->dev->driver->owner;
-
-	if (!sd->owner_v4l2_dev && !try_module_get(sd->owner))
+	if (!try_module_get(sd->owner))
 		return -ENODEV;
 
 	sd->v4l2_dev = v4l2_dev;
@@ -201,8 +192,7 @@ error_unregister:
 	if (sd->internal_ops && sd->internal_ops->unregistered)
 		sd->internal_ops->unregistered(sd);
 error_module:
-	if (!sd->owner_v4l2_dev)
-		module_put(sd->owner);
+	module_put(sd->owner);
 	sd->v4l2_dev = NULL;
 	return err;
 }
@@ -247,8 +237,8 @@ int v4l2_device_register_subdev_nodes(struct v4l2_device *v4l2_dev)
 			goto clean_up;
 		}
 #if defined(CONFIG_MEDIA_CONTROLLER)
-		sd->entity.info.dev.major = VIDEO_MAJOR;
-		sd->entity.info.dev.minor = vdev->minor;
+		sd->entity.info.v4l.major = VIDEO_MAJOR;
+		sd->entity.info.v4l.minor = vdev->minor;
 #endif
 		sd->devnode = vdev;
 	}
@@ -290,7 +280,6 @@ void v4l2_device_unregister_subdev(struct v4l2_subdev *sd)
 	}
 #endif
 	video_unregister_device(sd->devnode);
-	if (!sd->owner_v4l2_dev)
-		module_put(sd->owner);
+	module_put(sd->owner);
 }
 EXPORT_SYMBOL_GPL(v4l2_device_unregister_subdev);

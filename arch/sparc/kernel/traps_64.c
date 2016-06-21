@@ -43,10 +43,8 @@
 #include <asm/prom.h>
 #include <asm/memctrl.h>
 #include <asm/cacheflush.h>
-#include <asm/setup.h>
 
 #include "entry.h"
-#include "kernel.h"
 #include "kstack.h"
 
 /* When an irrecoverable trap occurs at tl > 0, the trap entry
@@ -2214,6 +2212,8 @@ out:
 	exception_exit(prev_state);
 }
 
+extern int do_mathemu(struct pt_regs *, struct fpustate *, bool);
+
 void do_fpother(struct pt_regs *regs)
 {
 	enum ctx_state prev_state = exception_enter();
@@ -2386,7 +2386,7 @@ static inline struct reg_window *kernel_stack_up(struct reg_window *rw)
 	return (struct reg_window *) (fp + STACK_BIAS);
 }
 
-void __noreturn die_if_kernel(char *str, struct pt_regs *regs)
+void die_if_kernel(char *str, struct pt_regs *regs)
 {
 	static int die_counter;
 	int count = 0;
@@ -2427,8 +2427,6 @@ void __noreturn die_if_kernel(char *str, struct pt_regs *regs)
 		}
 		user_instruction_dump ((unsigned int __user *) regs->tpc);
 	}
-	if (panic_on_oops)
-		panic("Fatal exception");
 	if (regs->tstate & TSTATE_PRIV)
 		do_exit(SIGKILL);
 	do_exit(SIGSEGV);
@@ -2437,6 +2435,9 @@ EXPORT_SYMBOL(die_if_kernel);
 
 #define VIS_OPCODE_MASK	((0x3 << 30) | (0x3f << 19))
 #define VIS_OPCODE_VAL	((0x2 << 30) | (0x36 << 19))
+
+extern int handle_popc(u32 insn, struct pt_regs *regs);
+extern int handle_ldf_stq(u32 insn, struct pt_regs *regs);
 
 void do_illegal_instruction(struct pt_regs *regs)
 {
@@ -2487,6 +2488,8 @@ void do_illegal_instruction(struct pt_regs *regs)
 out:
 	exception_exit(prev_state);
 }
+
+extern void kernel_unaligned_trap(struct pt_regs *regs, unsigned int insn);
 
 void mem_address_unaligned(struct pt_regs *regs, unsigned long sfar, unsigned long sfsr)
 {
@@ -2566,11 +2569,39 @@ void do_cee(struct pt_regs *regs)
 	die_if_kernel("TL0: Cache Error Exception", regs);
 }
 
+void do_cee_tl1(struct pt_regs *regs)
+{
+	exception_enter();
+	dump_tl1_traplog((struct tl1_traplog *)(regs + 1));
+	die_if_kernel("TL1: Cache Error Exception", regs);
+}
+
+void do_dae_tl1(struct pt_regs *regs)
+{
+	exception_enter();
+	dump_tl1_traplog((struct tl1_traplog *)(regs + 1));
+	die_if_kernel("TL1: Data Access Exception", regs);
+}
+
+void do_iae_tl1(struct pt_regs *regs)
+{
+	exception_enter();
+	dump_tl1_traplog((struct tl1_traplog *)(regs + 1));
+	die_if_kernel("TL1: Instruction Access Exception", regs);
+}
+
 void do_div0_tl1(struct pt_regs *regs)
 {
 	exception_enter();
 	dump_tl1_traplog((struct tl1_traplog *)(regs + 1));
 	die_if_kernel("TL1: DIV0 Exception", regs);
+}
+
+void do_fpdis_tl1(struct pt_regs *regs)
+{
+	exception_enter();
+	dump_tl1_traplog((struct tl1_traplog *)(regs + 1));
+	die_if_kernel("TL1: FPU Disabled", regs);
 }
 
 void do_fpieee_tl1(struct pt_regs *regs)
@@ -2691,6 +2722,8 @@ void __init trap_init(void)
 					       fault_address) ||
 		     TI_KREGS != offsetof(struct thread_info, kregs) ||
 		     TI_UTRAPS != offsetof(struct thread_info, utraps) ||
+		     TI_EXEC_DOMAIN != offsetof(struct thread_info,
+						exec_domain) ||
 		     TI_REG_WINDOW != offsetof(struct thread_info,
 					       reg_window) ||
 		     TI_RWIN_SPTRS != offsetof(struct thread_info,
@@ -2702,6 +2735,8 @@ void __init trap_init(void)
 		     TI_NEW_CHILD != offsetof(struct thread_info, new_child) ||
 		     TI_CURRENT_DS != offsetof(struct thread_info,
 						current_ds) ||
+		     TI_RESTART_BLOCK != offsetof(struct thread_info,
+						  restart_block) ||
 		     TI_KUNA_REGS != offsetof(struct thread_info,
 					      kern_una_regs) ||
 		     TI_KUNA_INSN != offsetof(struct thread_info,

@@ -49,6 +49,7 @@
 struct rfkill {
 	spinlock_t		lock;
 
+	const char		*name;
 	enum rfkill_type	type;
 
 	unsigned long		state;
@@ -72,7 +73,6 @@ struct rfkill {
 	struct delayed_work	poll_work;
 	struct work_struct	uevent_work;
 	struct work_struct	sync_work;
-	char			name[];
 };
 #define to_rfkill(d)	container_of(d, struct rfkill, dev)
 
@@ -329,7 +329,7 @@ static atomic_t rfkill_input_disabled = ATOMIC_INIT(0);
 /**
  * __rfkill_switch_all - Toggle state of all switches of given type
  * @type: type of interfaces to be affected
- * @blocked: the new state
+ * @state: the new state
  *
  * This function sets the state of all switches of given type,
  * unless a specific switch is claimed by userspace (in which case,
@@ -341,15 +341,7 @@ static void __rfkill_switch_all(const enum rfkill_type type, bool blocked)
 {
 	struct rfkill *rfkill;
 
-	if (type == RFKILL_TYPE_ALL) {
-		int i;
-
-		for (i = 0; i < NUM_RFKILL_TYPES; i++)
-			rfkill_global_states[i].cur = blocked;
-	} else {
-		rfkill_global_states[type].cur = blocked;
-	}
-
+	rfkill_global_states[type].cur = blocked;
 	list_for_each_entry(rfkill, &rfkill_list, node) {
 		if (rfkill->type != type && type != RFKILL_TYPE_ALL)
 			continue;
@@ -361,7 +353,7 @@ static void __rfkill_switch_all(const enum rfkill_type type, bool blocked)
 /**
  * rfkill_switch_all - Toggle state of all switches of given type
  * @type: type of interfaces to be affected
- * @blocked: the new state
+ * @state: the new state
  *
  * Acquires rfkill_global_mutex and calls __rfkill_switch_all(@type, @state).
  * Please refer to __rfkill_switch_all() for details.
@@ -797,13 +789,11 @@ void rfkill_resume_polling(struct rfkill *rfkill)
 	if (!rfkill->ops->poll)
 		return;
 
-	queue_delayed_work(system_power_efficient_wq,
-			   &rfkill->poll_work, 0);
+	schedule_work(&rfkill->poll_work.work);
 }
 EXPORT_SYMBOL(rfkill_resume_polling);
 
-#ifdef CONFIG_PM_SLEEP
-static int rfkill_suspend(struct device *dev)
+static int rfkill_suspend(struct device *dev, pm_message_t state)
 {
 	struct rfkill *rfkill = to_rfkill(dev);
 
@@ -827,18 +817,13 @@ static int rfkill_resume(struct device *dev)
 	return 0;
 }
 
-static SIMPLE_DEV_PM_OPS(rfkill_pm_ops, rfkill_suspend, rfkill_resume);
-#define RFKILL_PM_OPS (&rfkill_pm_ops)
-#else
-#define RFKILL_PM_OPS NULL
-#endif
-
 static struct class rfkill_class = {
 	.name		= "rfkill",
 	.dev_release	= rfkill_release,
 	.dev_groups	= rfkill_dev_groups,
 	.dev_uevent	= rfkill_dev_uevent,
-	.pm		= RFKILL_PM_OPS,
+	.suspend	= rfkill_suspend,
+	.resume		= rfkill_resume,
 };
 
 bool rfkill_blocked(struct rfkill *rfkill)
@@ -876,14 +861,14 @@ struct rfkill * __must_check rfkill_alloc(const char *name,
 	if (WARN_ON(type == RFKILL_TYPE_ALL || type >= NUM_RFKILL_TYPES))
 		return NULL;
 
-	rfkill = kzalloc(sizeof(*rfkill) + strlen(name) + 1, GFP_KERNEL);
+	rfkill = kzalloc(sizeof(*rfkill), GFP_KERNEL);
 	if (!rfkill)
 		return NULL;
 
 	spin_lock_init(&rfkill->lock);
 	INIT_LIST_HEAD(&rfkill->node);
 	rfkill->type = type;
-	strcpy(rfkill->name, name);
+	rfkill->name = name;
 	rfkill->ops = ops;
 	rfkill->data = ops_data;
 
@@ -909,8 +894,7 @@ static void rfkill_poll(struct work_struct *work)
 	 */
 	rfkill->ops->poll(rfkill, rfkill->data);
 
-	queue_delayed_work(system_power_efficient_wq,
-		&rfkill->poll_work,
+	schedule_delayed_work(&rfkill->poll_work,
 		round_jiffies_relative(POLL_INTERVAL));
 }
 
@@ -974,8 +958,7 @@ int __must_check rfkill_register(struct rfkill *rfkill)
 	INIT_WORK(&rfkill->sync_work, rfkill_sync_work);
 
 	if (rfkill->ops->poll)
-		queue_delayed_work(system_power_efficient_wq,
-			&rfkill->poll_work,
+		schedule_delayed_work(&rfkill->poll_work,
 			round_jiffies_relative(POLL_INTERVAL));
 
 	if (!rfkill->persistent || rfkill_epo_lock_active) {

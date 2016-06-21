@@ -272,7 +272,7 @@ static int chip_cmd(struct CHIPSTATE *chip, char *name, audiocmd *cmd)
 		return -EINVAL;
 	}
 
-	/* FIXME: it seems that the shadow bytes are wrong below !*/
+	/* FIXME: it seems that the shadow bytes are wrong bellow !*/
 
 	/* update our shadow register set; print bytes if (debug > 0) */
 	v4l2_dbg(1, debug, sd, "chip_cmd(%s): reg=%d, data:",
@@ -1862,6 +1862,7 @@ static const struct v4l2_subdev_core_ops tvaudio_core_ops = {
 	.s_ctrl = v4l2_subdev_s_ctrl,
 	.queryctrl = v4l2_subdev_queryctrl,
 	.querymenu = v4l2_subdev_querymenu,
+	.s_std = tvaudio_s_std,
 };
 
 static const struct v4l2_subdev_tuner_ops tvaudio_tuner_ops = {
@@ -1875,15 +1876,10 @@ static const struct v4l2_subdev_audio_ops tvaudio_audio_ops = {
 	.s_routing = tvaudio_s_routing,
 };
 
-static const struct v4l2_subdev_video_ops tvaudio_video_ops = {
-	.s_std = tvaudio_s_std,
-};
-
 static const struct v4l2_subdev_ops tvaudio_ops = {
 	.core = &tvaudio_core_ops,
 	.tuner = &tvaudio_tuner_ops,
 	.audio = &tvaudio_audio_ops,
-	.video = &tvaudio_video_ops,
 };
 
 /* ----------------------------------------------------------------------- */
@@ -2051,6 +2047,7 @@ MODULE_DEVICE_TABLE(i2c, tvaudio_id);
 
 static struct i2c_driver tvaudio_driver = {
 	.driver = {
+		.owner	= THIS_MODULE,
 		.name	= "tvaudio",
 	},
 	.probe		= tvaudio_probe,

@@ -12,7 +12,6 @@
 #include <acpi/reboot.h>
 #include <asm/io.h>
 #include <asm/apic.h>
-#include <asm/io_apic.h>
 #include <asm/desc.h>
 #include <asm/hpet.h>
 #include <asm/pgtable.h>
@@ -29,7 +28,6 @@
 #include <linux/mc146818rtc.h>
 #include <asm/realmode.h>
 #include <asm/x86_init.h>
-#include <asm/efi.h>
 
 /*
  * Power off function, if any
@@ -116,8 +114,8 @@ EXPORT_SYMBOL(machine_real_restart);
  */
 static int __init set_pci_reboot(const struct dmi_system_id *d)
 {
-	if (reboot_type != BOOT_CF9_FORCE) {
-		reboot_type = BOOT_CF9_FORCE;
+	if (reboot_type != BOOT_CF9) {
+		reboot_type = BOOT_CF9;
 		pr_info("%s series board detected. Selecting %s-method for reboots.\n",
 			d->ident, "PCI");
 	}
@@ -182,24 +180,6 @@ static struct dmi_system_id __initdata reboot_dmi_table[] = {
 			DMI_MATCH(DMI_PRODUCT_NAME, "iMac9,1"),
 		},
 	},
-	{	/* Handle problems with rebooting on the iMac10,1. */
-		.callback = set_pci_reboot,
-		.ident = "Apple iMac10,1",
-		.matches = {
-		    DMI_MATCH(DMI_SYS_VENDOR, "Apple Inc."),
-		    DMI_MATCH(DMI_PRODUCT_NAME, "iMac10,1"),
-		},
-	},
-
-	/* ASRock */
-	{	/* Handle problems with rebooting on ASRock Q1900DC-ITX */
-		.callback = set_pci_reboot,
-		.ident = "ASRock Q1900DC-ITX",
-		.matches = {
-			DMI_MATCH(DMI_BOARD_VENDOR, "ASRock"),
-			DMI_MATCH(DMI_BOARD_NAME, "Q1900DC-ITX"),
-		},
-	},
 
 	/* ASUS */
 	{	/* Handle problems with rebooting on ASUS P4S800 */
@@ -208,16 +188,6 @@ static struct dmi_system_id __initdata reboot_dmi_table[] = {
 		.matches = {
 			DMI_MATCH(DMI_BOARD_VENDOR, "ASUSTeK Computer INC."),
 			DMI_MATCH(DMI_BOARD_NAME, "P4S800"),
-		},
-	},
-
-	/* Certec */
-	{       /* Handle problems with rebooting on Certec BPC600 */
-		.callback = set_pci_reboot,
-		.ident = "Certec BPC600",
-		.matches = {
-			DMI_MATCH(DMI_SYS_VENDOR, "Certec"),
-			DMI_MATCH(DMI_PRODUCT_NAME, "BPC600"),
 		},
 	},
 
@@ -421,25 +391,12 @@ static struct dmi_system_id __initdata reboot_dmi_table[] = {
 
 static int __init reboot_init(void)
 {
-	int rv;
-
 	/*
 	 * Only do the DMI check if reboot_type hasn't been overridden
 	 * on the command line
 	 */
-	if (!reboot_default)
-		return 0;
-
-	/*
-	 * The DMI quirks table takes precedence. If no quirks entry
-	 * matches and the ACPI Hardware Reduced bit is set, force EFI
-	 * reboot.
-	 */
-	rv = dmi_check_system(reboot_dmi_table);
-
-	if (!rv && efi_reboot_required())
-		reboot_type = BOOT_EFI;
-
+	if (reboot_default)
+		dmi_check_system(reboot_dmi_table);
 	return 0;
 }
 core_initcall(reboot_init);
@@ -501,23 +458,17 @@ void __attribute__((weak)) mach_reboot_fixups(void)
 }
 
 /*
- * To the best of our knowledge Windows compatible x86 hardware expects
- * the following on reboot:
+ * Windows compatible x86 hardware expects the following on reboot:
  *
  * 1) If the FADT has the ACPI reboot register flag set, try it
  * 2) If still alive, write to the keyboard controller
  * 3) If still alive, write to the ACPI reboot register again
  * 4) If still alive, write to the keyboard controller again
- * 5) If still alive, call the EFI runtime service to reboot
- * 6) If no EFI runtime service, call the BIOS to do a reboot
  *
- * We default to following the same pattern. We also have
- * two other reboot methods: 'triple fault' and 'PCI', which
- * can be triggered via the reboot= kernel boot option or
- * via quirks.
- *
- * This means that this function can never return, it can misbehave
- * by not rebooting properly and hanging.
+ * If the machine is still alive at this stage, it gives up. We default to
+ * following the same pattern, except that if we're still alive after (4) we'll
+ * try to force a triple fault and then cycle between hitting the keyboard
+ * controller and doing that
  */
 static void native_machine_emergency_restart(void)
 {
@@ -538,11 +489,6 @@ static void native_machine_emergency_restart(void)
 	for (;;) {
 		/* Could also try the reset bit in the Hammer NB */
 		switch (reboot_type) {
-		case BOOT_ACPI:
-			acpi_reboot();
-			reboot_type = BOOT_KBD;
-			break;
-
 		case BOOT_KBD:
 			mach_reboot_fixups(); /* For board specific fixups */
 
@@ -556,29 +502,45 @@ static void native_machine_emergency_restart(void)
 				attempt = 1;
 				reboot_type = BOOT_ACPI;
 			} else {
-				reboot_type = BOOT_EFI;
+				reboot_type = BOOT_TRIPLE;
 			}
 			break;
 
-		case BOOT_EFI:
-			efi_reboot(reboot_mode, NULL);
-			reboot_type = BOOT_BIOS;
+		case BOOT_TRIPLE:
+			load_idt(&no_idt);
+			__asm__ __volatile__("int3");
+
+			reboot_type = BOOT_KBD;
 			break;
 
 		case BOOT_BIOS:
 			machine_real_restart(MRR_BIOS);
 
-			/* We're probably dead after this, but... */
-			reboot_type = BOOT_CF9_SAFE;
+			reboot_type = BOOT_KBD;
 			break;
 
-		case BOOT_CF9_FORCE:
+		case BOOT_ACPI:
+			acpi_reboot();
+			reboot_type = BOOT_KBD;
+			break;
+
+		case BOOT_EFI:
+			if (efi_enabled(EFI_RUNTIME_SERVICES))
+				efi.reset_system(reboot_mode == REBOOT_WARM ?
+						 EFI_RESET_WARM :
+						 EFI_RESET_COLD,
+						 EFI_SUCCESS, 0, NULL);
+			reboot_type = BOOT_KBD;
+			break;
+
+		case BOOT_CF9:
 			port_cf9_safe = true;
 			/* Fall through */
 
-		case BOOT_CF9_SAFE:
+		case BOOT_CF9_COND:
 			if (port_cf9_safe) {
-				u8 reboot_code = reboot_mode == REBOOT_WARM ?  0x06 : 0x0E;
+				u8 reboot_code = reboot_mode == REBOOT_WARM ?
+					0x06 : 0x0E;
 				u8 cf9 = inb(0xcf9) & ~reboot_code;
 				outb(cf9|2, 0xcf9); /* Request hard reset */
 				udelay(50);
@@ -586,14 +548,6 @@ static void native_machine_emergency_restart(void)
 				outb(cf9|reboot_code, 0xcf9);
 				udelay(50);
 			}
-			reboot_type = BOOT_TRIPLE;
-			break;
-
-		case BOOT_TRIPLE:
-			load_idt(&no_idt);
-			__asm__ __volatile__("int3");
-
-			/* We're probably dead after this, but... */
 			reboot_type = BOOT_KBD;
 			break;
 		}
@@ -681,7 +635,7 @@ struct machine_ops machine_ops = {
 	.emergency_restart = native_machine_emergency_restart,
 	.restart = native_machine_restart,
 	.halt = native_machine_halt,
-#ifdef CONFIG_KEXEC_CORE
+#ifdef CONFIG_KEXEC
 	.crash_shutdown = native_machine_crash_shutdown,
 #endif
 };
@@ -711,7 +665,7 @@ void machine_halt(void)
 	machine_ops.halt();
 }
 
-#ifdef CONFIG_KEXEC_CORE
+#ifdef CONFIG_KEXEC
 void machine_crash_shutdown(struct pt_regs *regs)
 {
 	machine_ops.crash_shutdown(regs);

@@ -1,8 +1,3 @@
-/*
- * This dts file supports Dalmore A04.
- * Other board revisions are not supported
- */
-
 /dts-v1/;
 
 #include <dt-bindings/input/input.h>
@@ -15,7 +10,6 @@
 	aliases {
 		rtc0 = "/i2c@7000d000/tps65913@58";
 		rtc1 = "/rtc@7000e000";
-		serial0 = &uartd;
 	};
 
 	memory {
@@ -26,7 +20,6 @@
 		hdmi@54280000 {
 			status = "okay";
 
-			hdmi-supply = <&vdd_5v0_hdmi>;
 			vdd-supply = <&vdd_hdmi_reg>;
 			pll-supply = <&palmas_smps3_reg>;
 
@@ -37,8 +30,6 @@
 
 		dsi@54300000 {
 			status = "okay";
-
-			avdd-dsi-csi-supply = <&avdd_1v2_reg>;
 
 			panel@0 {
 				compatible = "panasonic,vvx10f004b00",
@@ -724,6 +715,7 @@
 				nvidia,pins = "drive_sdio1";
 				nvidia,high-speed-mode = <TEGRA_PIN_ENABLE>;
 				nvidia,schmitt = <TEGRA_PIN_DISABLE>;
+				nvidia,low-power-mode = <TEGRA_PIN_LP_DRIVE_DIV_1>;
 				nvidia,pull-down-strength = <36>;
 				nvidia,pull-up-strength = <20>;
 				nvidia,slew-rate-rising = <TEGRA_PIN_SLEW_RATE_SLOW>;
@@ -733,6 +725,7 @@
 				nvidia,pins = "drive_sdio3";
 				nvidia,high-speed-mode = <TEGRA_PIN_ENABLE>;
 				nvidia,schmitt = <TEGRA_PIN_DISABLE>;
+				nvidia,low-power-mode = <TEGRA_PIN_LP_DRIVE_DIV_1>;
 				nvidia,pull-down-strength = <22>;
 				nvidia,pull-up-strength = <36>;
 				nvidia,slew-rate-rising = <TEGRA_PIN_SLEW_RATE_FASTEST>;
@@ -742,10 +735,12 @@
 				nvidia,pins = "drive_gma";
 				nvidia,high-speed-mode = <TEGRA_PIN_ENABLE>;
 				nvidia,schmitt = <TEGRA_PIN_DISABLE>;
+				nvidia,low-power-mode = <TEGRA_PIN_LP_DRIVE_DIV_1>;
 				nvidia,pull-down-strength = <2>;
 				nvidia,pull-up-strength = <1>;
 				nvidia,slew-rate-rising = <TEGRA_PIN_SLEW_RATE_FASTEST>;
 				nvidia,slew-rate-falling = <TEGRA_PIN_SLEW_RATE_FASTEST>;
+				nvidia,drive-type = <1>;
 			};
 		};
 	};
@@ -986,10 +981,12 @@
 						regulator-max-microvolt = <2800000>;
 					};
 
-					avdd_1v2_reg: ldo3 {
+					ldo3 {
 						regulator-name = "avdd-dsi-csi";
 						regulator-min-microvolt = <1200000>;
 						regulator-max-microvolt = <1200000>;
+						regulator-always-on;
+						regulator-boot-on;
 					};
 
 					ldo4 {
@@ -1107,7 +1104,6 @@
 
 	sdhci@78000400 {
 		cd-gpios = <&gpio TEGRA_GPIO(V, 2) GPIO_ACTIVE_LOW>;
-		wp-gpios = <&gpio TEGRA_GPIO(Q, 4) GPIO_ACTIVE_HIGH>;
 		bus-width = <4>;
 		status = "okay";
 	};
@@ -1234,6 +1230,8 @@
 			regulator-name = "vdd_hdmi_5v0";
 			regulator-min-microvolt = <5000000>;
 			regulator-max-microvolt = <5000000>;
+			enable-active-high;
+			gpio = <&gpio TEGRA_GPIO(K, 1) GPIO_ACTIVE_HIGH>;
 			vin-supply = <&tps65090_dcdc1_reg>;
 		};
 
@@ -1245,17 +1243,6 @@
 			regulator-max-microvolt = <1800000>;
 			enable-active-high;
 			gpio = <&palmas_gpio 6 0>;
-		};
-
-		vdd_5v0_hdmi: regulator@7 {
-			compatible = "regulator-fixed";
-			reg = <7>;
-			regulator-name = "VDD_5V0_HDMI_CON";
-			regulator-min-microvolt = <5000000>;
-			regulator-max-microvolt = <5000000>;
-			gpio = <&gpio TEGRA_GPIO(K, 1) GPIO_ACTIVE_HIGH>;
-			enable-active-high;
-			vin-supply = <&tps65090_dcdc1_reg>;
 		};
 	};
 

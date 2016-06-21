@@ -129,6 +129,16 @@ static inline u32 usbhs_read(void __iomem *base, u32 reg)
 	return readl_relaxed(base + reg);
 }
 
+static inline void usbhs_writeb(void __iomem *base, u8 reg, u8 val)
+{
+	writeb_relaxed(val, base + reg);
+}
+
+static inline u8 usbhs_readb(void __iomem *base, u8 reg)
+{
+	return readb_relaxed(base + reg);
+}
+
 /*-------------------------------------------------------------------------*/
 
 /**
@@ -547,7 +557,7 @@ static int usbhs_omap_get_dt_pdata(struct device *dev,
 	return 0;
 }
 
-static const struct of_device_id usbhs_child_match_table[] = {
+static struct of_device_id usbhs_child_match_table[] = {
 	{ .compatible = "ti,omap-ehci", },
 	{ .compatible = "ti,omap-ohci", },
 	{ }
@@ -637,7 +647,7 @@ static int usbhs_omap_probe(struct platform_device *pdev)
 		default:
 			omap->nports = OMAP3_HS_USB_PORTS;
 			dev_dbg(dev,
-			 "USB HOST Rev:0x%x not recognized, assuming %d ports\n",
+			 "USB HOST Rev:0x%d not recognized, assuming %d ports\n",
 			 omap->usbhs_rev, omap->nports);
 			break;
 		}
@@ -655,78 +665,55 @@ static int usbhs_omap_probe(struct platform_device *pdev)
 		goto err_mem;
 	}
 
-	/* Set all clocks as invalid to begin with */
-	omap->ehci_logic_fck = ERR_PTR(-ENODEV);
-	omap->init_60m_fclk = ERR_PTR(-ENODEV);
-	omap->utmi_p1_gfclk = ERR_PTR(-ENODEV);
-	omap->utmi_p2_gfclk = ERR_PTR(-ENODEV);
-	omap->xclk60mhsp1_ck = ERR_PTR(-ENODEV);
-	omap->xclk60mhsp2_ck = ERR_PTR(-ENODEV);
-
+	need_logic_fck = false;
 	for (i = 0; i < omap->nports; i++) {
-		omap->utmi_clk[i] = ERR_PTR(-ENODEV);
-		omap->hsic480m_clk[i] = ERR_PTR(-ENODEV);
-		omap->hsic60m_clk[i] = ERR_PTR(-ENODEV);
-	}
-
-	/* for OMAP3 i.e. USBHS REV1 */
-	if (omap->usbhs_rev == OMAP_USBHS_REV1) {
-		need_logic_fck = false;
-		for (i = 0; i < omap->nports; i++) {
-			if (is_ehci_phy_mode(pdata->port_mode[i]) ||
-			    is_ehci_tll_mode(pdata->port_mode[i]) ||
-			    is_ehci_hsic_mode(pdata->port_mode[i]))
-
+		if (is_ehci_phy_mode(i) || is_ehci_tll_mode(i) ||
+			is_ehci_hsic_mode(i))
 				need_logic_fck |= true;
-		}
-
-		if (need_logic_fck) {
-			omap->ehci_logic_fck = devm_clk_get(dev,
-							    "usbhost_120m_fck");
-			if (IS_ERR(omap->ehci_logic_fck)) {
-				ret = PTR_ERR(omap->ehci_logic_fck);
-				dev_err(dev, "usbhost_120m_fck failed:%d\n",
-					ret);
-				goto err_mem;
-			}
-		}
-		goto initialize;
 	}
 
-	/* for OMAP4+ i.e. USBHS REV2+ */
-	omap->utmi_p1_gfclk = devm_clk_get(dev, "utmi_p1_gfclk");
+	omap->ehci_logic_fck = ERR_PTR(-EINVAL);
+	if (need_logic_fck) {
+		omap->ehci_logic_fck = clk_get(dev, "ehci_logic_fck");
+		if (IS_ERR(omap->ehci_logic_fck)) {
+			ret = PTR_ERR(omap->ehci_logic_fck);
+			dev_dbg(dev, "ehci_logic_fck failed:%d\n", ret);
+		}
+	}
+
+	omap->utmi_p1_gfclk = clk_get(dev, "utmi_p1_gfclk");
 	if (IS_ERR(omap->utmi_p1_gfclk)) {
 		ret = PTR_ERR(omap->utmi_p1_gfclk);
 		dev_err(dev, "utmi_p1_gfclk failed error:%d\n", ret);
-		goto err_mem;
+		goto err_p1_gfclk;
 	}
 
-	omap->utmi_p2_gfclk = devm_clk_get(dev, "utmi_p2_gfclk");
+	omap->utmi_p2_gfclk = clk_get(dev, "utmi_p2_gfclk");
 	if (IS_ERR(omap->utmi_p2_gfclk)) {
 		ret = PTR_ERR(omap->utmi_p2_gfclk);
 		dev_err(dev, "utmi_p2_gfclk failed error:%d\n", ret);
-		goto err_mem;
+		goto err_p2_gfclk;
 	}
 
-	omap->xclk60mhsp1_ck = devm_clk_get(dev, "refclk_60m_ext_p1");
+	omap->xclk60mhsp1_ck = clk_get(dev, "xclk60mhsp1_ck");
 	if (IS_ERR(omap->xclk60mhsp1_ck)) {
 		ret = PTR_ERR(omap->xclk60mhsp1_ck);
-		dev_err(dev, "refclk_60m_ext_p1 failed error:%d\n", ret);
-		goto err_mem;
+		dev_err(dev, "xclk60mhsp1_ck failed error:%d\n", ret);
+		goto err_xclk60mhsp1;
 	}
 
-	omap->xclk60mhsp2_ck = devm_clk_get(dev, "refclk_60m_ext_p2");
+	omap->xclk60mhsp2_ck = clk_get(dev, "xclk60mhsp2_ck");
 	if (IS_ERR(omap->xclk60mhsp2_ck)) {
 		ret = PTR_ERR(omap->xclk60mhsp2_ck);
-		dev_err(dev, "refclk_60m_ext_p2 failed error:%d\n", ret);
-		goto err_mem;
+		dev_err(dev, "xclk60mhsp2_ck failed error:%d\n", ret);
+		goto err_xclk60mhsp2;
 	}
 
-	omap->init_60m_fclk = devm_clk_get(dev, "refclk_60m_int");
+	omap->init_60m_fclk = clk_get(dev, "init_60m_fclk");
 	if (IS_ERR(omap->init_60m_fclk)) {
 		ret = PTR_ERR(omap->init_60m_fclk);
-		dev_err(dev, "refclk_60m_int failed error:%d\n", ret);
-		goto err_mem;
+		dev_err(dev, "init_60m_fclk failed error:%d\n", ret);
+		goto err_init60m;
 	}
 
 	for (i = 0; i < omap->nports; i++) {
@@ -740,72 +727,55 @@ static int usbhs_omap_probe(struct platform_device *pdev)
 		 * platforms have all clocks and we can function without
 		 * them
 		 */
-		omap->utmi_clk[i] = devm_clk_get(dev, clkname);
-		if (IS_ERR(omap->utmi_clk[i])) {
-			ret = PTR_ERR(omap->utmi_clk[i]);
-			dev_err(dev, "Failed to get clock : %s : %d\n",
-				clkname, ret);
-			goto err_mem;
-		}
+		omap->utmi_clk[i] = clk_get(dev, clkname);
+		if (IS_ERR(omap->utmi_clk[i]))
+			dev_dbg(dev, "Failed to get clock : %s : %ld\n",
+				clkname, PTR_ERR(omap->utmi_clk[i]));
 
 		snprintf(clkname, sizeof(clkname),
 				"usb_host_hs_hsic480m_p%d_clk", i + 1);
-		omap->hsic480m_clk[i] = devm_clk_get(dev, clkname);
-		if (IS_ERR(omap->hsic480m_clk[i])) {
-			ret = PTR_ERR(omap->hsic480m_clk[i]);
-			dev_err(dev, "Failed to get clock : %s : %d\n",
-				clkname, ret);
-			goto err_mem;
-		}
+		omap->hsic480m_clk[i] = clk_get(dev, clkname);
+		if (IS_ERR(omap->hsic480m_clk[i]))
+			dev_dbg(dev, "Failed to get clock : %s : %ld\n",
+				clkname, PTR_ERR(omap->hsic480m_clk[i]));
 
 		snprintf(clkname, sizeof(clkname),
 				"usb_host_hs_hsic60m_p%d_clk", i + 1);
-		omap->hsic60m_clk[i] = devm_clk_get(dev, clkname);
-		if (IS_ERR(omap->hsic60m_clk[i])) {
-			ret = PTR_ERR(omap->hsic60m_clk[i]);
-			dev_err(dev, "Failed to get clock : %s : %d\n",
-				clkname, ret);
-			goto err_mem;
-		}
+		omap->hsic60m_clk[i] = clk_get(dev, clkname);
+		if (IS_ERR(omap->hsic60m_clk[i]))
+			dev_dbg(dev, "Failed to get clock : %s : %ld\n",
+				clkname, PTR_ERR(omap->hsic60m_clk[i]));
 	}
 
 	if (is_ehci_phy_mode(pdata->port_mode[0])) {
+		/* for OMAP3, clk_set_parent fails */
 		ret = clk_set_parent(omap->utmi_p1_gfclk,
 					omap->xclk60mhsp1_ck);
-		if (ret != 0) {
-			dev_err(dev, "xclk60mhsp1_ck set parent failed: %d\n",
-				ret);
-			goto err_mem;
-		}
+		if (ret != 0)
+			dev_dbg(dev, "xclk60mhsp1_ck set parent failed: %d\n",
+					ret);
 	} else if (is_ehci_tll_mode(pdata->port_mode[0])) {
 		ret = clk_set_parent(omap->utmi_p1_gfclk,
 					omap->init_60m_fclk);
-		if (ret != 0) {
-			dev_err(dev, "P0 init_60m_fclk set parent failed: %d\n",
-				ret);
-			goto err_mem;
-		}
+		if (ret != 0)
+			dev_dbg(dev, "P0 init_60m_fclk set parent failed: %d\n",
+					ret);
 	}
 
 	if (is_ehci_phy_mode(pdata->port_mode[1])) {
 		ret = clk_set_parent(omap->utmi_p2_gfclk,
 					omap->xclk60mhsp2_ck);
-		if (ret != 0) {
-			dev_err(dev, "xclk60mhsp2_ck set parent failed: %d\n",
-				ret);
-			goto err_mem;
-		}
+		if (ret != 0)
+			dev_dbg(dev, "xclk60mhsp2_ck set parent failed: %d\n",
+					ret);
 	} else if (is_ehci_tll_mode(pdata->port_mode[1])) {
 		ret = clk_set_parent(omap->utmi_p2_gfclk,
 						omap->init_60m_fclk);
-		if (ret != 0) {
-			dev_err(dev, "P1 init_60m_fclk set parent failed: %d\n",
-				ret);
-			goto err_mem;
-		}
+		if (ret != 0)
+			dev_dbg(dev, "P1 init_60m_fclk set parent failed: %d\n",
+					ret);
 	}
 
-initialize:
 	omap_usbhs_init(dev);
 
 	if (dev->of_node) {
@@ -814,7 +784,7 @@ initialize:
 
 		if (ret) {
 			dev_err(dev, "Failed to create DT children: %d\n", ret);
-			goto err_mem;
+			goto err_alloc;
 		}
 
 	} else {
@@ -822,11 +792,39 @@ initialize:
 		if (ret) {
 			dev_err(dev, "omap_usbhs_alloc_children failed: %d\n",
 						ret);
-			goto err_mem;
+			goto err_alloc;
 		}
 	}
 
 	return 0;
+
+err_alloc:
+	for (i = 0; i < omap->nports; i++) {
+		if (!IS_ERR(omap->utmi_clk[i]))
+			clk_put(omap->utmi_clk[i]);
+		if (!IS_ERR(omap->hsic60m_clk[i]))
+			clk_put(omap->hsic60m_clk[i]);
+		if (!IS_ERR(omap->hsic480m_clk[i]))
+			clk_put(omap->hsic480m_clk[i]);
+	}
+
+	clk_put(omap->init_60m_fclk);
+
+err_init60m:
+	clk_put(omap->xclk60mhsp2_ck);
+
+err_xclk60mhsp2:
+	clk_put(omap->xclk60mhsp1_ck);
+
+err_xclk60mhsp1:
+	clk_put(omap->utmi_p2_gfclk);
+
+err_p2_gfclk:
+	clk_put(omap->utmi_p1_gfclk);
+
+err_p1_gfclk:
+	if (!IS_ERR(omap->ehci_logic_fck))
+		clk_put(omap->ehci_logic_fck);
 
 err_mem:
 	pm_runtime_disable(dev);
@@ -849,6 +847,27 @@ static int usbhs_omap_remove_child(struct device *dev, void *data)
  */
 static int usbhs_omap_remove(struct platform_device *pdev)
 {
+	struct usbhs_hcd_omap *omap = platform_get_drvdata(pdev);
+	int i;
+
+	for (i = 0; i < omap->nports; i++) {
+		if (!IS_ERR(omap->utmi_clk[i]))
+			clk_put(omap->utmi_clk[i]);
+		if (!IS_ERR(omap->hsic60m_clk[i]))
+			clk_put(omap->hsic60m_clk[i]);
+		if (!IS_ERR(omap->hsic480m_clk[i]))
+			clk_put(omap->hsic480m_clk[i]);
+	}
+
+	clk_put(omap->init_60m_fclk);
+	clk_put(omap->utmi_p1_gfclk);
+	clk_put(omap->utmi_p2_gfclk);
+	clk_put(omap->xclk60mhsp2_ck);
+	clk_put(omap->xclk60mhsp1_ck);
+
+	if (!IS_ERR(omap->ehci_logic_fck))
+		clk_put(omap->ehci_logic_fck);
+
 	pm_runtime_disable(&pdev->dev);
 
 	/* remove children */
@@ -872,6 +891,7 @@ MODULE_DEVICE_TABLE(of, usbhs_omap_dt_ids);
 static struct platform_driver usbhs_omap_driver = {
 	.driver = {
 		.name		= (char *)usbhs_driver_name,
+		.owner		= THIS_MODULE,
 		.pm		= &usbhsomap_dev_pm_ops,
 		.of_match_table = usbhs_omap_dt_ids,
 	},

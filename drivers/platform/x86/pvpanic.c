@@ -70,7 +70,6 @@ pvpanic_panic_notify(struct notifier_block *nb, unsigned long code,
 
 static struct notifier_block pvpanic_panic_nb = {
 	.notifier_call = pvpanic_panic_notify,
-	.priority = 1, /* let this called before broken drm_fb_helper */
 };
 
 
@@ -92,13 +91,13 @@ pvpanic_walk_resources(struct acpi_resource *res, void *context)
 
 static int pvpanic_add(struct acpi_device *device)
 {
-	int ret;
+	acpi_status status;
+	u64 ret;
 
-	ret = acpi_bus_get_status(device);
-	if (ret < 0)
-		return ret;
+	status = acpi_evaluate_integer(device->handle, "_STA", NULL,
+				       &ret);
 
-	if (!device->status.enabled || !device->status.functional)
+	if (ACPI_FAILURE(status) || (ret & 0x0B) != 0x0B)
 		return -ENODEV;
 
 	acpi_walk_resources(device->handle, METHOD_NAME__CRS,

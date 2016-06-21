@@ -22,15 +22,12 @@
 #include <linux/memblock.h>
 #include <linux/dma-contiguous.h>
 #include <linux/sizes.h>
-#include <linux/stop_machine.h>
 
-#include <asm/cp15.h>
 #include <asm/mach-types.h>
 #include <asm/memblock.h>
 #include <asm/prom.h>
 #include <asm/sections.h>
 #include <asm/setup.h>
-#include <asm/system_info.h>
 #include <asm/tlb.h>
 #include <asm/fixmap.h>
 
@@ -38,14 +35,6 @@
 #include <asm/mach/map.h>
 
 #include "mm.h"
-
-#ifdef CONFIG_CPU_CP15_MMU
-unsigned long __init __clear_cr(unsigned long mask)
-{
-	cr_alignment = cr_alignment & ~mask;
-	return cr_alignment;
-}
-#endif
 
 static phys_addr_t phys_initrd_start __initdata = 0;
 static unsigned long phys_initrd_size __initdata = 0;
@@ -69,7 +58,7 @@ early_param("initrd", early_initrd);
 
 static int __init parse_tag_initrd(const struct tag *tag)
 {
-	pr_warn("ATAG_INITRD is deprecated; "
+	printk(KERN_WARNING "ATAG_INITRD is deprecated; "
 		"please update your bootloader.\n");
 	phys_initrd_start = __virt_to_phys(tag->u.initrd.start);
 	phys_initrd_size = tag->u.initrd.size;
@@ -87,12 +76,70 @@ static int __init parse_tag_initrd2(const struct tag *tag)
 
 __tagtable(ATAG_INITRD2, parse_tag_initrd2);
 
+/*
+ * This keeps memory configuration data used by a couple memory
+ * initialization functions, as well as show_mem() for the skipping
+ * of holes in the memory map.  It is populated by arm_add_memory().
+ */
+struct meminfo meminfo;
+
+void show_mem(unsigned int filter)
+{
+	int free = 0, total = 0, reserved = 0;
+	int shared = 0, cached = 0, slab = 0, i;
+	struct meminfo * mi = &meminfo;
+
+	printk("Mem-info:\n");
+	show_free_areas(filter);
+
+	for_each_bank (i, mi) {
+		struct membank *bank = &mi->bank[i];
+		unsigned int pfn1, pfn2;
+		struct page *page, *end;
+
+		pfn1 = bank_pfn_start(bank);
+		pfn2 = bank_pfn_end(bank);
+
+		page = pfn_to_page(pfn1);
+		end  = pfn_to_page(pfn2 - 1) + 1;
+
+		do {
+			total++;
+			if (PageReserved(page))
+				reserved++;
+			else if (PageSwapCache(page))
+				cached++;
+			else if (PageSlab(page))
+				slab++;
+			else if (!page_count(page))
+				free++;
+			else
+				shared += page_count(page) - 1;
+			page++;
+		} while (page < end);
+	}
+
+	printk("%d pages of RAM\n", total);
+	printk("%d free pages\n", free);
+	printk("%d reserved pages\n", reserved);
+	printk("%d slab pages\n", slab);
+	printk("%d pages shared\n", shared);
+	printk("%d pages swap cached\n", cached);
+}
+
 static void __init find_limits(unsigned long *min, unsigned long *max_low,
 			       unsigned long *max_high)
 {
-	*max_low = PFN_DOWN(memblock_get_current_limit());
-	*min = PFN_UP(memblock_start_of_DRAM());
-	*max_high = PFN_DOWN(memblock_end_of_DRAM());
+	struct meminfo *mi = &meminfo;
+	int i;
+
+	/* This assumes the meminfo array is properly sorted */
+	*min = bank_pfn_start(&mi->bank[0]);
+	for_each_bank (i, mi)
+		if (mi->bank[i].highmem)
+				break;
+	*max_low = bank_pfn_end(&mi->bank[i - 1]);
+	*max_high = bank_pfn_end(&mi->bank[mi->nr_banks - 1]);
 }
 
 #ifdef CONFIG_ZONE_DMA
@@ -227,8 +274,14 @@ phys_addr_t __init arm_memblock_steal(phys_addr_t size, phys_addr_t align)
 	return phys;
 }
 
-void __init arm_memblock_init(const struct machine_desc *mdesc)
+void __init arm_memblock_init(struct meminfo *mi,
+	const struct machine_desc *mdesc)
 {
+	int i;
+
+	for (i = 0; i < mi->nr_banks; i++)
+		memblock_add(mi->bank[i].start, mi->bank[i].size);
+
 	/* Register the kernel text, kernel data and initrd with memblock. */
 #ifdef CONFIG_XIP_KERNEL
 	memblock_reserve(__pa(_sdata), _end - _sdata);
@@ -264,16 +317,17 @@ void __init arm_memblock_init(const struct machine_desc *mdesc)
 #endif
 
 	arm_mm_memblock_reserve();
+	arm_dt_memblock_reserve();
 
 	/* reserve any platform specific memblock areas */
 	if (mdesc->reserve)
 		mdesc->reserve();
 
-	early_init_fdt_reserve_self();
-	early_init_fdt_scan_reserved_mem();
-
-	/* reserve memory for DMA contiguous allocations */
-	dma_contiguous_reserve(arm_dma_limit);
+	/*
+	 * reserve memory for DMA contigouos allocations,
+	 * must come from DMA area inside low memory
+	 */
+	dma_contiguous_reserve(min(arm_dma_limit, arm_lowmem_limit));
 
 	arm_memblock_steal_permitted = false;
 	memblock_dump_all();
@@ -287,9 +341,6 @@ void __init bootmem_init(void)
 	max_low = max_high = 0;
 
 	find_limits(&min, &max_low, &max_high);
-
-	early_memtest((phys_addr_t)min << PAGE_SHIFT,
-		      (phys_addr_t)max_low << PAGE_SHIFT);
 
 	/*
 	 * Sparsemem tries to allocate bootmem in memory_present(),
@@ -360,53 +411,54 @@ free_memmap(unsigned long start_pfn, unsigned long end_pfn)
 /*
  * The mem_map array can get very big.  Free the unused area of the memory map.
  */
-static void __init free_unused_memmap(void)
+static void __init free_unused_memmap(struct meminfo *mi)
 {
-	unsigned long start, prev_end = 0;
-	struct memblock_region *reg;
+	unsigned long bank_start, prev_bank_end = 0;
+	unsigned int i;
 
 	/*
 	 * This relies on each bank being in address order.
 	 * The banks are sorted previously in bootmem_init().
 	 */
-	for_each_memblock(memory, reg) {
-		start = memblock_region_memory_base_pfn(reg);
+	for_each_bank(i, mi) {
+		struct membank *bank = &mi->bank[i];
+
+		bank_start = bank_pfn_start(bank);
 
 #ifdef CONFIG_SPARSEMEM
 		/*
 		 * Take care not to free memmap entries that don't exist
 		 * due to SPARSEMEM sections which aren't present.
 		 */
-		start = min(start,
-				 ALIGN(prev_end, PAGES_PER_SECTION));
+		bank_start = min(bank_start,
+				 ALIGN(prev_bank_end, PAGES_PER_SECTION));
 #else
 		/*
 		 * Align down here since the VM subsystem insists that the
 		 * memmap entries are valid from the bank start aligned to
 		 * MAX_ORDER_NR_PAGES.
 		 */
-		start = round_down(start, MAX_ORDER_NR_PAGES);
+		bank_start = round_down(bank_start, MAX_ORDER_NR_PAGES);
 #endif
 		/*
 		 * If we had a previous bank, and there is a space
 		 * between the current bank and the previous, free it.
 		 */
-		if (prev_end && prev_end < start)
-			free_memmap(prev_end, start);
+		if (prev_bank_end && prev_bank_end < bank_start)
+			free_memmap(prev_bank_end, bank_start);
 
 		/*
 		 * Align up here since the VM subsystem insists that the
 		 * memmap entries are valid from the bank end aligned to
 		 * MAX_ORDER_NR_PAGES.
 		 */
-		prev_end = ALIGN(memblock_region_memory_end_pfn(reg),
-				 MAX_ORDER_NR_PAGES);
+		prev_bank_end = ALIGN(bank_pfn_end(bank), MAX_ORDER_NR_PAGES);
 	}
 
 #ifdef CONFIG_SPARSEMEM
-	if (!IS_ALIGNED(prev_end, PAGES_PER_SECTION))
-		free_memmap(prev_end,
-			    ALIGN(prev_end, PAGES_PER_SECTION));
+	if (!IS_ALIGNED(prev_bank_end, PAGES_PER_SECTION))
+		free_memmap(prev_bank_end,
+			    ALIGN(prev_bank_end, PAGES_PER_SECTION));
 #endif
 }
 
@@ -482,7 +534,7 @@ void __init mem_init(void)
 	set_max_mapnr(pfn_to_page(max_pfn) - mem_map);
 
 	/* this will put all unused low memory onto the freelists */
-	free_unused_memmap();
+	free_unused_memmap(&meminfo);
 	free_all_bootmem();
 
 #ifdef CONFIG_SA1111
@@ -498,7 +550,7 @@ void __init mem_init(void)
 #define MLM(b, t) b, t, ((t) - (b)) >> 20
 #define MLK_ROUNDUP(b, t) b, t, DIV_ROUND_UP(((t) - (b)), SZ_1K)
 
-	pr_notice("Virtual kernel memory layout:\n"
+	printk(KERN_NOTICE "Virtual kernel memory layout:\n"
 			"    vector  : 0x%08lx - 0x%08lx   (%4ld kB)\n"
 #ifdef CONFIG_HAVE_TCM
 			"    DTCM    : 0x%08lx - 0x%08lx   (%4ld kB)\n"
@@ -513,10 +565,10 @@ void __init mem_init(void)
 #ifdef CONFIG_MODULES
 			"    modules : 0x%08lx - 0x%08lx   (%4ld MB)\n"
 #endif
-			"      .text : 0x%p" " - 0x%p" "   (%4td kB)\n"
-			"      .init : 0x%p" " - 0x%p" "   (%4td kB)\n"
-			"      .data : 0x%p" " - 0x%p" "   (%4td kB)\n"
-			"       .bss : 0x%p" " - 0x%p" "   (%4td kB)\n",
+			"      .text : 0x%p" " - 0x%p" "   (%4d kB)\n"
+			"      .init : 0x%p" " - 0x%p" "   (%4d kB)\n"
+			"      .data : 0x%p" " - 0x%p" "   (%4d kB)\n"
+			"       .bss : 0x%p" " - 0x%p" "   (%4d kB)\n",
 
 			MLK(UL(CONFIG_VECTORS_BASE), UL(CONFIG_VECTORS_BASE) +
 				(PAGE_SIZE)),
@@ -524,7 +576,7 @@ void __init mem_init(void)
 			MLK(DTCM_OFFSET, (unsigned long) dtcm_end),
 			MLK(ITCM_OFFSET, (unsigned long) itcm_end),
 #endif
-			MLK(FIXADDR_START, FIXADDR_END),
+			MLK(FIXADDR_START, FIXADDR_TOP),
 			MLM(VMALLOC_START, VMALLOC_END),
 			MLM(PAGE_OFFSET, (unsigned long)high_memory),
 #ifdef CONFIG_HIGHMEM
@@ -569,176 +621,7 @@ void __init mem_init(void)
 	}
 }
 
-#ifdef CONFIG_ARM_KERNMEM_PERMS
-struct section_perm {
-	unsigned long start;
-	unsigned long end;
-	pmdval_t mask;
-	pmdval_t prot;
-	pmdval_t clear;
-};
-
-static struct section_perm nx_perms[] = {
-	/* Make pages tables, etc before _stext RW (set NX). */
-	{
-		.start	= PAGE_OFFSET,
-		.end	= (unsigned long)_stext,
-		.mask	= ~PMD_SECT_XN,
-		.prot	= PMD_SECT_XN,
-	},
-	/* Make init RW (set NX). */
-	{
-		.start	= (unsigned long)__init_begin,
-		.end	= (unsigned long)_sdata,
-		.mask	= ~PMD_SECT_XN,
-		.prot	= PMD_SECT_XN,
-	},
-#ifdef CONFIG_DEBUG_RODATA
-	/* Make rodata NX (set RO in ro_perms below). */
-	{
-		.start  = (unsigned long)__start_rodata,
-		.end    = (unsigned long)__init_begin,
-		.mask   = ~PMD_SECT_XN,
-		.prot   = PMD_SECT_XN,
-	},
-#endif
-};
-
-#ifdef CONFIG_DEBUG_RODATA
-static struct section_perm ro_perms[] = {
-	/* Make kernel code and rodata RX (set RO). */
-	{
-		.start  = (unsigned long)_stext,
-		.end    = (unsigned long)__init_begin,
-#ifdef CONFIG_ARM_LPAE
-		.mask   = ~L_PMD_SECT_RDONLY,
-		.prot   = L_PMD_SECT_RDONLY,
-#else
-		.mask   = ~(PMD_SECT_APX | PMD_SECT_AP_WRITE),
-		.prot   = PMD_SECT_APX | PMD_SECT_AP_WRITE,
-		.clear  = PMD_SECT_AP_WRITE,
-#endif
-	},
-};
-#endif
-
-/*
- * Updates section permissions only for the current mm (sections are
- * copied into each mm). During startup, this is the init_mm. Is only
- * safe to be called with preemption disabled, as under stop_machine().
- */
-static inline void section_update(unsigned long addr, pmdval_t mask,
-				  pmdval_t prot, struct mm_struct *mm)
-{
-	pmd_t *pmd;
-
-	pmd = pmd_offset(pud_offset(pgd_offset(mm, addr), addr), addr);
-
-#ifdef CONFIG_ARM_LPAE
-	pmd[0] = __pmd((pmd_val(pmd[0]) & mask) | prot);
-#else
-	if (addr & SECTION_SIZE)
-		pmd[1] = __pmd((pmd_val(pmd[1]) & mask) | prot);
-	else
-		pmd[0] = __pmd((pmd_val(pmd[0]) & mask) | prot);
-#endif
-	flush_pmd_entry(pmd);
-	local_flush_tlb_kernel_range(addr, addr + SECTION_SIZE);
-}
-
-/* Make sure extended page tables are in use. */
-static inline bool arch_has_strict_perms(void)
-{
-	if (cpu_architecture() < CPU_ARCH_ARMv6)
-		return false;
-
-	return !!(get_cr() & CR_XP);
-}
-
-void set_section_perms(struct section_perm *perms, int n, bool set,
-			struct mm_struct *mm)
-{
-	size_t i;
-	unsigned long addr;
-
-	if (!arch_has_strict_perms())
-		return;
-
-	for (i = 0; i < n; i++) {
-		if (!IS_ALIGNED(perms[i].start, SECTION_SIZE) ||
-		    !IS_ALIGNED(perms[i].end, SECTION_SIZE)) {
-			pr_err("BUG: section %lx-%lx not aligned to %lx\n",
-				perms[i].start, perms[i].end,
-				SECTION_SIZE);
-			continue;
-		}
-
-		for (addr = perms[i].start;
-		     addr < perms[i].end;
-		     addr += SECTION_SIZE)
-			section_update(addr, perms[i].mask,
-				set ? perms[i].prot : perms[i].clear, mm);
-	}
-
-}
-
-static void update_sections_early(struct section_perm perms[], int n)
-{
-	struct task_struct *t, *s;
-
-	read_lock(&tasklist_lock);
-	for_each_process(t) {
-		if (t->flags & PF_KTHREAD)
-			continue;
-		for_each_thread(t, s)
-			set_section_perms(perms, n, true, s->mm);
-	}
-	read_unlock(&tasklist_lock);
-	set_section_perms(perms, n, true, current->active_mm);
-	set_section_perms(perms, n, true, &init_mm);
-}
-
-int __fix_kernmem_perms(void *unused)
-{
-	update_sections_early(nx_perms, ARRAY_SIZE(nx_perms));
-	return 0;
-}
-
-void fix_kernmem_perms(void)
-{
-	stop_machine(__fix_kernmem_perms, NULL, NULL);
-}
-
-#ifdef CONFIG_DEBUG_RODATA
-int __mark_rodata_ro(void *unused)
-{
-	update_sections_early(ro_perms, ARRAY_SIZE(ro_perms));
-	return 0;
-}
-
-void mark_rodata_ro(void)
-{
-	stop_machine(__mark_rodata_ro, NULL, NULL);
-}
-
-void set_kernel_text_rw(void)
-{
-	set_section_perms(ro_perms, ARRAY_SIZE(ro_perms), false,
-				current->active_mm);
-}
-
-void set_kernel_text_ro(void)
-{
-	set_section_perms(ro_perms, ARRAY_SIZE(ro_perms), true,
-				current->active_mm);
-}
-#endif /* CONFIG_DEBUG_RODATA */
-
-#else
-static inline void fix_kernmem_perms(void) { }
-#endif /* CONFIG_ARM_KERNMEM_PERMS */
-
-void free_tcmmem(void)
+void free_initmem(void)
 {
 #ifdef CONFIG_HAVE_TCM
 	extern char __tcm_start, __tcm_end;
@@ -746,12 +629,6 @@ void free_tcmmem(void)
 	poison_init_mem(&__tcm_start, &__tcm_end - &__tcm_start);
 	free_reserved_area(&__tcm_start, &__tcm_end, -1, "TCM link");
 #endif
-}
-
-void free_initmem(void)
-{
-	fix_kernmem_perms();
-	free_tcmmem();
 
 	poison_init_mem(__init_begin, __init_end - __init_begin);
 	if (!machine_is_integrator() && !machine_is_cintegrator())
@@ -765,11 +642,6 @@ static int keep_initrd;
 void free_initrd_mem(unsigned long start, unsigned long end)
 {
 	if (!keep_initrd) {
-		if (start == initrd_start)
-			start = round_down(start, PAGE_SIZE);
-		if (end == initrd_end)
-			end = round_up(end, PAGE_SIZE);
-
 		poison_init_mem((void *)start, PAGE_ALIGN(end) - start);
 		free_reserved_area((void *)start, (void *)end, -1, "initrd");
 	}

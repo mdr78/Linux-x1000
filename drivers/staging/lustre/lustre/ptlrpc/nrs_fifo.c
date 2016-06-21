@@ -47,9 +47,9 @@
  */
 
 #define DEBUG_SUBSYSTEM S_RPC
-#include "../include/obd_support.h"
-#include "../include/obd_class.h"
-#include "../../include/linux/libcfs/libcfs.h"
+#include <obd_support.h>
+#include <obd_class.h>
+#include <linux/libcfs/libcfs.h>
 #include "ptlrpc_internal.h"
 
 /**
@@ -80,9 +80,7 @@ static int nrs_fifo_start(struct ptlrpc_nrs_policy *policy)
 {
 	struct nrs_fifo_head *head;
 
-	head = kzalloc_node(sizeof(*head), GFP_NOFS,
-			    cfs_cpt_spread_node(nrs_pol2cptab(policy),
-						nrs_pol2cptid(policy)));
+	OBD_CPT_ALLOC_PTR(head, nrs_pol2cptab(policy), nrs_pol2cptid(policy));
 	if (head == NULL)
 		return -ENOMEM;
 
@@ -107,7 +105,7 @@ static void nrs_fifo_stop(struct ptlrpc_nrs_policy *policy)
 	LASSERT(head != NULL);
 	LASSERT(list_empty(&head->fh_list));
 
-	kfree(head);
+	OBD_FREE_PTR(head);
 }
 
 /**
@@ -159,10 +157,10 @@ static int nrs_fifo_res_get(struct ptlrpc_nrs_policy *policy,
  * \see nrs_request_get()
  */
 static
-struct ptlrpc_nrs_request *nrs_fifo_req_get(struct ptlrpc_nrs_policy *policy,
-					    bool peek, bool force)
+struct ptlrpc_nrs_request * nrs_fifo_req_get(struct ptlrpc_nrs_policy *policy,
+					     bool peek, bool force)
 {
-	struct nrs_fifo_head *head = policy->pol_private;
+	struct nrs_fifo_head	  *head = policy->pol_private;
 	struct ptlrpc_nrs_request *nrq;
 
 	nrq = unlikely(list_empty(&head->fh_list)) ? NULL :
@@ -176,9 +174,9 @@ struct ptlrpc_nrs_request *nrs_fifo_req_get(struct ptlrpc_nrs_policy *policy,
 
 		list_del_init(&nrq->nr_u.fifo.fr_list);
 
-		CDEBUG(D_RPCTRACE, "NRS start %s request from %s, seq: %llu\n",
-		       policy->pol_desc->pd_name, libcfs_id2str(req->rq_peer),
-		       nrq->nr_u.fifo.fr_sequence);
+		CDEBUG(D_RPCTRACE, "NRS start %s request from %s, seq: "LPU64
+		       "\n", policy->pol_desc->pd_name,
+		       libcfs_id2str(req->rq_peer), nrq->nr_u.fifo.fr_sequence);
 	}
 
 	return nrq;
@@ -238,7 +236,7 @@ static void nrs_fifo_req_stop(struct ptlrpc_nrs_policy *policy,
 	struct ptlrpc_request *req = container_of(nrq, struct ptlrpc_request,
 						  rq_nrq);
 
-	CDEBUG(D_RPCTRACE, "NRS stop %s request from %s, seq: %llu\n",
+	CDEBUG(D_RPCTRACE, "NRS stop %s request from %s, seq: "LPU64"\n",
 	       policy->pol_desc->pd_name, libcfs_id2str(req->rq_peer),
 	       nrq->nr_u.fifo.fr_sequence);
 }

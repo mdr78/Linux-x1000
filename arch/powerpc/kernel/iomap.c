@@ -23,7 +23,7 @@ unsigned int ioread16(void __iomem *addr)
 }
 unsigned int ioread16be(void __iomem *addr)
 {
-	return readw_be(addr);
+	return in_be16(addr);
 }
 unsigned int ioread32(void __iomem *addr)
 {
@@ -31,7 +31,7 @@ unsigned int ioread32(void __iomem *addr)
 }
 unsigned int ioread32be(void __iomem *addr)
 {
-	return readl_be(addr);
+	return in_be32(addr);
 }
 EXPORT_SYMBOL(ioread8);
 EXPORT_SYMBOL(ioread16);
@@ -49,7 +49,7 @@ void iowrite16(u16 val, void __iomem *addr)
 }
 void iowrite16be(u16 val, void __iomem *addr)
 {
-	writew_be(val, addr);
+	out_be16(addr, val);
 }
 void iowrite32(u32 val, void __iomem *addr)
 {
@@ -57,7 +57,7 @@ void iowrite32(u32 val, void __iomem *addr)
 }
 void iowrite32be(u32 val, void __iomem *addr)
 {
-	writel_be(val, addr);
+	out_be32(addr, val);
 }
 EXPORT_SYMBOL(iowrite8);
 EXPORT_SYMBOL(iowrite16);
@@ -75,15 +75,15 @@ EXPORT_SYMBOL(iowrite32be);
  */
 void ioread8_rep(void __iomem *addr, void *dst, unsigned long count)
 {
-	readsb(addr, dst, count);
+	_insb((u8 __iomem *) addr, dst, count);
 }
 void ioread16_rep(void __iomem *addr, void *dst, unsigned long count)
 {
-	readsw(addr, dst, count);
+	_insw_ns((u16 __iomem *) addr, dst, count);
 }
 void ioread32_rep(void __iomem *addr, void *dst, unsigned long count)
 {
-	readsl(addr, dst, count);
+	_insl_ns((u32 __iomem *) addr, dst, count);
 }
 EXPORT_SYMBOL(ioread8_rep);
 EXPORT_SYMBOL(ioread16_rep);
@@ -91,15 +91,15 @@ EXPORT_SYMBOL(ioread32_rep);
 
 void iowrite8_rep(void __iomem *addr, const void *src, unsigned long count)
 {
-	writesb(addr, src, count);
+	_outsb((u8 __iomem *) addr, src, count);
 }
 void iowrite16_rep(void __iomem *addr, const void *src, unsigned long count)
 {
-	writesw(addr, src, count);
+	_outsw_ns((u16 __iomem *) addr, src, count);
 }
 void iowrite32_rep(void __iomem *addr, const void *src, unsigned long count)
 {
-	writesl(addr, src, count);
+	_outsl_ns((u32 __iomem *) addr, src, count);
 }
 EXPORT_SYMBOL(iowrite8_rep);
 EXPORT_SYMBOL(iowrite16_rep);

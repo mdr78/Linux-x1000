@@ -3,20 +3,6 @@
 #
 # create a compressed vmlinux image from the original vmlinux
 #
-# vmlinuz is:
-#	decompression code (*.o)
-#	asm globals (piggy.S), including:
-#		vmlinux.bin.(gz|bz2|lzma|...)
-#
-# vmlinux.bin is:
-#	vmlinux stripped of debugging and comments
-# vmlinux.bin.all is:
-#	vmlinux.bin + vmlinux.relocs
-# vmlinux.bin.(gz|bz2|lzma|...) is:
-#	(see scripts/Makefile.lib size_append)
-#	compressed vmlinux.bin.all + u32 size of vmlinux.bin.all
-
-KASAN_SANITIZE := n
 
 targets := vmlinux vmlinux.bin vmlinux.bin.gz vmlinux.bin.bz2 vmlinux.bin.lzma \
 	vmlinux.bin.xz vmlinux.bin.lzo vmlinux.bin.lz4
@@ -40,20 +26,17 @@ LDFLAGS_vmlinux := -T
 hostprogs-y	:= mkpiggy
 HOST_EXTRACFLAGS += -I$(srctree)/tools/include
 
-vmlinux-objs-y := $(obj)/vmlinux.lds $(obj)/head_$(BITS).o $(obj)/misc.o \
-	$(obj)/string.o $(obj)/cmdline.o \
-	$(obj)/piggy.o $(obj)/cpuflags.o
-
-vmlinux-objs-$(CONFIG_EARLY_PRINTK) += $(obj)/early_serial_console.o
-vmlinux-objs-$(CONFIG_RANDOMIZE_BASE) += $(obj)/aslr.o
+VMLINUX_OBJS = $(obj)/vmlinux.lds $(obj)/head_$(BITS).o $(obj)/misc.o \
+	$(obj)/string.o $(obj)/cmdline.o $(obj)/early_serial_console.o \
+	$(obj)/piggy.o $(obj)/cpuflags.o $(obj)/aslr.o
 
 $(obj)/eboot.o: KBUILD_CFLAGS += -fshort-wchar -mno-red-zone
 
-vmlinux-objs-$(CONFIG_EFI_STUB) += $(obj)/eboot.o $(obj)/efi_stub_$(BITS).o \
-	$(objtree)/drivers/firmware/efi/libstub/lib.a
-vmlinux-objs-$(CONFIG_EFI_MIXED) += $(obj)/efi_thunk_$(BITS).o
+ifeq ($(CONFIG_EFI_STUB), y)
+	VMLINUX_OBJS += $(obj)/eboot.o $(obj)/efi_stub_$(BITS).o
+endif
 
-$(obj)/vmlinux: $(vmlinux-objs-y) FORCE
+$(obj)/vmlinux: $(VMLINUX_OBJS) FORCE
 	$(call if_changed,ld)
 	@:
 
@@ -61,7 +44,7 @@ OBJCOPYFLAGS_vmlinux.bin :=  -R .comment -S
 $(obj)/vmlinux.bin: vmlinux FORCE
 	$(call if_changed,objcopy)
 
-targets += $(patsubst $(obj)/%,%,$(vmlinux-objs-y)) vmlinux.bin.all vmlinux.relocs
+targets += $(patsubst $(obj)/%,%,$(VMLINUX_OBJS)) vmlinux.bin.all vmlinux.relocs
 
 CMD_RELOCS = arch/x86/tools/relocs
 quiet_cmd_relocs = RELOCS  $@
@@ -93,7 +76,7 @@ suffix-$(CONFIG_KERNEL_LZO) 	:= lzo
 suffix-$(CONFIG_KERNEL_LZ4) 	:= lz4
 
 RUN_SIZE = $(shell $(OBJDUMP) -h vmlinux | \
-	     $(CONFIG_SHELL) $(srctree)/arch/x86/tools/calc_run_size.sh)
+	     perl $(srctree)/arch/x86/tools/calc_run_size.pl)
 quiet_cmd_mkpiggy = MKPIGGY $@
       cmd_mkpiggy = $(obj)/mkpiggy $< $(RUN_SIZE) > $@ || ( rm -f $@ ; false )
 

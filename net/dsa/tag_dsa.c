@@ -10,15 +10,19 @@
 
 #include <linux/etherdevice.h>
 #include <linux/list.h>
+#include <linux/netdevice.h>
 #include <linux/slab.h>
 #include "dsa_priv.h"
 
 #define DSA_HLEN	4
 
-static struct sk_buff *dsa_xmit(struct sk_buff *skb, struct net_device *dev)
+netdev_tx_t dsa_xmit(struct sk_buff *skb, struct net_device *dev)
 {
 	struct dsa_slave_priv *p = netdev_priv(dev);
 	u8 *dsa_header;
+
+	dev->stats.tx_packets++;
+	dev->stats.tx_bytes += skb->len;
 
 	/*
 	 * Convert the outermost 802.1q tag to a DSA tag for tagged
@@ -60,11 +64,16 @@ static struct sk_buff *dsa_xmit(struct sk_buff *skb, struct net_device *dev)
 		dsa_header[3] = 0x00;
 	}
 
-	return skb;
+	skb->protocol = htons(ETH_P_DSA);
+
+	skb->dev = p->parent->dst->master_netdev;
+	dev_queue_xmit(skb);
+
+	return NETDEV_TX_OK;
 
 out_free:
 	kfree_skb(skb);
-	return NULL;
+	return NETDEV_TX_OK;
 }
 
 static int dsa_rcv(struct sk_buff *skb, struct net_device *dev,
@@ -177,7 +186,7 @@ out:
 	return 0;
 }
 
-const struct dsa_device_ops dsa_netdev_ops = {
-	.xmit	= dsa_xmit,
-	.rcv	= dsa_rcv,
+struct packet_type dsa_packet_type __read_mostly = {
+	.type	= cpu_to_be16(ETH_P_DSA),
+	.func	= dsa_rcv,
 };

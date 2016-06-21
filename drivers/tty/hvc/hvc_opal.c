@@ -29,7 +29,6 @@
 #include <linux/of.h>
 #include <linux/of_platform.h>
 #include <linux/export.h>
-#include <linux/interrupt.h>
 
 #include <asm/hvconsole.h>
 #include <asm/prom.h>
@@ -42,7 +41,7 @@
 
 static const char hvc_opal_name[] = "hvc_opal";
 
-static const struct of_device_id hvc_opal_match[] = {
+static struct of_device_id hvc_opal_match[] = {
 	{ .name = "serial", .compatible = "ibm,opal-console-raw" },
 	{ .name = "serial", .compatible = "ibm,opal-console-hvsi" },
 	{ },
@@ -168,7 +167,7 @@ static int hvc_opal_probe(struct platform_device *dev)
 	struct hvc_struct *hp;
 	struct hvc_opal_priv *pv;
 	hv_protocol_t proto;
-	unsigned int termno, irq, boot = 0;
+	unsigned int termno, boot = 0;
 	const __be32 *reg;
 
 	if (of_device_is_compatible(dev->dev.of_node, "ibm,opal-console-raw")) {
@@ -214,14 +213,8 @@ static int hvc_opal_probe(struct platform_device *dev)
 		dev->dev.of_node->full_name,
 		boot ? " (boot console)" : "");
 
-	irq = opal_event_request(ilog2(OPAL_EVENT_CONSOLE_INPUT));
-	if (!irq) {
-		pr_err("hvc_opal: Unable to map interrupt for device %s\n",
-			dev->dev.of_node->full_name);
-		return irq;
-	}
-
-	hp = hvc_alloc(termno, irq, ops, MAX_VIO_PUT_CHARS);
+	/* We don't do IRQ yet */
+	hp = hvc_alloc(termno, 0, ops, MAX_VIO_PUT_CHARS);
 	if (IS_ERR(hp))
 		return PTR_ERR(hp);
 	dev_set_drvdata(&dev->dev, hp);
@@ -249,6 +242,7 @@ static struct platform_driver hvc_opal_driver = {
 	.remove		= hvc_opal_remove,
 	.driver		= {
 		.name	= hvc_opal_name,
+		.owner	= THIS_MODULE,
 		.of_match_table	= hvc_opal_match,
 	}
 };
@@ -328,13 +322,22 @@ static void udbg_init_opal_common(void)
 
 void __init hvc_opal_init_early(void)
 {
-	struct device_node *stdout_node = of_node_get(of_stdout);
+	struct device_node *stdout_node = NULL;
 	const __be32 *termno;
+	const char *name = NULL;
 	const struct hv_ops *ops;
 	u32 index;
 
-	/* If the console wasn't in /chosen, try /ibm,opal */
-	if (!stdout_node) {
+	/* find the boot console from /chosen/stdout */
+	if (of_chosen)
+		name = of_get_property(of_chosen, "linux,stdout-path", NULL);
+	if (name) {
+		stdout_node = of_find_node_by_path(name);
+		if (!stdout_node) {
+			pr_err("hvc_opal: Failed to locate default console!\n");
+			return;
+		}
+	} else {
 		struct device_node *opal, *np;
 
 		/* Current OPAL takeover doesn't provide the stdout

@@ -16,10 +16,8 @@
 
 #define FASTPATH_SIZE	128
 
-EXPORT(tlbmiss_handler_setup_pgd_start)
 LEAF(tlbmiss_handler_setup_pgd)
-1:	j	1b		/* Dummy, will be replaced. */
-	.space	64
+	.space		16 * 4
 END(tlbmiss_handler_setup_pgd)
 EXPORT(tlbmiss_handler_setup_pgd_end)
 

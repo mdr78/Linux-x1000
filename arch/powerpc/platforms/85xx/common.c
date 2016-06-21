@@ -14,7 +14,7 @@
 
 #include "mpc85xx.h"
 
-static const struct of_device_id mpc85xx_common_ids[] __initconst = {
+static struct of_device_id __initdata mpc85xx_common_ids[] = {
 	{ .type = "soc", },
 	{ .compatible = "soc", },
 	{ .compatible = "simple-bus", },
@@ -40,7 +40,6 @@ static const struct of_device_id mpc85xx_common_ids[] __initconst = {
 	{ .compatible = "fsl,qoriq-pcie-v2.4", },
 	{ .compatible = "fsl,qoriq-pcie-v2.3", },
 	{ .compatible = "fsl,qoriq-pcie-v2.2", },
-	{ .compatible = "fsl,fman", },
 	{},
 };
 
@@ -49,7 +48,7 @@ int __init mpc85xx_common_publish_devices(void)
 	return of_platform_bus_probe(NULL, mpc85xx_common_ids, NULL);
 }
 #ifdef CONFIG_CPM2
-static void cpm2_cascade(struct irq_desc *desc)
+static void cpm2_cascade(unsigned int irq, struct irq_desc *desc)
 {
 	struct irq_chip *chip = irq_desc_get_chip(desc);
 	int cascade_irq;
@@ -107,12 +106,6 @@ void __init mpc85xx_qe_init(void)
 
 	qe_reset();
 	of_node_put(np);
-
-}
-
-void __init mpc85xx_qe_par_io_init(void)
-{
-	struct device_node *np;
 
 	np = of_find_node_by_name(NULL, "par_io");
 	if (np) {

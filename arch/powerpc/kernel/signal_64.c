@@ -38,6 +38,7 @@
 
 #include "signal.h"
 
+#define DEBUG_SIG 0
 
 #define GP_REGS_SIZE	min(sizeof(elf_gregset_t), sizeof(struct pt_regs))
 #define FP_REGS_SIZE	sizeof(elf_fpregset_t)
@@ -74,19 +75,6 @@ static const char fmt64[] = KERN_INFO \
 	"%s[%d]: bad frame in %s: %016lx nip %016lx lr %016lx\n";
 
 /*
- * This computes a quad word aligned pointer inside the vmx_reserve array
- * element. For historical reasons sigcontext might not be quad word aligned,
- * but the location we write the VMX regs to must be. See the comment in
- * sigcontext for more detail.
- */
-#ifdef CONFIG_ALTIVEC
-static elf_vrreg_t __user *sigcontext_vmx_regs(struct sigcontext __user *sc)
-{
-	return (elf_vrreg_t __user *) (((unsigned long)sc->vmx_reserve + 15) & ~0xful);
-}
-#endif
-
-/*
  * Set up the sigcontext for the signal frame.
  */
 
@@ -103,7 +91,7 @@ static long setup_sigcontext(struct sigcontext __user *sc, struct pt_regs *regs,
 	 * v_regs pointer or not
 	 */
 #ifdef CONFIG_ALTIVEC
-	elf_vrreg_t __user *v_regs = sigcontext_vmx_regs(sc);
+	elf_vrreg_t __user *v_regs = (elf_vrreg_t __user *)(((unsigned long)sc->vmx_reserve + 15) & ~0xful);
 #endif
 	unsigned long msr = regs->msr;
 	long err = 0;
@@ -194,8 +182,10 @@ static long setup_tm_sigcontexts(struct sigcontext __user *sc,
 	 * v_regs pointer or not.
 	 */
 #ifdef CONFIG_ALTIVEC
-	elf_vrreg_t __user *v_regs = sigcontext_vmx_regs(sc);
-	elf_vrreg_t __user *tm_v_regs = sigcontext_vmx_regs(tm_sc);
+	elf_vrreg_t __user *v_regs = (elf_vrreg_t __user *)
+		(((unsigned long)sc->vmx_reserve + 15) & ~0xful);
+	elf_vrreg_t __user *tm_v_regs = (elf_vrreg_t __user *)
+		(((unsigned long)tm_sc->vmx_reserve + 15) & ~0xful);
 #endif
 	unsigned long msr = regs->msr;
 	long err = 0;
@@ -438,10 +428,6 @@ static long restore_tm_sigcontexts(struct pt_regs *regs,
 
 	/* get MSR separately, transfer the LE bit if doing signal return */
 	err |= __get_user(msr, &sc->gp_regs[PT_MSR]);
-	/* Don't allow reserved mode. */
-	if (MSR_TM_RESV(msr))
-		return -EINVAL;
-
 	/* pull in MSR TM from user context */
 	regs->msr = (regs->msr & ~MSR_TS_MASK) | (msr & MSR_TS_MASK);
 
@@ -681,7 +667,7 @@ int sys_rt_sigreturn(unsigned long r3, unsigned long r4, unsigned long r5,
 #endif
 
 	/* Always make any pending restarted system calls return -EINTR */
-	current->restart_block.fn = do_no_restart_syscall;
+	current_thread_info()->restart_block.fn = do_no_restart_syscall;
 
 	if (!access_ok(VERIFY_READ, uc, sizeof(*uc)))
 		goto badframe;
@@ -714,6 +700,10 @@ int sys_rt_sigreturn(unsigned long r3, unsigned long r4, unsigned long r5,
 	return 0;
 
 badframe:
+#if DEBUG_SIG
+	printk("badframe in sys_rt_sigreturn, regs=%p uc=%p &uc->uc_mcontext=%p\n",
+	       regs, uc, &uc->uc_mcontext);
+#endif
 	if (show_unhandled_signals)
 		printk_ratelimited(regs->msr & MSR_64BIT ? fmt64 : fmt32,
 				   current->comm, current->pid, "rt_sigreturn",
@@ -723,19 +713,20 @@ badframe:
 	return 0;
 }
 
-int handle_rt_signal64(struct ksignal *ksig, sigset_t *set, struct pt_regs *regs)
+int handle_rt_signal64(int signr, struct k_sigaction *ka, siginfo_t *info,
+		sigset_t *set, struct pt_regs *regs)
 {
 	struct rt_sigframe __user *frame;
 	unsigned long newsp = 0;
 	long err = 0;
 
-	frame = get_sigframe(ksig, get_tm_stackpointer(regs), sizeof(*frame), 0);
+	frame = get_sigframe(ka, get_tm_stackpointer(regs), sizeof(*frame), 0);
 	if (unlikely(frame == NULL))
 		goto badframe;
 
 	err |= __put_user(&frame->info, &frame->pinfo);
 	err |= __put_user(&frame->uc, &frame->puc);
-	err |= copy_siginfo_to_user(&frame->info, &ksig->info);
+	err |= copy_siginfo_to_user(&frame->info, info);
 	if (err)
 		goto badframe;
 
@@ -750,15 +741,15 @@ int handle_rt_signal64(struct ksignal *ksig, sigset_t *set, struct pt_regs *regs
 		err |= __put_user(&frame->uc_transact, &frame->uc.uc_link);
 		err |= setup_tm_sigcontexts(&frame->uc.uc_mcontext,
 					    &frame->uc_transact.uc_mcontext,
-					    regs, ksig->sig,
+					    regs, signr,
 					    NULL,
-					    (unsigned long)ksig->ka.sa.sa_handler);
+					    (unsigned long)ka->sa.sa_handler);
 	} else
 #endif
 	{
 		err |= __put_user(0, &frame->uc.uc_link);
-		err |= setup_sigcontext(&frame->uc.uc_mcontext, regs, ksig->sig,
-					NULL, (unsigned long)ksig->ka.sa.sa_handler,
+		err |= setup_sigcontext(&frame->uc.uc_mcontext, regs, signr,
+					NULL, (unsigned long)ka->sa.sa_handler,
 					1);
 	}
 	err |= __copy_to_user(&frame->uc.uc_sigmask, set, sizeof(*set));
@@ -784,7 +775,7 @@ int handle_rt_signal64(struct ksignal *ksig, sigset_t *set, struct pt_regs *regs
 
 	/* Set up "regs" so we "return" to the signal handler. */
 	if (is_elf2_task()) {
-		regs->nip = (unsigned long) ksig->ka.sa.sa_handler;
+		regs->nip = (unsigned long) ka->sa.sa_handler;
 		regs->gpr[12] = regs->nip;
 	} else {
 		/* Handler is *really* a pointer to the function descriptor for
@@ -793,7 +784,7 @@ int handle_rt_signal64(struct ksignal *ksig, sigset_t *set, struct pt_regs *regs
 		 * entry is the TOC value we need to use.
 		 */
 		func_descr_t __user *funct_desc_ptr =
-			(func_descr_t __user *) ksig->ka.sa.sa_handler;
+			(func_descr_t __user *) ka->sa.sa_handler;
 
 		err |= get_user(regs->nip, &funct_desc_ptr->entry);
 		err |= get_user(regs->gpr[2], &funct_desc_ptr->toc);
@@ -803,9 +794,9 @@ int handle_rt_signal64(struct ksignal *ksig, sigset_t *set, struct pt_regs *regs
 	regs->msr &= ~MSR_LE;
 	regs->msr |= (MSR_KERNEL & MSR_LE);
 	regs->gpr[1] = newsp;
-	regs->gpr[3] = ksig->sig;
+	regs->gpr[3] = signr;
 	regs->result = 0;
-	if (ksig->ka.sa.sa_flags & SA_SIGINFO) {
+	if (ka->sa.sa_flags & SA_SIGINFO) {
 		err |= get_user(regs->gpr[4], (unsigned long __user *)&frame->pinfo);
 		err |= get_user(regs->gpr[5], (unsigned long __user *)&frame->puc);
 		regs->gpr[6] = (unsigned long) frame;
@@ -815,13 +806,18 @@ int handle_rt_signal64(struct ksignal *ksig, sigset_t *set, struct pt_regs *regs
 	if (err)
 		goto badframe;
 
-	return 0;
+	return 1;
 
 badframe:
+#if DEBUG_SIG
+	printk("badframe in setup_rt_frame, regs=%p frame=%p newsp=%lx\n",
+	       regs, frame, newsp);
+#endif
 	if (show_unhandled_signals)
 		printk_ratelimited(regs->msr & MSR_64BIT ? fmt64 : fmt32,
 				   current->comm, current->pid, "setup_rt_frame",
 				   (long)frame, regs->nip, regs->link);
 
-	return 1;
+	force_sigsegv(signr, current);
+	return 0;
 }

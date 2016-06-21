@@ -3,7 +3,6 @@
 
 #include <linux/kref.h>
 #include <linux/nsproxy.h>
-#include <linux/ns_common.h>
 #include <linux/sched.h>
 #include <linux/err.h>
 
@@ -31,7 +30,7 @@ struct user_namespace {
 	int			level;
 	kuid_t			owner;
 	kgid_t			group;
-	struct ns_common	ns;
+	unsigned int		proc_inum;
 	unsigned long		flags;
 
 	/* Register of per-UID persistent keyrings for this namespace */
@@ -63,9 +62,9 @@ static inline void put_user_ns(struct user_namespace *ns)
 }
 
 struct seq_operations;
-extern const struct seq_operations proc_uid_seq_operations;
-extern const struct seq_operations proc_gid_seq_operations;
-extern const struct seq_operations proc_projid_seq_operations;
+extern struct seq_operations proc_uid_seq_operations;
+extern struct seq_operations proc_gid_seq_operations;
+extern struct seq_operations proc_projid_seq_operations;
 extern ssize_t proc_uid_map_write(struct file *, const char __user *, size_t, loff_t *);
 extern ssize_t proc_gid_map_write(struct file *, const char __user *, size_t, loff_t *);
 extern ssize_t proc_projid_map_write(struct file *, const char __user *, size_t, loff_t *);

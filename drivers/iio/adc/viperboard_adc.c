@@ -139,12 +139,15 @@ static int vprbrd_adc_probe(struct platform_device *pdev)
 		return ret;
 	}
 
+	platform_set_drvdata(pdev, indio_dev);
+
 	return 0;
 }
 
 static struct platform_driver vprbrd_adc_driver = {
 	.driver = {
 		.name	= "viperboard-adc",
+		.owner	= THIS_MODULE,
 	},
 	.probe		= vprbrd_adc_probe,
 };

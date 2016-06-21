@@ -43,18 +43,20 @@
 
 #define DEBUG_SUBSYSTEM S_FLD
 
-#include "../../include/linux/libcfs/libcfs.h"
-#include <linux/module.h>
-#include <asm/div64.h>
+# include <linux/libcfs/libcfs.h>
+# include <linux/module.h>
+# include <asm/div64.h>
 
-#include "../include/obd.h"
-#include "../include/obd_class.h"
-#include "../include/lustre_ver.h"
-#include "../include/obd_support.h"
-#include "../include/lprocfs_status.h"
+#include <obd.h>
+#include <obd_class.h>
+#include <lustre_ver.h>
+#include <obd_support.h>
+#include <lprocfs_status.h>
 
-#include "../include/lustre_req_layout.h"
-#include "../include/lustre_fld.h"
+#include <dt_object.h>
+#include <md_object.h>
+#include <lustre_req_layout.h>
+#include <lustre_fld.h>
 #include "fld_internal.h"
 
 /**
@@ -68,8 +70,8 @@ struct fld_cache *fld_cache_init(const char *name,
 	LASSERT(name != NULL);
 	LASSERT(cache_threshold < cache_size);
 
-	cache = kzalloc(sizeof(*cache), GFP_NOFS);
-	if (!cache)
+	OBD_ALLOC_PTR(cache);
+	if (cache == NULL)
 		return ERR_PTR(-ENOMEM);
 
 	INIT_LIST_HEAD(&cache->fci_entries_head);
@@ -111,11 +113,11 @@ void fld_cache_fini(struct fld_cache *cache)
 	}
 
 	CDEBUG(D_INFO, "FLD cache statistics (%s):\n", cache->fci_name);
-	CDEBUG(D_INFO, "  Total reqs: %llu\n", cache->fci_stat.fst_count);
-	CDEBUG(D_INFO, "  Cache reqs: %llu\n", cache->fci_stat.fst_cache);
-	CDEBUG(D_INFO, "  Cache hits: %llu%%\n", pct);
+	CDEBUG(D_INFO, "  Total reqs: "LPU64"\n", cache->fci_stat.fst_count);
+	CDEBUG(D_INFO, "  Cache reqs: "LPU64"\n", cache->fci_stat.fst_cache);
+	CDEBUG(D_INFO, "  Cache hits: "LPU64"%%\n", pct);
 
-	kfree(cache);
+	OBD_FREE_PTR(cache);
 }
 
 /**
@@ -127,7 +129,7 @@ void fld_cache_entry_delete(struct fld_cache *cache,
 	list_del(&node->fce_list);
 	list_del(&node->fce_lru);
 	cache->fci_cache_count--;
-	kfree(node);
+	OBD_FREE_PTR(node);
 }
 
 /**
@@ -234,8 +236,8 @@ static int fld_cache_shrink(struct fld_cache *cache)
 		num++;
 	}
 
-	CDEBUG(D_INFO, "%s: FLD cache - Shrunk by %d entries\n",
-			cache->fci_name, num);
+	CDEBUG(D_INFO, "%s: FLD cache - Shrunk by "
+	       "%d entries\n", cache->fci_name, num);
 
 	return 0;
 }
@@ -256,18 +258,18 @@ void fld_cache_flush(struct fld_cache *cache)
  * entry accordingly.
  */
 
-static void fld_cache_punch_hole(struct fld_cache *cache,
-				 struct fld_cache_entry *f_curr,
-				 struct fld_cache_entry *f_new)
+void fld_cache_punch_hole(struct fld_cache *cache,
+			  struct fld_cache_entry *f_curr,
+			  struct fld_cache_entry *f_new)
 {
 	const struct lu_seq_range *range = &f_new->fce_range;
-	const u64 new_start  = range->lsr_start;
-	const u64 new_end  = range->lsr_end;
+	const seqno_t new_start  = range->lsr_start;
+	const seqno_t new_end  = range->lsr_end;
 	struct fld_cache_entry *fldt;
 
-	fldt = kzalloc(sizeof(*fldt), GFP_ATOMIC);
+	OBD_ALLOC_GFP(fldt, sizeof(*fldt), GFP_ATOMIC);
 	if (!fldt) {
-		kfree(f_new);
+		OBD_FREE_PTR(f_new);
 		/* overlap is not allowed, so dont mess up list. */
 		return;
 	}
@@ -300,9 +302,9 @@ static void fld_cache_overlap_handle(struct fld_cache *cache,
 				struct fld_cache_entry *f_new)
 {
 	const struct lu_seq_range *range = &f_new->fce_range;
-	const u64 new_start  = range->lsr_start;
-	const u64 new_end  = range->lsr_end;
-	const u32 mdt = range->lsr_index;
+	const seqno_t new_start  = range->lsr_start;
+	const seqno_t new_end  = range->lsr_end;
+	const mdsno_t mdt = range->lsr_index;
 
 	/* this is overlap case, these case are checking overlapping with
 	 * prev range only. fixup will handle overlapping with next range. */
@@ -314,7 +316,7 @@ static void fld_cache_overlap_handle(struct fld_cache *cache,
 		f_curr->fce_range.lsr_end = max(f_curr->fce_range.lsr_end,
 						new_end);
 
-		kfree(f_new);
+		OBD_FREE_PTR(f_new);
 		fld_fix_new_list(cache);
 
 	} else if (new_start <= f_curr->fce_range.lsr_start &&
@@ -323,7 +325,7 @@ static void fld_cache_overlap_handle(struct fld_cache *cache,
 		 *	 e.g. whole range migrated. update fld cache entry */
 
 		f_curr->fce_range = *range;
-		kfree(f_new);
+		OBD_FREE_PTR(f_new);
 		fld_fix_new_list(cache);
 
 	} else if (f_curr->fce_range.lsr_start < new_start &&
@@ -353,7 +355,7 @@ static void fld_cache_overlap_handle(struct fld_cache *cache,
 		fld_cache_entry_add(cache, f_new, &f_curr->fce_list);
 	} else
 		CERROR("NEW range ="DRANGE" curr = "DRANGE"\n",
-		       PRANGE(range), PRANGE(&f_curr->fce_range));
+		       PRANGE(range),PRANGE(&f_curr->fce_range));
 }
 
 struct fld_cache_entry
@@ -363,7 +365,7 @@ struct fld_cache_entry
 
 	LASSERT(range_is_sane(range));
 
-	f_new = kzalloc(sizeof(*f_new), GFP_NOFS);
+	OBD_ALLOC_PTR(f_new);
 	if (!f_new)
 		return ERR_PTR(-ENOMEM);
 
@@ -384,8 +386,8 @@ int fld_cache_insert_nolock(struct fld_cache *cache,
 	struct fld_cache_entry *n;
 	struct list_head *head;
 	struct list_head *prev = NULL;
-	const u64 new_start  = f_new->fce_range.lsr_start;
-	const u64 new_end  = f_new->fce_range.lsr_end;
+	const seqno_t new_start  = f_new->fce_range.lsr_start;
+	const seqno_t new_end  = f_new->fce_range.lsr_end;
 	__u32 new_flags  = f_new->fce_range.lsr_flags;
 
 	/*
@@ -439,7 +441,7 @@ int fld_cache_insert(struct fld_cache *cache,
 	rc = fld_cache_insert_nolock(cache, flde);
 	write_unlock(&cache->fci_lock);
 	if (rc)
-		kfree(flde);
+		OBD_FREE_PTR(flde);
 
 	return rc;
 }
@@ -514,7 +516,7 @@ struct fld_cache_entry
  * lookup \a seq sequence for range in fld cache.
  */
 int fld_cache_lookup(struct fld_cache *cache,
-		     const u64 seq, struct lu_seq_range *range)
+		     const seqno_t seq, struct lu_seq_range *range)
 {
 	struct fld_cache_entry *flde;
 	struct fld_cache_entry *prev = NULL;

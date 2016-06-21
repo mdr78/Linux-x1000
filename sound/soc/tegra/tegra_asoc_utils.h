@@ -21,7 +21,7 @@
  */
 
 #ifndef __TEGRA_ASOC_UTILS_H__
-#define __TEGRA_ASOC_UTILS_H__
+#define __TEGRA_ASOC_UTILS_H_
 
 struct clk;
 struct device;

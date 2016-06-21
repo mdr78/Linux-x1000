@@ -2,7 +2,6 @@ menu "CPU Frequency scaling"
 
 config CPU_FREQ
 	bool "CPU Frequency scaling"
-	select SRCU
 	help
 	  CPU Frequency scaling allows you to change the clock speed of 
 	  CPUs on the fly. This is a nice method to save power, because 
@@ -64,6 +63,7 @@ config CPU_FREQ_DEFAULT_GOV_PERFORMANCE
 
 config CPU_FREQ_DEFAULT_GOV_POWERSAVE
 	bool "powersave"
+	depends on EXPERT
 	select CPU_FREQ_GOV_POWERSAVE
 	help
 	  Use the CPUFreq governor 'powersave' as default. This sets
@@ -183,34 +183,30 @@ config CPU_FREQ_GOV_CONSERVATIVE
 
 	  If in doubt, say N.
 
-comment "CPU frequency scaling drivers"
-
-config CPUFREQ_DT
-	tristate "Generic DT based cpufreq driver"
-	depends on HAVE_CLK && OF
-	# if CPU_THERMAL is on and THERMAL=m, CPUFREQ_DT cannot be =y:
-	depends on !CPU_THERMAL || THERMAL
+config GENERIC_CPUFREQ_CPU0
+	tristate "Generic CPU0 cpufreq driver"
+	depends on HAVE_CLK && REGULATOR && OF && THERMAL && CPU_THERMAL
 	select PM_OPP
 	help
-	  This adds a generic DT based cpufreq driver for frequency management.
+	  This adds a generic cpufreq driver for CPU0 frequency management.
 	  It supports both uniprocessor (UP) and symmetric multiprocessor (SMP)
 	  systems which share clock and voltage across all CPUs.
 
 	  If in doubt, say N.
 
-if X86
+menu "x86 CPU frequency scaling drivers"
+depends on X86
 source "drivers/cpufreq/Kconfig.x86"
-endif
+endmenu
 
-if ARM || ARM64
+menu "ARM CPU frequency scaling drivers"
+depends on ARM
 source "drivers/cpufreq/Kconfig.arm"
-endif
+endmenu
 
-if PPC32 || PPC64
-source "drivers/cpufreq/Kconfig.powerpc"
-endif
+menu "AVR32 CPU frequency scaling drivers"
+depends on AVR32
 
-if AVR32
 config AVR32_AT32AP_CPUFREQ
 	bool "CPU frequency driver for AT32AP"
 	depends on PLATFORM_AT32AP
@@ -218,9 +214,12 @@ config AVR32_AT32AP_CPUFREQ
 	help
 	  This enables the CPU frequency driver for AT32AP processors.
 	  If in doubt, say N.
-endif
 
-if IA64
+endmenu
+
+menu "CPUFreq processor drivers"
+depends on IA64
+
 config IA64_ACPI_CPUFREQ
 	tristate "ACPI Processor P-States driver"
 	depends on ACPI_PROCESSOR
@@ -231,9 +230,12 @@ config IA64_ACPI_CPUFREQ
 	For details, take a look at <file:Documentation/cpu-freq/>.
 
 	If in doubt, say N.
-endif
 
-if MIPS
+endmenu
+
+menu "MIPS CPUFreq processor drivers"
+depends on MIPS
+
 config LOONGSON2_CPUFREQ
 	tristate "Loongson2 CPUFreq Driver"
 	help
@@ -246,18 +248,15 @@ config LOONGSON2_CPUFREQ
 
 	  If in doubt, say N.
 
-config LOONGSON1_CPUFREQ
-	tristate "Loongson1 CPUFreq Driver"
-	help
-	  This option adds a CPUFreq driver for loongson1 processors which
-	  support software configurable cpu frequency.
+endmenu
 
-	  For details, take a look at <file:Documentation/cpu-freq/>.
+menu "PowerPC CPU frequency scaling drivers"
+depends on PPC32 || PPC64
+source "drivers/cpufreq/Kconfig.powerpc"
+endmenu
 
-	  If in doubt, say N.
-endif
-
-if SPARC64
+menu "SPARC CPU frequency scaling drivers"
+depends on SPARC64
 config SPARC_US3_CPUFREQ
 	tristate "UltraSPARC-III CPU Frequency driver"
 	help
@@ -275,9 +274,10 @@ config SPARC_US2E_CPUFREQ
 	  For details, take a look at <file:Documentation/cpu-freq>.
 
 	  If in doubt, say N.
-endif
+endmenu
 
-if SUPERH
+menu "SH CPU Frequency scaling"
+depends on SUPERH
 config SH_CPU_FREQ
 	tristate "SuperH CPU Frequency driver"
 	help
@@ -291,15 +291,7 @@ config SH_CPU_FREQ
 	  For details, take a look at <file:Documentation/cpu-freq>.
 
 	  If unsure, say N.
-endif
-
-config QORIQ_CPUFREQ
-	tristate "CPU frequency scaling driver for Freescale QorIQ SoCs"
-	depends on OF && COMMON_CLK && (PPC_E500MC || ARM)
-	select CLK_QORIQ
-	help
-	  This adds the CPUFreq driver support for Freescale QorIQ SoCs
-	  which are capable of changing the CPU's frequency dynamically.
+endmenu
 
 endif
 endmenu

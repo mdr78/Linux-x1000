@@ -12,7 +12,7 @@
 #include <asm/thread_info.h>
 
 OUTPUT_ARCH(arc)
-ENTRY(res_service)
+ENTRY(_stext)
 
 #ifdef CONFIG_CPU_BIG_ENDIAN
 jiffies = jiffies_64 + 4;
@@ -116,7 +116,7 @@ SECTIONS
 
 	_edata = .;
 
-	BSS_SECTION(4, 4, 4)
+	BSS_SECTION(0, 0, 0)
 
 #ifdef CONFIG_ARC_DW2_UNWIND
 	. = ALIGN(PAGE_SIZE);

@@ -560,7 +560,9 @@ static struct net_device *apne_dev;
 static int __init apne_module_init(void)
 {
 	apne_dev = apne_probe(-1);
-	return PTR_ERR_OR_ZERO(apne_dev);
+	if (IS_ERR(apne_dev))
+		return PTR_ERR(apne_dev);
+	return 0;
 }
 
 static void __exit apne_module_exit(void)

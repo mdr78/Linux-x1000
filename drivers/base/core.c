@@ -12,7 +12,6 @@
 
 #include <linux/device.h>
 #include <linux/err.h>
-#include <linux/fwnode.h>
 #include <linux/init.h>
 #include <linux/module.h>
 #include <linux/slab.h>
@@ -24,6 +23,7 @@
 #include <linux/genhd.h>
 #include <linux/kallsyms.h>
 #include <linux/mutex.h>
+#include <linux/async.h>
 #include <linux/pm_runtime.h>
 #include <linux/netdevice.h>
 #include <linux/sysfs.h>
@@ -534,52 +534,6 @@ static DEVICE_ATTR_RO(dev);
 struct kset *devices_kset;
 
 /**
- * devices_kset_move_before - Move device in the devices_kset's list.
- * @deva: Device to move.
- * @devb: Device @deva should come before.
- */
-static void devices_kset_move_before(struct device *deva, struct device *devb)
-{
-	if (!devices_kset)
-		return;
-	pr_debug("devices_kset: Moving %s before %s\n",
-		 dev_name(deva), dev_name(devb));
-	spin_lock(&devices_kset->list_lock);
-	list_move_tail(&deva->kobj.entry, &devb->kobj.entry);
-	spin_unlock(&devices_kset->list_lock);
-}
-
-/**
- * devices_kset_move_after - Move device in the devices_kset's list.
- * @deva: Device to move
- * @devb: Device @deva should come after.
- */
-static void devices_kset_move_after(struct device *deva, struct device *devb)
-{
-	if (!devices_kset)
-		return;
-	pr_debug("devices_kset: Moving %s after %s\n",
-		 dev_name(deva), dev_name(devb));
-	spin_lock(&devices_kset->list_lock);
-	list_move(&deva->kobj.entry, &devb->kobj.entry);
-	spin_unlock(&devices_kset->list_lock);
-}
-
-/**
- * devices_kset_move_last - move the device to the end of devices_kset's list.
- * @dev: device to move
- */
-void devices_kset_move_last(struct device *dev)
-{
-	if (!devices_kset)
-		return;
-	pr_debug("devices_kset: Moving %s to end of list\n", dev_name(dev));
-	spin_lock(&devices_kset->list_lock);
-	list_move_tail(&dev->kobj.entry, &devices_kset->list);
-	spin_unlock(&devices_kset->list_lock);
-}
-
-/**
  * device_create_file - create sysfs attribute file for device.
  * @dev: device.
  * @attr: device attribute descriptor.
@@ -617,23 +571,6 @@ void device_remove_file(struct device *dev,
 EXPORT_SYMBOL_GPL(device_remove_file);
 
 /**
- * device_remove_file_self - remove sysfs attribute file from its own method.
- * @dev: device.
- * @attr: device attribute descriptor.
- *
- * See kernfs_remove_self() for details.
- */
-bool device_remove_file_self(struct device *dev,
-			     const struct device_attribute *attr)
-{
-	if (dev)
-		return sysfs_remove_file_self(&dev->kobj, &attr->attr);
-	else
-		return false;
-}
-EXPORT_SYMBOL_GPL(device_remove_file_self);
-
-/**
  * device_create_bin_file - create sysfs binary attribute file for device.
  * @dev: device.
  * @attr: device binary attribute descriptor.
@@ -660,6 +597,39 @@ void device_remove_bin_file(struct device *dev,
 		sysfs_remove_bin_file(&dev->kobj, attr);
 }
 EXPORT_SYMBOL_GPL(device_remove_bin_file);
+
+/**
+ * device_schedule_callback_owner - helper to schedule a callback for a device
+ * @dev: device.
+ * @func: callback function to invoke later.
+ * @owner: module owning the callback routine
+ *
+ * Attribute methods must not unregister themselves or their parent device
+ * (which would amount to the same thing).  Attempts to do so will deadlock,
+ * since unregistration is mutually exclusive with driver callbacks.
+ *
+ * Instead methods can call this routine, which will attempt to allocate
+ * and schedule a workqueue request to call back @func with @dev as its
+ * argument in the workqueue's process context.  @dev will be pinned until
+ * @func returns.
+ *
+ * This routine is usually called via the inline device_schedule_callback(),
+ * which automatically sets @owner to THIS_MODULE.
+ *
+ * Returns 0 if the request was submitted, -ENOMEM if storage could not
+ * be allocated, -ENODEV if a reference to @owner isn't available.
+ *
+ * NOTE: This routine won't work if CONFIG_SYSFS isn't set!  It uses an
+ * underlying sysfs routine (since it is intended for use by attribute
+ * methods), and if sysfs isn't available you'll get nothing but -ENOSYS.
+ */
+int device_schedule_callback_owner(struct device *dev,
+		void (*func)(struct device *), struct module *owner)
+{
+	return sysfs_schedule_callback(&dev->kobj,
+			(void (*)(void *)) func, dev, owner);
+}
+EXPORT_SYMBOL_GPL(device_schedule_callback_owner);
 
 static void klist_children_get(struct klist_node *n)
 {
@@ -708,9 +678,6 @@ void device_initialize(struct device *dev)
 	INIT_LIST_HEAD(&dev->devres_head);
 	device_pm_init(dev);
 	set_dev_node(dev, -1);
-#ifdef CONFIG_GENERIC_MSI_IRQ
-	INIT_LIST_HEAD(&dev->msi_list);
-#endif
 }
 EXPORT_SYMBOL_GPL(device_initialize);
 
@@ -855,15 +822,7 @@ static void cleanup_device_parent(struct device *dev)
 
 static int device_add_class_symlinks(struct device *dev)
 {
-	struct device_node *of_node = dev_of_node(dev);
 	int error;
-
-	if (of_node) {
-		error = sysfs_create_link(&dev->kobj, &of_node->kobj,"of_node");
-		if (error)
-			dev_warn(dev, "Error %d creating of_node link\n",error);
-		/* An error here doesn't warrant bringing down the device */
-	}
 
 	if (!dev->class)
 		return 0;
@@ -872,7 +831,7 @@ static int device_add_class_symlinks(struct device *dev)
 				  &dev->class->p->subsys.kobj,
 				  "subsystem");
 	if (error)
-		goto out_devnode;
+		goto out;
 
 	if (dev->parent && device_is_not_partition(dev)) {
 		error = sysfs_create_link(&dev->kobj, &dev->parent->kobj,
@@ -900,16 +859,12 @@ out_device:
 
 out_subsys:
 	sysfs_remove_link(&dev->kobj, "subsystem");
-out_devnode:
-	sysfs_remove_link(&dev->kobj, "of_node");
+out:
 	return error;
 }
 
 static void device_remove_class_symlinks(struct device *dev)
 {
-	if (dev_of_node(dev))
-		sysfs_remove_link(&dev->kobj, "of_node");
-
 	if (!dev->class)
 		return;
 
@@ -1066,7 +1021,7 @@ int device_add(struct device *dev)
 		dev->kobj.parent = kobj;
 
 	/* use parent numa_node */
-	if (parent && (dev_to_node(dev) == NUMA_NO_NODE))
+	if (parent)
 		set_dev_node(dev, dev_to_node(parent));
 
 	/* first, register with generic layer. */
@@ -1083,6 +1038,18 @@ int device_add(struct device *dev)
 	if (error)
 		goto attrError;
 
+	if (MAJOR(dev->devt)) {
+		error = device_create_file(dev, &dev_attr_dev);
+		if (error)
+			goto ueventattrError;
+
+		error = device_create_sys_dev_entry(dev);
+		if (error)
+			goto devtattrError;
+
+		devtmpfs_create_node(dev);
+	}
+
 	error = device_add_class_symlinks(dev);
 	if (error)
 		goto SymlinkError;
@@ -1096,18 +1063,6 @@ int device_add(struct device *dev)
 	if (error)
 		goto DPMError;
 	device_pm_add(dev);
-
-	if (MAJOR(dev->devt)) {
-		error = device_create_file(dev, &dev_attr_dev);
-		if (error)
-			goto DevAttrError;
-
-		error = device_create_sys_dev_entry(dev);
-		if (error)
-			goto SysEntryError;
-
-		devtmpfs_create_node(dev);
-	}
 
 	/* Notify clients of device addition.  This call must come
 	 * after dpm_sysfs_add() and before kobject_uevent().
@@ -1138,12 +1093,6 @@ int device_add(struct device *dev)
 done:
 	put_device(dev);
 	return error;
- SysEntryError:
-	if (MAJOR(dev->devt))
-		device_remove_file(dev, &dev_attr_dev);
- DevAttrError:
-	device_pm_remove(dev);
-	dpm_sysfs_remove(dev);
  DPMError:
 	bus_remove_device(dev);
  BusError:
@@ -1151,13 +1100,22 @@ done:
  AttrsError:
 	device_remove_class_symlinks(dev);
  SymlinkError:
+	if (MAJOR(dev->devt))
+		devtmpfs_delete_node(dev);
+	if (MAJOR(dev->devt))
+		device_remove_sys_dev_entry(dev);
+ devtattrError:
+	if (MAJOR(dev->devt))
+		device_remove_file(dev, &dev_attr_dev);
+ ueventattrError:
 	device_remove_file(dev, &dev_attr_uevent);
  attrError:
 	kobject_uevent(&dev->kobj, KOBJ_REMOVE);
 	kobject_del(&dev->kobj);
  Error:
 	cleanup_device_parent(dev);
-	put_device(parent);
+	if (parent)
+		put_device(parent);
 name_error:
 	kfree(dev->p);
 	dev->p = NULL;
@@ -1272,9 +1230,6 @@ void device_del(struct device *dev)
 	 */
 	if (platform_notify_remove)
 		platform_notify_remove(dev);
-	if (dev->bus)
-		blocking_notifier_call_chain(&dev->bus->p->bus_notifier,
-					     BUS_NOTIFY_REMOVED_DEVICE, dev);
 	kobject_uevent(&dev->kobj, KOBJ_REMOVE);
 	cleanup_device_parent(dev);
 	kobject_del(&dev->kobj);
@@ -1300,19 +1255,6 @@ void device_unregister(struct device *dev)
 	put_device(dev);
 }
 EXPORT_SYMBOL_GPL(device_unregister);
-
-static struct device *prev_device(struct klist_iter *i)
-{
-	struct klist_node *n = klist_prev(i);
-	struct device *dev = NULL;
-	struct device_private *p;
-
-	if (n) {
-		p = to_device_private_parent(n);
-		dev = p->device;
-	}
-	return dev;
-}
 
 static struct device *next_device(struct klist_iter *i)
 {
@@ -1365,11 +1307,12 @@ const char *device_get_devnode(struct device *dev,
 		return dev_name(dev);
 
 	/* replace '!' in the name with '/' */
-	s = kstrdup(dev_name(dev), GFP_KERNEL);
-	if (!s)
+	*tmp = kstrdup(dev_name(dev), GFP_KERNEL);
+	if (!*tmp)
 		return NULL;
-	strreplace(s, '!', '/');
-	return *tmp = s;
+	while ((s = strchr(*tmp, '!')))
+		s[0] = '/';
+	return *tmp;
 }
 
 /**
@@ -1401,36 +1344,6 @@ int device_for_each_child(struct device *parent, void *data,
 	return error;
 }
 EXPORT_SYMBOL_GPL(device_for_each_child);
-
-/**
- * device_for_each_child_reverse - device child iterator in reversed order.
- * @parent: parent struct device.
- * @fn: function to be called for each device.
- * @data: data for the callback.
- *
- * Iterate over @parent's child devices, and call @fn for each,
- * passing it @data.
- *
- * We check the return of @fn each time. If it returns anything
- * other than 0, we break out and return that value.
- */
-int device_for_each_child_reverse(struct device *parent, void *data,
-				  int (*fn)(struct device *dev, void *data))
-{
-	struct klist_iter i;
-	struct device *child;
-	int error = 0;
-
-	if (!parent->p)
-		return 0;
-
-	klist_iter_init(&parent->p->klist_children, &i);
-	while ((child = prev_device(&i)) && !error)
-		error = fn(child, data);
-	klist_iter_exit(&i);
-	return error;
-}
-EXPORT_SYMBOL_GPL(device_for_each_child_reverse);
 
 /**
  * device_find_child - device iterator for locating a particular device.
@@ -2015,15 +1928,12 @@ int device_move(struct device *dev, struct device *new_parent,
 		break;
 	case DPM_ORDER_DEV_AFTER_PARENT:
 		device_pm_move_after(dev, new_parent);
-		devices_kset_move_after(dev, new_parent);
 		break;
 	case DPM_ORDER_PARENT_BEFORE_DEV:
 		device_pm_move_before(new_parent, dev);
-		devices_kset_move_before(new_parent, dev);
 		break;
 	case DPM_ORDER_DEV_LAST:
 		device_pm_move_last(dev);
-		devices_kset_move_last(dev);
 		break;
 	}
 
@@ -2095,6 +2005,7 @@ void device_shutdown(void)
 		spin_lock(&devices_kset->list_lock);
 	}
 	spin_unlock(&devices_kset->list_lock);
+	async_synchronize_full();
 }
 
 /*
@@ -2116,8 +2027,6 @@ create_syslog_header(const struct device *dev, char *hdr, size_t hdrlen)
 		return 0;
 
 	pos += snprintf(hdr + pos, hdrlen - pos, "SUBSYSTEM=%s", subsys);
-	if (pos >= hdrlen)
-		goto overflow;
 
 	/*
 	 * Add device identifier DEVICE=:
@@ -2149,15 +2058,9 @@ create_syslog_header(const struct device *dev, char *hdr, size_t hdrlen)
 				"DEVICE=+%s:%s", subsys, dev_name(dev));
 	}
 
-	if (pos >= hdrlen)
-		goto overflow;
-
 	return pos;
-
-overflow:
-	dev_WARN(dev, "device/subsystem name too long");
-	return 0;
 }
+EXPORT_SYMBOL(create_syslog_header);
 
 int dev_vprintk_emit(int level, const struct device *dev,
 		     const char *fmt, va_list args)
@@ -2186,47 +2089,54 @@ int dev_printk_emit(int level, const struct device *dev, const char *fmt, ...)
 }
 EXPORT_SYMBOL(dev_printk_emit);
 
-static void __dev_printk(const char *level, const struct device *dev,
+static int __dev_printk(const char *level, const struct device *dev,
 			struct va_format *vaf)
 {
-	if (dev)
-		dev_printk_emit(level[1] - '0', dev, "%s %s: %pV",
-				dev_driver_string(dev), dev_name(dev), vaf);
-	else
-		printk("%s(NULL device *): %pV", level, vaf);
+	if (!dev)
+		return printk("%s(NULL device *): %pV", level, vaf);
+
+	return dev_printk_emit(level[1] - '0', dev,
+			       "%s %s: %pV",
+			       dev_driver_string(dev), dev_name(dev), vaf);
 }
 
-void dev_printk(const char *level, const struct device *dev,
-		const char *fmt, ...)
+int dev_printk(const char *level, const struct device *dev,
+	       const char *fmt, ...)
 {
 	struct va_format vaf;
 	va_list args;
+	int r;
 
 	va_start(args, fmt);
 
 	vaf.fmt = fmt;
 	vaf.va = &args;
 
-	__dev_printk(level, dev, &vaf);
+	r = __dev_printk(level, dev, &vaf);
 
 	va_end(args);
+
+	return r;
 }
 EXPORT_SYMBOL(dev_printk);
 
 #define define_dev_printk_level(func, kern_level)		\
-void func(const struct device *dev, const char *fmt, ...)	\
+int func(const struct device *dev, const char *fmt, ...)	\
 {								\
 	struct va_format vaf;					\
 	va_list args;						\
+	int r;							\
 								\
 	va_start(args, fmt);					\
 								\
 	vaf.fmt = fmt;						\
 	vaf.va = &args;						\
 								\
-	__dev_printk(kern_level, dev, &vaf);			\
+	r = __dev_printk(kern_level, dev, &vaf);		\
 								\
 	va_end(args);						\
+								\
+	return r;						\
 }								\
 EXPORT_SYMBOL(func);
 
@@ -2239,53 +2149,3 @@ define_dev_printk_level(dev_notice, KERN_NOTICE);
 define_dev_printk_level(_dev_info, KERN_INFO);
 
 #endif
-
-static inline bool fwnode_is_primary(struct fwnode_handle *fwnode)
-{
-	return fwnode && !IS_ERR(fwnode->secondary);
-}
-
-/**
- * set_primary_fwnode - Change the primary firmware node of a given device.
- * @dev: Device to handle.
- * @fwnode: New primary firmware node of the device.
- *
- * Set the device's firmware node pointer to @fwnode, but if a secondary
- * firmware node of the device is present, preserve it.
- */
-void set_primary_fwnode(struct device *dev, struct fwnode_handle *fwnode)
-{
-	if (fwnode) {
-		struct fwnode_handle *fn = dev->fwnode;
-
-		if (fwnode_is_primary(fn))
-			fn = fn->secondary;
-
-		fwnode->secondary = fn;
-		dev->fwnode = fwnode;
-	} else {
-		dev->fwnode = fwnode_is_primary(dev->fwnode) ?
-			dev->fwnode->secondary : NULL;
-	}
-}
-EXPORT_SYMBOL_GPL(set_primary_fwnode);
-
-/**
- * set_secondary_fwnode - Change the secondary firmware node of a given device.
- * @dev: Device to handle.
- * @fwnode: New secondary firmware node of the device.
- *
- * If a primary firmware node of the device is present, set its secondary
- * pointer to @fwnode.  Otherwise, set the device's firmware node pointer to
- * @fwnode.
- */
-void set_secondary_fwnode(struct device *dev, struct fwnode_handle *fwnode)
-{
-	if (fwnode)
-		fwnode->secondary = ERR_PTR(-ENODEV);
-
-	if (fwnode_is_primary(dev->fwnode))
-		dev->fwnode->secondary = fwnode;
-	else
-		dev->fwnode = fwnode;
-}

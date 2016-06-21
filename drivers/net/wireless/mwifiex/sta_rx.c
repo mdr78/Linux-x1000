@@ -1,7 +1,7 @@
 /*
  * Marvell Wireless LAN device driver: station RX data handling
  *
- * Copyright (C) 2011-2014, Marvell International Ltd.
+ * Copyright (C) 2011, Marvell International Ltd.
  *
  * This software file (the "File") is distributed by Marvell International
  * Ltd. under the terms of the GNU General Public License Version 2, June 1991
@@ -88,15 +88,11 @@ int mwifiex_process_rx_packet(struct mwifiex_private *priv,
 	struct rxpd *local_rx_pd;
 	int hdr_chop;
 	struct ethhdr *eth;
-	u16 rx_pkt_off, rx_pkt_len;
-	u8 *offset;
-	u8 adj_rx_rate = 0;
 
 	local_rx_pd = (struct rxpd *) (skb->data);
 
-	rx_pkt_off = le16_to_cpu(local_rx_pd->rx_pkt_offset);
-	rx_pkt_len = le16_to_cpu(local_rx_pd->rx_pkt_length);
-	rx_pkt_hdr = (void *)local_rx_pd + rx_pkt_off;
+	rx_pkt_hdr = (void *)local_rx_pd +
+		     le16_to_cpu(local_rx_pd->rx_pkt_offset);
 
 	if ((!memcmp(&rx_pkt_hdr->rfc1042_hdr, bridge_tunnel_header,
 		     sizeof(bridge_tunnel_header))) ||
@@ -141,33 +137,18 @@ int mwifiex_process_rx_packet(struct mwifiex_private *priv,
 
 	if (priv->hs2_enabled &&
 	    mwifiex_discard_gratuitous_arp(priv, skb)) {
-		mwifiex_dbg(priv->adapter, INFO, "Bypassed Gratuitous ARP\n");
+		dev_dbg(priv->adapter->dev, "Bypassed Gratuitous ARP\n");
 		dev_kfree_skb_any(skb);
 		return 0;
-	}
-
-	if (ISSUPP_TDLS_ENABLED(priv->adapter->fw_cap_info) &&
-	    ntohs(rx_pkt_hdr->eth803_hdr.h_proto) == ETH_P_TDLS) {
-		offset = (u8 *)local_rx_pd + rx_pkt_off;
-		mwifiex_process_tdls_action_frame(priv, offset, rx_pkt_len);
 	}
 
 	priv->rxpd_rate = local_rx_pd->rx_rate;
 
 	priv->rxpd_htinfo = local_rx_pd->ht_info;
 
-	if (GET_BSS_ROLE(priv) == MWIFIEX_BSS_ROLE_STA ||
-	    GET_BSS_ROLE(priv) == MWIFIEX_BSS_ROLE_UAP) {
-		adj_rx_rate = mwifiex_adjust_data_rate(priv, priv->rxpd_rate,
-						       priv->rxpd_htinfo);
-		mwifiex_hist_data_add(priv, adj_rx_rate, local_rx_pd->snr,
-				      local_rx_pd->nf);
-	}
-
 	ret = mwifiex_recv_packet(priv, skb);
 	if (ret == -1)
-		mwifiex_dbg(priv->adapter, ERROR,
-			    "recv packet failed\n");
+		dev_err(priv->adapter->dev, "recv packet failed\n");
 
 	return ret;
 }
@@ -193,7 +174,6 @@ int mwifiex_process_sta_rx_packet(struct mwifiex_private *priv,
 	struct rx_packet_hdr *rx_pkt_hdr;
 	u8 ta[ETH_ALEN];
 	u16 rx_pkt_type, rx_pkt_offset, rx_pkt_length, seq_num;
-	struct mwifiex_sta_node *sta_ptr;
 
 	local_rx_pd = (struct rxpd *) (skb->data);
 	rx_pkt_type = le16_to_cpu(local_rx_pd->rx_pkt_type);
@@ -204,18 +184,37 @@ int mwifiex_process_sta_rx_packet(struct mwifiex_private *priv,
 	rx_pkt_hdr = (void *)local_rx_pd + rx_pkt_offset;
 
 	if ((rx_pkt_offset + rx_pkt_length) > (u16) skb->len) {
-		mwifiex_dbg(adapter, ERROR,
-			    "wrong rx packet: len=%d, rx_pkt_offset=%d, rx_pkt_length=%d\n",
-			    skb->len, rx_pkt_offset, rx_pkt_length);
+		dev_err(adapter->dev,
+			"wrong rx packet: len=%d, rx_pkt_offset=%d, rx_pkt_length=%d\n",
+			skb->len, rx_pkt_offset, rx_pkt_length);
 		priv->stats.rx_dropped++;
 		dev_kfree_skb_any(skb);
 		return ret;
 	}
 
-	if (rx_pkt_type == PKT_TYPE_MGMT) {
+	if (rx_pkt_type == PKT_TYPE_AMSDU) {
+		struct sk_buff_head list;
+		struct sk_buff *rx_skb;
+
+		__skb_queue_head_init(&list);
+
+		skb_pull(skb, rx_pkt_offset);
+		skb_trim(skb, rx_pkt_length);
+
+		ieee80211_amsdu_to_8023s(skb, &list, priv->curr_addr,
+					 priv->wdev->iftype, 0, false);
+
+		while (!skb_queue_empty(&list)) {
+			rx_skb = __skb_dequeue(&list);
+			ret = mwifiex_recv_packet(priv, rx_skb);
+			if (ret == -1)
+				dev_err(adapter->dev, "Rx of A-MSDU failed");
+		}
+		return 0;
+	} else if (rx_pkt_type == PKT_TYPE_MGMT) {
 		ret = mwifiex_process_mgmt_packet(priv, skb);
 		if (ret)
-			mwifiex_dbg(adapter, ERROR, "Rx of mgmt packet failed");
+			dev_err(adapter->dev, "Rx of mgmt packet failed");
 		dev_kfree_skb_any(skb);
 		return ret;
 	}
@@ -224,28 +223,14 @@ int mwifiex_process_sta_rx_packet(struct mwifiex_private *priv,
 	 * If the packet is not an unicast packet then send the packet
 	 * directly to os. Don't pass thru rx reordering
 	 */
-	if ((!IS_11N_ENABLED(priv) &&
-	     !(ISSUPP_TDLS_ENABLED(priv->adapter->fw_cap_info) &&
-	       !(local_rx_pd->flags & MWIFIEX_RXPD_FLAGS_TDLS_PACKET))) ||
+	if (!IS_11N_ENABLED(priv) ||
 	    !ether_addr_equal_unaligned(priv->curr_addr, rx_pkt_hdr->eth803_hdr.h_dest)) {
 		mwifiex_process_rx_packet(priv, skb);
 		return ret;
 	}
 
-	if (mwifiex_queuing_ra_based(priv) ||
-	    (ISSUPP_TDLS_ENABLED(priv->adapter->fw_cap_info) &&
-	     local_rx_pd->flags & MWIFIEX_RXPD_FLAGS_TDLS_PACKET)) {
+	if (mwifiex_queuing_ra_based(priv)) {
 		memcpy(ta, rx_pkt_hdr->eth803_hdr.h_source, ETH_ALEN);
-		if (local_rx_pd->flags & MWIFIEX_RXPD_FLAGS_TDLS_PACKET &&
-		    local_rx_pd->priority < MAX_NUM_TID) {
-			sta_ptr = mwifiex_get_sta_entry(priv, ta);
-			if (sta_ptr)
-				sta_ptr->rx_seq[local_rx_pd->priority] =
-					      le16_to_cpu(local_rx_pd->seq_num);
-			mwifiex_auto_tdls_update_peer_signal(priv, ta,
-							     local_rx_pd->snr,
-							     local_rx_pd->nf);
-		}
 	} else {
 		if (rx_pkt_type != PKT_TYPE_BAR)
 			priv->rx_seq[local_rx_pd->priority] = seq_num;

@@ -28,6 +28,7 @@
 
 rt_status SendTxCommandPacket(struct net_device *dev, void *pData, u32 DataLen)
 {
+	rt_status	rtStatus = RT_STATUS_SUCCESS;
 	struct r8192_priv   *priv = ieee80211_priv(dev);
 	struct sk_buff	    *skb;
 	cb_desc		    *tcb_desc;
@@ -57,7 +58,7 @@ rt_status SendTxCommandPacket(struct net_device *dev, void *pData, u32 DataLen)
 		priv->ieee80211->softmac_hard_start_xmit(skb, dev);
 	}
 
-	return RT_STATUS_SUCCESS;
+	return rtStatus;
 }
 
 /*-----------------------------------------------------------------------------
@@ -181,7 +182,7 @@ static void cmpk_handle_tx_feedback(struct net_device *dev, u8 *pmsg)
 
 }
 
-static void cmdpkt_beacontimerinterrupt_819xusb(struct net_device *dev)
+void cmdpkt_beacontimerinterrupt_819xusb(struct net_device *dev)
 {
 	struct r8192_priv *priv = ieee80211_priv(dev);
 	u16 tx_rate;

@@ -15,6 +15,7 @@
 
 #include <linux/module.h>
 #include <linux/kernel.h>
+#include <linux/init.h>
 #include <linux/platform_device.h>
 #include <linux/leds.h>
 #include <linux/workqueue.h>
@@ -120,10 +121,13 @@ static int adp5520_led_probe(struct platform_device *pdev)
 
 	led = devm_kzalloc(&pdev->dev, sizeof(*led) * pdata->num_leds,
 				GFP_KERNEL);
-	if (!led)
+	if (led == NULL) {
+		dev_err(&pdev->dev, "failed to alloc memory\n");
 		return -ENOMEM;
+	}
 
 	ret = adp5520_led_prepare(pdev);
+
 	if (ret) {
 		dev_err(&pdev->dev, "failed to write\n");
 		return ret;
@@ -201,6 +205,7 @@ static int adp5520_led_remove(struct platform_device *pdev)
 static struct platform_driver adp5520_led_driver = {
 	.driver	= {
 		.name	= "adp5520-led",
+		.owner	= THIS_MODULE,
 	},
 	.probe		= adp5520_led_probe,
 	.remove		= adp5520_led_remove,

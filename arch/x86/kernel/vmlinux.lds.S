@@ -147,6 +147,7 @@ SECTIONS
 		_edata = .;
 	} :data
 
+#ifdef CONFIG_X86_64
 
 	. = ALIGN(PAGE_SIZE);
 	__vvar_page = .;
@@ -164,14 +165,11 @@ SECTIONS
 #undef __VVAR_KERNEL_LDS
 #undef EMIT_VVAR
 
-		/*
-		 * Pad the rest of the page with zeros.  Otherwise the loader
-		 * can leave garbage here.
-		 */
-		. = __vvar_beginning_hack + PAGE_SIZE;
 	} :data
 
        . = ALIGN(__vvar_page + PAGE_SIZE, PAGE_SIZE);
+
+#endif /* CONFIG_X86_64 */
 
 	/* Init code and data - will be freed after init */
 	. = ALIGN(PAGE_SIZE);
@@ -186,8 +184,6 @@ SECTIONS
 	 * start another segment - init.
 	 */
 	PERCPU_VADDR(INTERNODE_CACHE_BYTES, 0, :percpu)
-	ASSERT(SIZEOF(.data..percpu) < CONFIG_PHYSICAL_START,
-	       "per-CPU data too large - increase CONFIG_PHYSICAL_START")
 #endif
 
 	INIT_TEXT_SECTION(PAGE_SIZE)
@@ -364,7 +360,7 @@ INIT_PER_CPU(irq_stack_union);
 
 #endif /* CONFIG_X86_32 */
 
-#ifdef CONFIG_KEXEC_CORE
+#ifdef CONFIG_KEXEC
 #include <asm/kexec.h>
 
 . = ASSERT(kexec_control_code_size <= KEXEC_CONTROL_CODE_MAX_SIZE,

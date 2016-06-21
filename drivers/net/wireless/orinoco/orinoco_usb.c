@@ -100,10 +100,24 @@ static struct ez_usb_fw firmware = {
 	.code = NULL,
 };
 
+#ifdef CONFIG_USB_DEBUG
+static int debug = 1;
+#else
+static int debug;
+#endif
+
 /* Debugging macros */
+#undef dbg
+#define dbg(format, arg...) \
+	do { if (debug) printk(KERN_DEBUG PFX "%s: " format "\n", \
+			       __func__ , ## arg); } while (0)
 #undef err
 #define err(format, arg...) \
 	do { printk(KERN_ERR PFX format "\n", ## arg); } while (0)
+
+/* Module paramaters */
+module_param(debug, int, 0644);
+MODULE_PARM_DESC(debug, "Debug enabled or not");
 
 MODULE_FIRMWARE("orinoco_ezusb_fw");
 
@@ -327,7 +341,7 @@ static void ezusb_request_timerfn(u_long _ctx)
 		ctx->state = EZUSB_CTX_REQ_TIMEOUT;
 	} else {
 		ctx->state = EZUSB_CTX_RESP_TIMEOUT;
-		dev_dbg(&ctx->outurb->dev->dev, "couldn't unlink\n");
+		dbg("couldn't unlink");
 		atomic_inc(&ctx->refcount);
 		ctx->killed = 1;
 		ezusb_ctx_complete(ctx);
@@ -364,7 +378,9 @@ static struct request_context *ezusb_alloc_ctx(struct ezusb_priv *upriv,
 	atomic_set(&ctx->refcount, 1);
 	init_completion(&ctx->done);
 
-	setup_timer(&ctx->timer, ezusb_request_timerfn, (u_long)ctx);
+	init_timer(&ctx->timer);
+	ctx->timer.function = ezusb_request_timerfn;
+	ctx->timer.data = (u_long) ctx;
 	return ctx;
 }
 
@@ -532,7 +548,7 @@ static void ezusb_request_out_callback(struct urb *urb)
 
 	if (ctx->killed) {
 		spin_unlock_irqrestore(&upriv->req_lock, flags);
-		pr_warn("interrupt called with dead ctx\n");
+		pr_warning("interrupt called with dead ctx");
 		goto out;
 	}
 
@@ -618,9 +634,9 @@ static void ezusb_request_in_callback(struct ezusb_priv *upriv,
 				ctx = c;
 				break;
 			}
-			netdev_dbg(upriv->dev, "Skipped (0x%x/0x%x) (%d/%d)\n",
-				   le16_to_cpu(ans->hermes_rid), c->in_rid,
-				   ans->ans_reply_count, reply_count);
+			dbg("Skipped (0x%x/0x%x) (%d/%d)",
+			    le16_to_cpu(ans->hermes_rid),
+			    c->in_rid, ans->ans_reply_count, reply_count);
 		}
 	}
 
@@ -669,8 +685,8 @@ static void ezusb_request_in_callback(struct ezusb_priv *upriv,
 	default:
 		spin_unlock_irqrestore(&upriv->req_lock, flags);
 
-		pr_warn("Matched IN URB, unexpected context state(0x%x)\n",
-			state);
+		pr_warning("Matched IN URB, unexpected context state(0x%x)",
+		     state);
 		/* Throw this CTX away and try submitting another */
 		del_timer(&ctx->timer);
 		ctx->outurb->transfer_flags |= URB_ASYNC_UNLINK;
@@ -752,7 +768,7 @@ static int ezusb_submit_in_urb(struct ezusb_priv *upriv)
 	void *cur_buf = upriv->read_urb->transfer_buffer;
 
 	if (upriv->read_urb->status == -EINPROGRESS) {
-		netdev_dbg(upriv->dev, "urb busy, not resubmiting\n");
+		dbg("urb busy, not resubmiting");
 		retval = -EBUSY;
 		goto exit;
 	}
@@ -822,9 +838,8 @@ static int ezusb_firmware_download(struct ezusb_priv *upriv,
 		memcpy(fw_buffer, &fw->code[addr], FW_BUF_SIZE);
 		if (variant_offset >= addr &&
 		    variant_offset < addr + FW_BUF_SIZE) {
-			netdev_dbg(upriv->dev,
-				   "Patching card_variant byte at 0x%04X\n",
-				   variant_offset);
+			dbg("Patching card_variant byte at 0x%04X",
+			    variant_offset);
 			fw_buffer[variant_offset - addr] = FW_VAR_VALUE;
 		}
 		retval = usb_control_msg(upriv->udev,
@@ -864,6 +879,7 @@ static int ezusb_access_ltv(struct ezusb_priv *upriv,
 	BUG_ON(in_irq());
 
 	if (!upriv->udev) {
+		dbg("Device disconnected");
 		retval = -ENODEV;
 		goto exit;
 	}
@@ -919,6 +935,7 @@ static int ezusb_access_ltv(struct ezusb_priv *upriv,
 			retval = -EFAULT;
 		}
 		goto exit;
+		break;
 	}
 	if (ctx->in_rid) {
 		struct ezusb_packet *ans = ctx->buf;
@@ -1006,9 +1023,8 @@ static int ezusb_doicmd_wait(struct hermes *hw, u16 cmd, u16 parm0, u16 parm1,
 		cpu_to_le16(parm1),
 		cpu_to_le16(parm2),
 	};
-	netdev_dbg(upriv->dev,
-		   "0x%04X, parm0 0x%04X, parm1 0x%04X, parm2 0x%04X\n", cmd,
-		   parm0, parm1, parm2);
+	dbg("0x%04X, parm0 0x%04X, parm1 0x%04X, parm2 0x%04X",
+	    cmd, parm0, parm1, parm2);
 	ctx = ezusb_alloc_ctx(upriv, EZUSB_RID_DOCMD, EZUSB_RID_ACK);
 	if (!ctx)
 		return -ENOMEM;
@@ -1029,7 +1045,7 @@ static int ezusb_docmd_wait(struct hermes *hw, u16 cmd, u16 parm0,
 		0,
 		0,
 	};
-	netdev_dbg(upriv->dev, "0x%04X, parm0 0x%04X\n", cmd, parm0);
+	dbg("0x%04X, parm0 0x%04X", cmd, parm0);
 	ctx = ezusb_alloc_ctx(upriv, EZUSB_RID_DOCMD, EZUSB_RID_ACK);
 	if (!ctx)
 		return -ENOMEM;
@@ -1316,7 +1332,7 @@ static int ezusb_hard_reset(struct orinoco_private *priv)
 		return retval;
 	}
 
-	netdev_dbg(upriv->dev, "sending control message\n");
+	dbg("sending control message");
 	retval = usb_control_msg(upriv->udev,
 				 usb_sndctrlpipe(upriv->udev, 0),
 				 EZUSB_REQUEST_TRIGER,
@@ -1385,31 +1401,32 @@ static void ezusb_bulk_in_callback(struct urb *urb)
 	u16 crc;
 	u16 hermes_rid;
 
-	if (upriv->udev == NULL)
+	if (upriv->udev == NULL) {
+		dbg("disconnected");
 		return;
+	}
 
 	if (urb->status == -ETIMEDOUT) {
 		/* When a device gets unplugged we get this every time
 		 * we resubmit, flooding the logs.  Since we don't use
 		 * USB timeouts, it shouldn't happen any other time*/
-		pr_warn("%s: urb timed out, not resubmitting\n", __func__);
+		pr_warning("%s: urb timed out, not resubmiting", __func__);
 		return;
 	}
 	if (urb->status == -ECONNABORTED) {
-		pr_warn("%s: connection abort, resubmitting urb\n",
-			__func__);
+		pr_warning("%s: connection abort, resubmiting urb",
+		     __func__);
 		goto resubmit;
 	}
 	if ((urb->status == -EILSEQ)
 	    || (urb->status == -ENOENT)
 	    || (urb->status == -ECONNRESET)) {
-		netdev_dbg(upriv->dev, "status %d, not resubmiting\n",
-			   urb->status);
+		dbg("status %d, not resubmiting", urb->status);
 		return;
 	}
 	if (urb->status)
-		netdev_dbg(upriv->dev, "status: %d length: %d\n",
-			   urb->status, urb->actual_length);
+		dbg("status: %d length: %d",
+		    urb->status, urb->actual_length);
 	if (urb->actual_length < sizeof(*ans)) {
 		err("%s: short read, ignoring", __func__);
 		goto resubmit;
@@ -1502,7 +1519,6 @@ static inline void ezusb_delete(struct ezusb_priv *upriv)
 	if (upriv->dev) {
 		struct orinoco_private *priv = ndev_priv(upriv->dev);
 		orinoco_if_del(priv);
-		wiphy_unregister(priv_to_wiphy(upriv));
 		free_orinocodev(priv);
 	}
 }
@@ -1576,7 +1592,6 @@ static int ezusb_probe(struct usb_interface *interface,
 				ezusb_hard_reset, NULL);
 	if (!priv) {
 		err("Couldn't allocate orinocodev");
-		retval = -ENOMEM;
 		goto exit;
 	}
 
@@ -1605,10 +1620,13 @@ static int ezusb_probe(struct usb_interface *interface,
 	for (i = 0; i < iface_desc->bNumEndpoints; ++i) {
 		ep = &interface->altsetting[0].endpoint[i].desc;
 
-		if (usb_endpoint_is_bulk_in(ep)) {
+		if (((ep->bEndpointAddress & USB_ENDPOINT_DIR_MASK)
+		     == USB_DIR_IN) &&
+		    ((ep->bmAttributes & USB_ENDPOINT_XFERTYPE_MASK)
+		     == USB_ENDPOINT_XFER_BULK)) {
 			/* we found a bulk in endpoint */
 			if (upriv->read_urb != NULL) {
-				pr_warn("Found a second bulk in ep, ignored\n");
+				pr_warning("Found a second bulk in ep, ignored");
 				continue;
 			}
 
@@ -1618,10 +1636,10 @@ static int ezusb_probe(struct usb_interface *interface,
 				goto error;
 			}
 			if (le16_to_cpu(ep->wMaxPacketSize) != 64)
-				pr_warn("bulk in: wMaxPacketSize!= 64\n");
+				pr_warning("bulk in: wMaxPacketSize!= 64");
 			if (ep->bEndpointAddress != (2 | USB_DIR_IN))
-				pr_warn("bulk in: bEndpointAddress: %d\n",
-					ep->bEndpointAddress);
+				pr_warning("bulk in: bEndpointAddress: %d",
+				     ep->bEndpointAddress);
 			upriv->read_pipe = usb_rcvbulkpipe(udev,
 							 ep->
 							 bEndpointAddress);
@@ -1633,18 +1651,21 @@ static int ezusb_probe(struct usb_interface *interface,
 			}
 		}
 
-		if (usb_endpoint_is_bulk_out(ep)) {
+		if (((ep->bEndpointAddress & USB_ENDPOINT_DIR_MASK)
+		     == USB_DIR_OUT) &&
+		    ((ep->bmAttributes & USB_ENDPOINT_XFERTYPE_MASK)
+		     == USB_ENDPOINT_XFER_BULK)) {
 			/* we found a bulk out endpoint */
 			if (upriv->bap_buf != NULL) {
-				pr_warn("Found a second bulk out ep, ignored\n");
+				pr_warning("Found a second bulk out ep, ignored");
 				continue;
 			}
 
 			if (le16_to_cpu(ep->wMaxPacketSize) != 64)
-				pr_warn("bulk out: wMaxPacketSize != 64\n");
+				pr_warning("bulk out: wMaxPacketSize != 64");
 			if (ep->bEndpointAddress != 2)
-				pr_warn("bulk out: bEndpointAddress: %d\n",
-					ep->bEndpointAddress);
+				pr_warning("bulk out: bEndpointAddress: %d",
+				     ep->bEndpointAddress);
 			upriv->write_pipe = usb_sndbulkpipe(udev,
 							  ep->
 							  bEndpointAddress);
@@ -1666,7 +1687,7 @@ static int ezusb_probe(struct usb_interface *interface,
 		firmware.code = fw_entry->data;
 	}
 	if (firmware.size && firmware.code) {
-		if (ezusb_firmware_download(upriv, &firmware) < 0)
+		if (ezusb_firmware_download(upriv, &firmware))
 			goto error;
 	} else {
 		err("No firmware to download");
@@ -1697,7 +1718,6 @@ static int ezusb_probe(struct usb_interface *interface,
 	if (orinoco_if_add(priv, 0, 0, &ezusb_netdev_ops) != 0) {
 		upriv->dev = NULL;
 		err("%s: orinoco_if_add() failed", __func__);
-		wiphy_unregister(priv_to_wiphy(priv));
 		goto error;
 	}
 	upriv->dev = priv->ndev;

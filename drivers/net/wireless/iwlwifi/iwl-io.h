@@ -32,9 +32,24 @@
 #include "iwl-devtrace.h"
 #include "iwl-trans.h"
 
-void iwl_write8(struct iwl_trans *trans, u32 ofs, u8 val);
-void iwl_write32(struct iwl_trans *trans, u32 ofs, u32 val);
-u32 iwl_read32(struct iwl_trans *trans, u32 ofs);
+static inline void iwl_write8(struct iwl_trans *trans, u32 ofs, u8 val)
+{
+	trace_iwlwifi_dev_iowrite8(trans->dev, ofs, val);
+	iwl_trans_write8(trans, ofs, val);
+}
+
+static inline void iwl_write32(struct iwl_trans *trans, u32 ofs, u32 val)
+{
+	trace_iwlwifi_dev_iowrite32(trans->dev, ofs, val);
+	iwl_trans_write32(trans, ofs, val);
+}
+
+static inline u32 iwl_read32(struct iwl_trans *trans, u32 ofs)
+{
+	u32 val = iwl_trans_read32(trans, ofs);
+	trace_iwlwifi_dev_ioread32(trans->dev, ofs, val);
+	return val;
+}
 
 static inline void iwl_set_bit(struct iwl_trans *trans, u32 reg, u32 mask)
 {
@@ -55,17 +70,12 @@ u32 iwl_read_direct32(struct iwl_trans *trans, u32 reg);
 void iwl_write_direct32(struct iwl_trans *trans, u32 reg, u32 value);
 
 
-u32 __iwl_read_prph(struct iwl_trans *trans, u32 ofs);
 u32 iwl_read_prph(struct iwl_trans *trans, u32 ofs);
-void __iwl_write_prph(struct iwl_trans *trans, u32 ofs, u32 val);
 void iwl_write_prph(struct iwl_trans *trans, u32 ofs, u32 val);
-int iwl_poll_prph_bit(struct iwl_trans *trans, u32 addr,
-		      u32 bits, u32 mask, int timeout);
 void iwl_set_bits_prph(struct iwl_trans *trans, u32 ofs, u32 mask);
 void iwl_set_bits_mask_prph(struct iwl_trans *trans, u32 ofs,
 			    u32 bits, u32 mask);
 void iwl_clear_bits_prph(struct iwl_trans *trans, u32 ofs, u32 mask);
-void iwl_force_nmi(struct iwl_trans *trans);
 
 /* Error handling */
 int iwl_dump_fh(struct iwl_trans *trans, char **buf);

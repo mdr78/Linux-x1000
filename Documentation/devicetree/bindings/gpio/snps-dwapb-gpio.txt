@@ -12,10 +12,7 @@ represented as child nodes with the following properties:
 Required properties:
 - compatible : "snps,dw-apb-gpio-port"
 - gpio-controller : Marks the device node as a gpio controller.
-- #gpio-cells : Should be two.  The first cell is the pin number and
-  the second cell is used to specify the gpio polarity:
-      0 = active high
-      1 = active low
+- #gpio-cells : Should be 1.  It is the pin number.
 - reg : The integer port index of the port, a single cell.
 
 Optional properties:
@@ -41,7 +38,7 @@ gpio: gpio@20000 {
 	porta: gpio-controller@0 {
 		compatible = "snps,dw-apb-gpio-port";
 		gpio-controller;
-		#gpio-cells = <2>;
+		#gpio-cells = <1>;
 		snps,nr-gpios = <8>;
 		reg = <0>;
 		interrupt-controller;
@@ -53,7 +50,7 @@ gpio: gpio@20000 {
 	portb: gpio-controller@1 {
 		compatible = "snps,dw-apb-gpio-port";
 		gpio-controller;
-		#gpio-cells = <2>;
+		#gpio-cells = <1>;
 		snps,nr-gpios = <8>;
 		reg = <1>;
 	};

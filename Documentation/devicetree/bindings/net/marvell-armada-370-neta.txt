@@ -1,17 +1,14 @@
 * Marvell Armada 370 / Armada XP Ethernet Controller (NETA)
 
 Required properties:
-- compatible: "marvell,armada-370-neta" or "marvell,armada-xp-neta".
+- compatible: should be "marvell,armada-370-neta".
 - reg: address and length of the register set for the device.
 - interrupts: interrupt for the device
-- phy: See ethernet.txt file in the same directory.
-- phy-mode: See ethernet.txt file in the same directory
+- phy: A phandle to a phy node defining the PHY address (as the reg
+  property, a single integer).
+- phy-mode: The interface between the SoC and the PHY (a string that
+  of_get_phy_mode() can understand)
 - clocks: a pointer to the reference clock for this device.
-
-Optional properties:
-- tx-csum-limit: maximum mtu supported by port that allow TX checksum.
-  Value is presented in bytes. If not used, by default 1600B is set for
-  "marvell,armada-370-neta" and 9800B for others.
 
 Example:
 
@@ -20,7 +17,6 @@ ethernet@d0070000 {
 	reg = <0xd0070000 0x2500>;
 	interrupts = <8>;
 	clocks = <&gate_clk 4>;
-	tx-csum-limit = <9800>
 	status = "okay";
 	phy = <&phy0>;
 	phy-mode = "rgmii-id";

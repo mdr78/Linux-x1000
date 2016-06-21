@@ -84,8 +84,8 @@ static const struct soc_enum wm8974_enum[] = {
 
 static const char *wm8974_auxmode_text[] = { "Buffer", "Mixer" };
 
-static SOC_ENUM_SINGLE_DECL(wm8974_auxmode,
-			    WM8974_INPUT,  3, wm8974_auxmode_text);
+static const struct soc_enum wm8974_auxmode =
+	SOC_ENUM_SINGLE(WM8974_INPUT,  3, 2, wm8974_auxmode_text);
 
 static const DECLARE_TLV_DB_SCALE(digital_tlv, -12750, 50, 1);
 static const DECLARE_TLV_DB_SCALE(eq_tlv, -1200, 100, 0);
@@ -445,16 +445,16 @@ static int wm8974_pcm_hw_params(struct snd_pcm_substream *substream,
 	u16 adn = snd_soc_read(codec, WM8974_ADD) & 0x1f1;
 
 	/* bit size */
-	switch (params_width(params)) {
-	case 16:
+	switch (params_format(params)) {
+	case SNDRV_PCM_FORMAT_S16_LE:
 		break;
-	case 20:
+	case SNDRV_PCM_FORMAT_S20_3LE:
 		iface |= 0x0020;
 		break;
-	case 24:
+	case SNDRV_PCM_FORMAT_S24_LE:
 		iface |= 0x0040;
 		break;
-	case 32:
+	case SNDRV_PCM_FORMAT_S32_LE:
 		iface |= 0x0060;
 		break;
 	}
@@ -514,7 +514,7 @@ static int wm8974_set_bias_level(struct snd_soc_codec *codec,
 	case SND_SOC_BIAS_STANDBY:
 		power1 |= WM8974_POWER1_BIASEN | WM8974_POWER1_BUFIOEN;
 
-		if (snd_soc_codec_get_bias_level(codec) == SND_SOC_BIAS_OFF) {
+		if (codec->dapm.bias_level == SND_SOC_BIAS_OFF) {
 			regcache_sync(dev_get_regmap(codec->dev, NULL));
 
 			/* Initial cap charge at VMID 5k */
@@ -533,6 +533,7 @@ static int wm8974_set_bias_level(struct snd_soc_codec *codec,
 		break;
 	}
 
+	codec->dapm.bias_level = level;
 	return 0;
 }
 
@@ -567,6 +568,18 @@ static struct snd_soc_dai_driver wm8974_dai = {
 	.symmetric_rates = 1,
 };
 
+static int wm8974_suspend(struct snd_soc_codec *codec)
+{
+	wm8974_set_bias_level(codec, SND_SOC_BIAS_OFF);
+	return 0;
+}
+
+static int wm8974_resume(struct snd_soc_codec *codec)
+{
+	wm8974_set_bias_level(codec, SND_SOC_BIAS_STANDBY);
+	return 0;
+}
+
 static const struct regmap_config wm8974_regmap = {
 	.reg_bits = 7,
 	.val_bits = 9,
@@ -574,12 +587,17 @@ static const struct regmap_config wm8974_regmap = {
 	.max_register = WM8974_MONOMIX,
 	.reg_defaults = wm8974_reg_defaults,
 	.num_reg_defaults = ARRAY_SIZE(wm8974_reg_defaults),
-	.cache_type = REGCACHE_FLAT,
 };
 
 static int wm8974_probe(struct snd_soc_codec *codec)
 {
 	int ret = 0;
+
+	ret = snd_soc_codec_set_cache_io(codec, 7, 9, SND_SOC_REGMAP);
+	if (ret < 0) {
+		dev_err(codec->dev, "Failed to set cache I/O: %d\n", ret);
+		return ret;
+	}
 
 	ret = wm8974_reset(codec);
 	if (ret < 0) {
@@ -587,13 +605,24 @@ static int wm8974_probe(struct snd_soc_codec *codec)
 		return ret;
 	}
 
+	wm8974_set_bias_level(codec, SND_SOC_BIAS_STANDBY);
+
+	return ret;
+}
+
+/* power down chip */
+static int wm8974_remove(struct snd_soc_codec *codec)
+{
+	wm8974_set_bias_level(codec, SND_SOC_BIAS_OFF);
 	return 0;
 }
 
 static struct snd_soc_codec_driver soc_codec_dev_wm8974 = {
 	.probe = 	wm8974_probe,
+	.remove = 	wm8974_remove,
+	.suspend = 	wm8974_suspend,
+	.resume =	wm8974_resume,
 	.set_bias_level = wm8974_set_bias_level,
-	.suspend_bias_off = true,
 
 	.controls = wm8974_snd_controls,
 	.num_controls = ARRAY_SIZE(wm8974_snd_controls),
@@ -635,6 +664,7 @@ MODULE_DEVICE_TABLE(i2c, wm8974_i2c_id);
 static struct i2c_driver wm8974_i2c_driver = {
 	.driver = {
 		.name = "wm8974",
+		.owner = THIS_MODULE,
 	},
 	.probe =    wm8974_i2c_probe,
 	.remove =   wm8974_i2c_remove,

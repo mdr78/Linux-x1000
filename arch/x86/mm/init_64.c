@@ -52,6 +52,7 @@
 #include <asm/numa.h>
 #include <asm/cacheflush.h>
 #include <asm/init.h>
+#include <asm/uv/uv.h>
 #include <asm/setup.h>
 
 #include "mm_internal.h"
@@ -130,13 +131,27 @@ int kernel_ident_mapping_init(struct x86_mapping_info *info, pgd_t *pgd_page,
 	return 0;
 }
 
+static int __init parse_direct_gbpages_off(char *arg)
+{
+	direct_gbpages = 0;
+	return 0;
+}
+early_param("nogbpages", parse_direct_gbpages_off);
+
+static int __init parse_direct_gbpages_on(char *arg)
+{
+	direct_gbpages = 1;
+	return 0;
+}
+early_param("gbpages", parse_direct_gbpages_on);
+
 /*
  * NOTE: pagetable_init alloc all the fixmap pagetables contiguous on the
  * physical space so we can cache the place of the first one and move
  * around without checking the pgd every time.
  */
 
-pteval_t __supported_pte_mask __read_mostly = ~0;
+pteval_t __supported_pte_mask __read_mostly = ~_PAGE_IOMAP;
 EXPORT_SYMBOL_GPL(__supported_pte_mask);
 
 int force_personality32;
@@ -163,7 +178,7 @@ __setup("noexec32=", nonx32_setup);
  * When memory was added/removed make sure all the processes MM have
  * suitable PGD entries in the local PGD level page.
  */
-void sync_global_pgds(unsigned long start, unsigned long end, int removed)
+void sync_global_pgds(unsigned long start, unsigned long end)
 {
 	unsigned long address;
 
@@ -171,12 +186,7 @@ void sync_global_pgds(unsigned long start, unsigned long end, int removed)
 		const pgd_t *pgd_ref = pgd_offset_k(address);
 		struct page *page;
 
-		/*
-		 * When it is called after memory hot remove, pgd_none()
-		 * returns true. In this case (removed == 1), we must clear
-		 * the PGD entries in the local PGD level page.
-		 */
-		if (pgd_none(*pgd_ref) && !removed)
+		if (pgd_none(*pgd_ref))
 			continue;
 
 		spin_lock(&pgd_lock);
@@ -189,17 +199,11 @@ void sync_global_pgds(unsigned long start, unsigned long end, int removed)
 			pgt_lock = &pgd_page_get_mm(page)->page_table_lock;
 			spin_lock(pgt_lock);
 
-			if (!pgd_none(*pgd_ref) && !pgd_none(*pgd))
+			if (pgd_none(*pgd))
+				set_pgd(pgd, *pgd_ref);
+			else
 				BUG_ON(pgd_page_vaddr(*pgd)
 				       != pgd_page_vaddr(*pgd_ref));
-
-			if (removed) {
-				if (pgd_none(*pgd_ref) && !pgd_none(*pgd))
-					pgd_clear(pgd);
-			} else {
-				if (pgd_none(*pgd))
-					set_pgd(pgd, *pgd_ref);
-			}
 
 			spin_unlock(pgt_lock);
 		}
@@ -323,15 +327,12 @@ pte_t * __init populate_extra_pte(unsigned long vaddr)
  * Create large page table mappings for a range of physical addresses.
  */
 static void __init __init_extra_mapping(unsigned long phys, unsigned long size,
-					enum page_cache_mode cache)
+						pgprot_t prot)
 {
 	pgd_t *pgd;
 	pud_t *pud;
 	pmd_t *pmd;
-	pgprot_t prot;
 
-	pgprot_val(prot) = pgprot_val(PAGE_KERNEL_LARGE) |
-		pgprot_val(pgprot_4k_2_large(cachemode2pgprot(cache)));
 	BUG_ON((phys & ~PMD_MASK) || (size & ~PMD_MASK));
 	for (; size; phys += PMD_SIZE, size -= PMD_SIZE) {
 		pgd = pgd_offset_k((unsigned long)__va(phys));
@@ -354,12 +355,12 @@ static void __init __init_extra_mapping(unsigned long phys, unsigned long size,
 
 void __init init_extra_mapping_wb(unsigned long phys, unsigned long size)
 {
-	__init_extra_mapping(phys, size, _PAGE_CACHE_MODE_WB);
+	__init_extra_mapping(phys, size, PAGE_KERNEL_LARGE);
 }
 
 void __init init_extra_mapping_uc(unsigned long phys, unsigned long size)
 {
-	__init_extra_mapping(phys, size, _PAGE_CACHE_MODE_UC);
+	__init_extra_mapping(phys, size, PAGE_KERNEL_LARGE_NOCACHE);
 }
 
 /*
@@ -632,7 +633,7 @@ kernel_physical_mapping_init(unsigned long start,
 	}
 
 	if (pgd_changed)
-		sync_global_pgds(addr, end - 1, 0);
+		sync_global_pgds(addr, end - 1);
 
 	__flush_tlb_all();
 
@@ -687,11 +688,10 @@ static void  update_end_of_memory_vars(u64 start, u64 size)
  * Memory is added always to NORMAL zone. This means you will never get
  * additional DMA/DMA32 memory.
  */
-int arch_add_memory(int nid, u64 start, u64 size, bool for_device)
+int arch_add_memory(int nid, u64 start, u64 size)
 {
 	struct pglist_data *pgdat = NODE_DATA(nid);
-	struct zone *zone = pgdat->node_zones +
-		zone_for_memory(nid, start, size, ZONE_NORMAL, for_device);
+	struct zone *zone = pgdat->node_zones + ZONE_NORMAL;
 	unsigned long start_pfn = start >> PAGE_SHIFT;
 	unsigned long nr_pages = size >> PAGE_SHIFT;
 	int ret;
@@ -975,26 +975,25 @@ static void __meminit
 remove_pagetable(unsigned long start, unsigned long end, bool direct)
 {
 	unsigned long next;
-	unsigned long addr;
 	pgd_t *pgd;
 	pud_t *pud;
 	bool pgd_changed = false;
 
-	for (addr = start; addr < end; addr = next) {
-		next = pgd_addr_end(addr, end);
+	for (; start < end; start = next) {
+		next = pgd_addr_end(start, end);
 
-		pgd = pgd_offset_k(addr);
+		pgd = pgd_offset_k(start);
 		if (!pgd_present(*pgd))
 			continue;
 
 		pud = (pud_t *)pgd_page_vaddr(*pgd);
-		remove_pud_table(pud, addr, next, direct);
+		remove_pud_table(pud, start, next, direct);
 		if (free_pud_table(pud, pgd))
 			pgd_changed = true;
 	}
 
 	if (pgd_changed)
-		sync_global_pgds(start, end - 1, 1);
+		sync_global_pgds(start, end - 1);
 
 	flush_tlb_all();
 }
@@ -1056,8 +1055,8 @@ void __init mem_init(void)
 	after_bootmem = 1;
 
 	/* Register memory areas for /proc/kcore */
-	kclist_add(&kcore_vsyscall, (void *)VSYSCALL_ADDR,
-			 PAGE_SIZE, KCORE_OTHER);
+	kclist_add(&kcore_vsyscall, (void *)VSYSCALL_START,
+			 VSYSCALL_END - VSYSCALL_START, KCORE_OTHER);
 
 	mem_init_print_info(NULL);
 }
@@ -1132,7 +1131,7 @@ void mark_rodata_ro(void)
 	 * has been zapped already via cleanup_highmem().
 	 */
 	all_end = roundup((unsigned long)_brk_end, PMD_SIZE);
-	set_memory_nx(text_end, (all_end - text_end) >> PAGE_SHIFT);
+	set_memory_nx(rodata_start, (all_end - rodata_start) >> PAGE_SHIFT);
 
 	rodata_test();
 
@@ -1150,8 +1149,6 @@ void mark_rodata_ro(void)
 	free_init_pages("unused kernel",
 			(unsigned long) __va(__pa_symbol(rodata_end)),
 			(unsigned long) __va(__pa_symbol(_sdata)));
-
-	debug_checkwx();
 }
 
 #endif
@@ -1192,40 +1189,66 @@ int kern_addr_valid(unsigned long addr)
 	return pfn_valid(pte_pfn(*pte));
 }
 
-static unsigned long probe_memory_block_size(void)
+/*
+ * A pseudo VMA to allow ptrace access for the vsyscall page.  This only
+ * covers the 64bit vsyscall page now. 32bit has a real VMA now and does
+ * not need special handling anymore:
+ */
+static struct vm_area_struct gate_vma = {
+	.vm_start	= VSYSCALL_START,
+	.vm_end		= VSYSCALL_START + (VSYSCALL_MAPPED_PAGES * PAGE_SIZE),
+	.vm_page_prot	= PAGE_READONLY_EXEC,
+	.vm_flags	= VM_READ | VM_EXEC
+};
+
+struct vm_area_struct *get_gate_vma(struct mm_struct *mm)
 {
-	/* start from 2g */
-	unsigned long bz = 1UL<<31;
-
-	if (totalram_pages >= (64ULL << (30 - PAGE_SHIFT))) {
-		pr_info("Using 2GB memory block size for large-memory system\n");
-		return 2UL * 1024 * 1024 * 1024;
-	}
-
-	/* less than 64g installed */
-	if ((max_pfn << PAGE_SHIFT) < (16UL << 32))
-		return MIN_MEMORY_BLOCK_SIZE;
-
-	/* get the tail size */
-	while (bz > MIN_MEMORY_BLOCK_SIZE) {
-		if (!((max_pfn << PAGE_SHIFT) & (bz - 1)))
-			break;
-		bz >>= 1;
-	}
-
-	printk(KERN_DEBUG "memory block size : %ldMB\n", bz >> 20);
-
-	return bz;
+#ifdef CONFIG_IA32_EMULATION
+	if (!mm || mm->context.ia32_compat)
+		return NULL;
+#endif
+	return &gate_vma;
 }
 
-static unsigned long memory_block_size_probed;
+int in_gate_area(struct mm_struct *mm, unsigned long addr)
+{
+	struct vm_area_struct *vma = get_gate_vma(mm);
+
+	if (!vma)
+		return 0;
+
+	return (addr >= vma->vm_start) && (addr < vma->vm_end);
+}
+
+/*
+ * Use this when you have no reliable mm, typically from interrupt
+ * context. It is less reliable than using a task's mm and may give
+ * false positives.
+ */
+int in_gate_area_no_mm(unsigned long addr)
+{
+	return (addr >= VSYSCALL_START) && (addr < VSYSCALL_END);
+}
+
+const char *arch_vma_name(struct vm_area_struct *vma)
+{
+	if (vma->vm_mm && vma->vm_start == (long)vma->vm_mm->context.vdso)
+		return "[vdso]";
+	if (vma == &gate_vma)
+		return "[vsyscall]";
+	return NULL;
+}
+
+#ifdef CONFIG_X86_UV
 unsigned long memory_block_size_bytes(void)
 {
-	if (!memory_block_size_probed)
-		memory_block_size_probed = probe_memory_block_size();
-
-	return memory_block_size_probed;
+	if (is_uv_system()) {
+		printk(KERN_INFO "UV: memory block size 2GB\n");
+		return 2UL * 1024 * 1024 * 1024;
+	}
+	return MIN_MEMORY_BLOCK_SIZE;
 }
+#endif
 
 #ifdef CONFIG_SPARSEMEM_VMEMMAP
 /*
@@ -1270,7 +1293,7 @@ static int __meminit vmemmap_populate_hugepages(unsigned long start,
 				/* check to see if we have contiguous blocks */
 				if (p_end != p || node_start != node) {
 					if (p_start)
-						pr_debug(" [%lx-%lx] PMD -> [%p-%p] on node %d\n",
+						printk(KERN_DEBUG " [%lx-%lx] PMD -> [%p-%p] on node %d\n",
 						       addr_start, addr_end-1, p_start, p_end-1, node_start);
 					addr_start = addr;
 					node_start = node;
@@ -1301,7 +1324,7 @@ int __meminit vmemmap_populate(unsigned long start, unsigned long end, int node)
 	else
 		err = vmemmap_populate_basepages(start, end, node);
 	if (!err)
-		sync_global_pgds(start, end - 1, 0);
+		sync_global_pgds(start, end - 1);
 	return err;
 }
 
@@ -1368,7 +1391,7 @@ void register_page_bootmem_memmap(unsigned long section_nr,
 void __meminit vmemmap_populate_print_last(void)
 {
 	if (p_start) {
-		pr_debug(" [%lx-%lx] PMD -> [%p-%p] on node %d\n",
+		printk(KERN_DEBUG " [%lx-%lx] PMD -> [%p-%p] on node %d\n",
 			addr_start, addr_end-1, p_start, p_end-1, node_start);
 		p_start = NULL;
 		p_end = NULL;

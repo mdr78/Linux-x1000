@@ -15,7 +15,7 @@
 #include <linux/io.h>
 #include "edac_core.h"
 
-#include <linux/io-64-nonatomic-lo-hi.h>
+#include <asm-generic/io-64-nonatomic-lo-hi.h>
 
 #define I3200_REVISION        "1.1"
 
@@ -464,8 +464,6 @@ static void i3200_remove_one(struct pci_dev *pdev)
 	iounmap(priv->window);
 
 	edac_mc_free(mci);
-
-	pci_disable_device(pdev);
 }
 
 static const struct pci_device_id i3200_pci_tbl[] = {
@@ -523,7 +521,8 @@ fail1:
 	pci_unregister_driver(&i3200_driver);
 
 fail0:
-	pci_dev_put(mci_pdev);
+	if (mci_pdev)
+		pci_dev_put(mci_pdev);
 
 	return pci_rc;
 }

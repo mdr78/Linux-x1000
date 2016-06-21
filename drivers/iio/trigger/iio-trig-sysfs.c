@@ -96,7 +96,7 @@ static void iio_sysfs_trigger_work(struct irq_work *work)
 	struct iio_sysfs_trig *trig = container_of(work, struct iio_sysfs_trig,
 							work);
 
-	iio_trigger_poll(trig->trig);
+	iio_trigger_poll(trig->trig, 0);
 }
 
 static ssize_t iio_sysfs_trigger_poll(struct device *dev,
@@ -135,7 +135,6 @@ static int iio_sysfs_trigger_probe(int id)
 	struct iio_sysfs_trig *t;
 	int ret;
 	bool foundit = false;
-
 	mutex_lock(&iio_sysfs_trig_list_mut);
 	list_for_each_entry(t, &iio_sysfs_trig_list, l)
 		if (id == t->id) {
@@ -186,7 +185,6 @@ static int iio_sysfs_trigger_remove(int id)
 {
 	bool foundit = false;
 	struct iio_sysfs_trig *t;
-
 	mutex_lock(&iio_sysfs_trig_list_mut);
 	list_for_each_entry(t, &iio_sysfs_trig_list, l)
 		if (id == t->id) {

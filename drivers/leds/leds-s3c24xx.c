@@ -12,6 +12,7 @@
 */
 
 #include <linux/kernel.h>
+#include <linux/init.h>
 #include <linux/platform_device.h>
 #include <linux/leds.h>
 #include <linux/gpio.h>
@@ -76,8 +77,10 @@ static int s3c24xx_led_probe(struct platform_device *dev)
 
 	led = devm_kzalloc(&dev->dev, sizeof(struct s3c24xx_gpio_led),
 			   GFP_KERNEL);
-	if (!led)
+	if (led == NULL) {
+		dev_err(&dev->dev, "No memory for device\n");
 		return -ENOMEM;
+	}
 
 	platform_set_drvdata(dev, led);
 
@@ -116,6 +119,7 @@ static struct platform_driver s3c24xx_led_driver = {
 	.remove		= s3c24xx_led_remove,
 	.driver		= {
 		.name		= "s3c24xx_led",
+		.owner		= THIS_MODULE,
 	},
 };
 

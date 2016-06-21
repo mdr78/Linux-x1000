@@ -1185,7 +1185,7 @@ static int bh1770_probe(struct i2c_client *client,
 	struct bh1770_chip *chip;
 	int err;
 
-	chip = devm_kzalloc(&client->dev, sizeof *chip, GFP_KERNEL);
+	chip = kzalloc(sizeof *chip, GFP_KERNEL);
 	if (!chip)
 		return -ENOMEM;
 
@@ -1198,7 +1198,8 @@ static int bh1770_probe(struct i2c_client *client,
 
 	if (client->dev.platform_data == NULL) {
 		dev_err(&client->dev, "platform data is mandatory\n");
-		return -EINVAL;
+		err = -EINVAL;
+		goto fail1;
 	}
 
 	chip->pdata		= client->dev.platform_data;
@@ -1223,24 +1224,24 @@ static int bh1770_probe(struct i2c_client *client,
 	chip->regs[0].supply = reg_vcc;
 	chip->regs[1].supply = reg_vleds;
 
-	err = devm_regulator_bulk_get(&client->dev,
-				      ARRAY_SIZE(chip->regs), chip->regs);
+	err = regulator_bulk_get(&client->dev,
+				 ARRAY_SIZE(chip->regs), chip->regs);
 	if (err < 0) {
 		dev_err(&client->dev, "Cannot get regulators\n");
-		return err;
+		goto fail1;
 	}
 
 	err = regulator_bulk_enable(ARRAY_SIZE(chip->regs),
 				chip->regs);
 	if (err < 0) {
 		dev_err(&client->dev, "Cannot enable regulators\n");
-		return err;
+		goto fail2;
 	}
 
 	usleep_range(BH1770_STARTUP_DELAY, BH1770_STARTUP_DELAY * 2);
 	err = bh1770_detect(chip);
 	if (err < 0)
-		goto fail0;
+		goto fail3;
 
 	/* Start chip */
 	bh1770_chip_on(chip);
@@ -1251,14 +1252,14 @@ static int bh1770_probe(struct i2c_client *client,
 	if (chip->lux_corr == 0) {
 		dev_err(&client->dev, "Improper correction values\n");
 		err = -EINVAL;
-		goto fail0;
+		goto fail3;
 	}
 
 	if (chip->pdata->setup_resources) {
 		err = chip->pdata->setup_resources();
 		if (err) {
 			err = -EINVAL;
-			goto fail0;
+			goto fail3;
 		}
 	}
 
@@ -1266,7 +1267,7 @@ static int bh1770_probe(struct i2c_client *client,
 				&bh1770_attribute_group);
 	if (err < 0) {
 		dev_err(&chip->client->dev, "Sysfs registration failed\n");
-		goto fail1;
+		goto fail4;
 	}
 
 	/*
@@ -1282,18 +1283,22 @@ static int bh1770_probe(struct i2c_client *client,
 	if (err) {
 		dev_err(&client->dev, "could not get IRQ %d\n",
 			client->irq);
-		goto fail2;
+		goto fail5;
 	}
 	regulator_bulk_disable(ARRAY_SIZE(chip->regs), chip->regs);
 	return err;
-fail2:
+fail5:
 	sysfs_remove_group(&chip->client->dev.kobj,
 			&bh1770_attribute_group);
-fail1:
+fail4:
 	if (chip->pdata->release_resources)
 		chip->pdata->release_resources();
-fail0:
+fail3:
 	regulator_bulk_disable(ARRAY_SIZE(chip->regs), chip->regs);
+fail2:
+	regulator_bulk_free(ARRAY_SIZE(chip->regs), chip->regs);
+fail1:
+	kfree(chip);
 	return err;
 }
 
@@ -1317,6 +1322,8 @@ static int bh1770_remove(struct i2c_client *client)
 	pm_runtime_disable(&client->dev);
 	pm_runtime_set_suspended(&client->dev);
 
+	regulator_bulk_free(ARRAY_SIZE(chip->regs), chip->regs);
+	kfree(chip);
 	return 0;
 }
 
@@ -1358,7 +1365,7 @@ static int bh1770_resume(struct device *dev)
 }
 #endif
 
-#ifdef CONFIG_PM
+#ifdef CONFIG_PM_RUNTIME
 static int bh1770_runtime_suspend(struct device *dev)
 {
 	struct i2c_client *client = container_of(dev, struct i2c_client, dev);
@@ -1396,6 +1403,7 @@ static const struct dev_pm_ops bh1770_pm_ops = {
 static struct i2c_driver bh1770_driver = {
 	.driver	 = {
 		.name	= "bh1770glc",
+		.owner	= THIS_MODULE,
 		.pm	= &bh1770_pm_ops,
 	},
 	.probe	  = bh1770_probe,

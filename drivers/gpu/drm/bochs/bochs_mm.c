@@ -225,9 +225,7 @@ int bochs_mm_init(struct bochs_device *bochs)
 
 	ret = ttm_bo_device_init(&bochs->ttm.bdev,
 				 bochs->ttm.bo_global_ref.ref.object,
-				 &bochs_bo_driver,
-				 bochs->dev->anon_inode->i_mapping,
-				 DRM_FILE_PAGE_OFFSET,
+				 &bochs_bo_driver, DRM_FILE_PAGE_OFFSET,
 				 true);
 	if (ret) {
 		DRM_ERROR("Error initialising bo driver; %d\n", ret);
@@ -257,26 +255,20 @@ void bochs_mm_fini(struct bochs_device *bochs)
 
 static void bochs_ttm_placement(struct bochs_bo *bo, int domain)
 {
-	unsigned i;
 	u32 c = 0;
+	bo->placement.fpfn = 0;
+	bo->placement.lpfn = 0;
 	bo->placement.placement = bo->placements;
 	bo->placement.busy_placement = bo->placements;
 	if (domain & TTM_PL_FLAG_VRAM) {
-		bo->placements[c++].flags = TTM_PL_FLAG_WC
-			| TTM_PL_FLAG_UNCACHED
+		bo->placements[c++] = TTM_PL_FLAG_WC | TTM_PL_FLAG_UNCACHED
 			| TTM_PL_FLAG_VRAM;
 	}
 	if (domain & TTM_PL_FLAG_SYSTEM) {
-		bo->placements[c++].flags = TTM_PL_MASK_CACHING
-			| TTM_PL_FLAG_SYSTEM;
+		bo->placements[c++] = TTM_PL_MASK_CACHING | TTM_PL_FLAG_SYSTEM;
 	}
 	if (!c) {
-		bo->placements[c++].flags = TTM_PL_MASK_CACHING
-			| TTM_PL_FLAG_SYSTEM;
-	}
-	for (i = 0; i < c; ++i) {
-		bo->placements[i].fpfn = 0;
-		bo->placements[i].lpfn = 0;
+		bo->placements[c++] = TTM_PL_MASK_CACHING | TTM_PL_FLAG_SYSTEM;
 	}
 	bo->placement.num_placement = c;
 	bo->placement.num_busy_placement = c;
@@ -300,7 +292,7 @@ int bochs_bo_pin(struct bochs_bo *bo, u32 pl_flag, u64 *gpu_addr)
 
 	bochs_ttm_placement(bo, pl_flag);
 	for (i = 0; i < bo->placement.num_placement; i++)
-		bo->placements[i].flags |= TTM_PL_FLAG_NO_EVICT;
+		bo->placements[i] |= TTM_PL_FLAG_NO_EVICT;
 	ret = ttm_bo_validate(&bo->bo, &bo->placement, false, false);
 	if (ret)
 		return ret;
@@ -325,7 +317,7 @@ int bochs_bo_unpin(struct bochs_bo *bo)
 		return 0;
 
 	for (i = 0; i < bo->placement.num_placement; i++)
-		bo->placements[i].flags &= ~TTM_PL_FLAG_NO_EVICT;
+		bo->placements[i] &= ~TTM_PL_FLAG_NO_EVICT;
 	ret = ttm_bo_validate(&bo->bo, &bo->placement, false, false);
 	if (ret)
 		return ret;
@@ -339,7 +331,7 @@ int bochs_mmap(struct file *filp, struct vm_area_struct *vma)
 	struct bochs_device *bochs;
 
 	if (unlikely(vma->vm_pgoff < DRM_FILE_PAGE_OFFSET))
-		return -EINVAL;
+		return drm_mmap(filp, vma);
 
 	file_priv = filp->private_data;
 	bochs = file_priv->minor->dev->dev_private;
@@ -367,7 +359,7 @@ static int bochs_bo_create(struct drm_device *dev, int size, int align,
 	}
 
 	bochsbo->bo.bdev = &bochs->ttm.bdev;
-	bochsbo->bo.bdev->dev_mapping = dev->anon_inode->i_mapping;
+	bochsbo->bo.bdev->dev_mapping = dev->dev_mapping;
 
 	bochs_ttm_placement(bochsbo, TTM_PL_FLAG_VRAM | TTM_PL_FLAG_SYSTEM);
 
@@ -377,7 +369,7 @@ static int bochs_bo_create(struct drm_device *dev, int size, int align,
 	ret = ttm_bo_init(&bochs->ttm.bdev, &bochsbo->bo, size,
 			  ttm_bo_type_device, &bochsbo->placement,
 			  align >> PAGE_SHIFT, false, NULL, acc_size,
-			  NULL, NULL, bochs_bo_ttm_destroy);
+			  NULL, bochs_bo_ttm_destroy);
 	if (ret)
 		return ret;
 
@@ -393,7 +385,7 @@ int bochs_gem_create(struct drm_device *dev, u32 size, bool iskernel,
 
 	*obj = NULL;
 
-	size = PAGE_ALIGN(size);
+	size = ALIGN(size, PAGE_SIZE);
 	if (size == 0)
 		return -EINVAL;
 
@@ -440,13 +432,17 @@ static void bochs_bo_unref(struct bochs_bo **bo)
 
 	tbo = &((*bo)->bo);
 	ttm_bo_unref(&tbo);
-	*bo = NULL;
+	if (tbo == NULL)
+		*bo = NULL;
+
 }
 
 void bochs_gem_free_object(struct drm_gem_object *obj)
 {
 	struct bochs_bo *bochs_bo = gem_to_bochs_bo(obj);
 
+	if (!bochs_bo)
+		return;
 	bochs_bo_unref(&bochs_bo);
 }
 
@@ -454,17 +450,25 @@ int bochs_dumb_mmap_offset(struct drm_file *file, struct drm_device *dev,
 			   uint32_t handle, uint64_t *offset)
 {
 	struct drm_gem_object *obj;
+	int ret;
 	struct bochs_bo *bo;
 
+	mutex_lock(&dev->struct_mutex);
 	obj = drm_gem_object_lookup(dev, file, handle);
-	if (obj == NULL)
-		return -ENOENT;
+	if (obj == NULL) {
+		ret = -ENOENT;
+		goto out_unlock;
+	}
 
 	bo = gem_to_bochs_bo(obj);
 	*offset = bochs_bo_mmap_offset(bo);
 
-	drm_gem_object_unreference_unlocked(obj);
-	return 0;
+	drm_gem_object_unreference(obj);
+	ret = 0;
+out_unlock:
+	mutex_unlock(&dev->struct_mutex);
+	return ret;
+
 }
 
 /* ---------------------------------------------------------------------- */

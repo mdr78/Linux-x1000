@@ -12,8 +12,13 @@
 #include <linux/tty_flip.h>
 #include <linux/serial_reg.h>
 #include <linux/dma-mapping.h>
+#include <linux/serial_8250.h>
 
 #include "8250.h"
+
+#ifdef CONFIG_X86_INTEL_QUARK
+#define TRIGGER_LEVEL 8
+#endif
 
 static void __dma_tx_complete(void *param)
 {
@@ -21,7 +26,6 @@ static void __dma_tx_complete(void *param)
 	struct uart_8250_dma	*dma = p->dma;
 	struct circ_buf		*xmit = &p->port.state->xmit;
 	unsigned long	flags;
-	int		ret;
 
 	dma_sync_single_for_cpu(dma->txchan->device->dev, dma->tx_addr,
 				UART_XMIT_SIZE, DMA_TO_DEVICE);
@@ -37,11 +41,8 @@ static void __dma_tx_complete(void *param)
 	if (uart_circ_chars_pending(xmit) < WAKEUP_CHARS)
 		uart_write_wakeup(&p->port);
 
-	ret = serial8250_tx_dma(p);
-	if (ret) {
-		p->ier |= UART_IER_THRI;
-		serial_port_out(&p->port, UART_IER, p->ier);
-	}
+	if (!uart_circ_empty(xmit) && !uart_tx_stopped(&p->port))
+		serial8250_tx_dma(p);
 
 	spin_unlock_irqrestore(&p->port.lock, flags);
 }
@@ -51,18 +52,30 @@ static void __dma_rx_complete(void *param)
 	struct uart_8250_port	*p = param;
 	struct uart_8250_dma	*dma = p->dma;
 	struct tty_port		*tty_port = &p->port.state->port;
-	struct dma_tx_state	state;
+	struct dma_tx_state     state;
 	int			count;
 
-	dma->rx_running = 0;
+	dma_sync_single_for_cpu(dma->rxchan->device->dev, dma->rx_addr,
+				dma->rx_size, DMA_FROM_DEVICE);
+
 	dmaengine_tx_status(dma->rxchan, dma->rx_cookie, &state);
+	dmaengine_terminate_all(dma->rxchan);
 
+#ifdef CONFIG_X86_INTEL_QUARK
+	count = dma->rx_size;
+#else
 	count = dma->rx_size - state.residue;
-
+#endif
 	tty_insert_flip_string(tty_port, dma->rx_buf, count);
 	p->port.icount.rx += count;
 
 	tty_flip_buffer_push(tty_port);
+
+#ifdef CONFIG_X86_INTEL_QUARK
+	/* Enabling the Interrupts Line status and Receive buffer */
+	serial_out(p, UART_IER, (p->saved_ier | (UART_IER_RLSI |
+		   UART_IER_RDI)));
+#endif
 }
 
 int serial8250_tx_dma(struct uart_8250_port *p)
@@ -70,7 +83,6 @@ int serial8250_tx_dma(struct uart_8250_port *p)
 	struct uart_8250_dma		*dma = p->dma;
 	struct circ_buf			*xmit = &p->port.state->xmit;
 	struct dma_async_tx_descriptor	*desc;
-	int ret;
 
 	if (uart_tx_stopped(&p->port) || dma->tx_running ||
 	    uart_circ_empty(xmit))
@@ -82,12 +94,11 @@ int serial8250_tx_dma(struct uart_8250_port *p)
 					   dma->tx_addr + xmit->tail,
 					   dma->tx_size, DMA_MEM_TO_DEV,
 					   DMA_PREP_INTERRUPT | DMA_CTRL_ACK);
-	if (!desc) {
-		ret = -EBUSY;
-		goto err;
-	}
+	if (!desc)
+		return -EBUSY;
 
 	dma->tx_running = 1;
+
 	desc->callback = __dma_tx_complete;
 	desc->callback_param = p;
 
@@ -97,23 +108,19 @@ int serial8250_tx_dma(struct uart_8250_port *p)
 				   UART_XMIT_SIZE, DMA_TO_DEVICE);
 
 	dma_async_issue_pending(dma->txchan);
-	if (dma->tx_err) {
-		dma->tx_err = 0;
-		if (p->ier & UART_IER_THRI) {
-			p->ier &= ~UART_IER_THRI;
-			serial_out(p, UART_IER, p->ier);
-		}
-	}
+
 	return 0;
-err:
-	dma->tx_err = 1;
-	return ret;
 }
+EXPORT_SYMBOL_GPL(serial8250_tx_dma);
 
 int serial8250_rx_dma(struct uart_8250_port *p, unsigned int iir)
 {
 	struct uart_8250_dma		*dma = p->dma;
 	struct dma_async_tx_descriptor	*desc;
+	struct dma_tx_state		state;
+	int				dma_status;
+
+	dma_status = dmaengine_tx_status(dma->rxchan, dma->rx_cookie, &state);
 
 	switch (iir & 0x3f) {
 	case UART_IIR_RLSI:
@@ -121,21 +128,24 @@ int serial8250_rx_dma(struct uart_8250_port *p, unsigned int iir)
 		return -EIO;
 	case UART_IIR_RX_TIMEOUT:
 		/*
-		 * If RCVR FIFO trigger level was not reached, complete the
-		 * transfer and let 8250_core copy the remaining data.
-		 */
-		if (dma->rx_running) {
-			dmaengine_pause(dma->rxchan);
-			__dma_rx_complete(p);
-			dmaengine_terminate_all(dma->rxchan);
-		}
+		* If RCVR FIFO trigger level was not reached, complete
+		* the transfer and let 8250_core copy the remaining data.
+		*/
 		return -ETIMEDOUT;
 	default:
 		break;
 	}
 
-	if (dma->rx_running)
+	if (dma_status)
 		return 0;
+
+#ifdef CONFIG_X86_INTEL_QUARK
+	/* Disabling the Interrupts Line status and Receive buffer */
+	p->saved_ier = serial_in(p, UART_IER);
+
+	serial_out(p, UART_IER, (p->saved_ier &
+		   ~(UART_IER_RLSI | UART_IER_RDI)));
+#endif
 
 	desc = dmaengine_prep_slave_single(dma->rxchan, dma->rx_addr,
 					   dma->rx_size, DMA_DEV_TO_MEM,
@@ -143,30 +153,39 @@ int serial8250_rx_dma(struct uart_8250_port *p, unsigned int iir)
 	if (!desc)
 		return -EBUSY;
 
-	dma->rx_running = 1;
 	desc->callback = __dma_rx_complete;
 	desc->callback_param = p;
 
 	dma->rx_cookie = dmaengine_submit(desc);
 
+	dma_sync_single_for_device(dma->rxchan->device->dev, dma->rx_addr,
+				   dma->rx_size, DMA_FROM_DEVICE);
+
 	dma_async_issue_pending(dma->rxchan);
 
 	return 0;
 }
+EXPORT_SYMBOL_GPL(serial8250_rx_dma);
 
 int serial8250_request_dma(struct uart_8250_port *p)
 {
 	struct uart_8250_dma	*dma = p->dma;
 	dma_cap_mask_t		mask;
-
+	if (dma->mapbase) {
+		dma->rxconf.src_addr	= dma->mapbase;
+		dma->txconf.dst_addr	= dma->mapbase;
+	} else {
+		dma->rxconf.src_addr	= p->port.mapbase;
+		dma->txconf.dst_addr	= p->port.mapbase;
+	}
 	/* Default slave configuration parameters */
 	dma->rxconf.direction		= DMA_DEV_TO_MEM;
 	dma->rxconf.src_addr_width	= DMA_SLAVE_BUSWIDTH_1_BYTE;
-	dma->rxconf.src_addr		= p->port.mapbase + UART_RX;
+	dma->rxconf.src_addr		+= UART_RX;
 
 	dma->txconf.direction		= DMA_MEM_TO_DEV;
 	dma->txconf.dst_addr_width	= DMA_SLAVE_BUSWIDTH_1_BYTE;
-	dma->txconf.dst_addr		= p->port.mapbase + UART_TX;
+	dma->txconf.dst_addr		+= UART_TX;
 
 	dma_cap_zero(mask);
 	dma_cap_set(DMA_SLAVE, mask);
@@ -191,10 +210,15 @@ int serial8250_request_dma(struct uart_8250_port *p)
 
 	dmaengine_slave_config(dma->txchan, &dma->txconf);
 
+#ifdef CONFIG_X86_INTEL_QUARK
+	/* RX buffer is set at RX FIFO trigger level for Quark SoC */
+	if (!dma->rx_size)
+		dma->rx_size = TRIGGER_LEVEL;
+#else
 	/* RX buffer */
 	if (!dma->rx_size)
 		dma->rx_size = PAGE_SIZE;
-
+#endif
 	dma->rx_buf = dma_alloc_coherent(dma->rxchan->device->dev, dma->rx_size,
 					&dma->rx_addr, GFP_KERNEL);
 	if (!dma->rx_buf)
@@ -202,9 +226,9 @@ int serial8250_request_dma(struct uart_8250_port *p)
 
 	/* TX buffer */
 	dma->tx_addr = dma_map_single(dma->txchan->device->dev,
-					p->port.state->xmit.buf,
-					UART_XMIT_SIZE,
-					DMA_TO_DEVICE);
+				      p->port.state->xmit.buf,
+				      UART_XMIT_SIZE,
+				      DMA_TO_DEVICE);
 	if (dma_mapping_error(dma->txchan->device->dev, dma->tx_addr)) {
 		dma_free_coherent(dma->rxchan->device->dev, dma->rx_size,
 				  dma->rx_buf, dma->rx_addr);

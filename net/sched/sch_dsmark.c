@@ -35,20 +35,14 @@
 
 #define NO_DEFAULT_INDEX	(1 << 16)
 
-struct mask_value {
-	u8			mask;
-	u8			value;
-};
-
 struct dsmark_qdisc_data {
 	struct Qdisc		*q;
-	struct tcf_proto __rcu	*filter_list;
-	struct mask_value	*mv;
+	struct tcf_proto	*filter_list;
+	u8			*mask;	/* "owns" the array */
+	u8			*value;
 	u16			indices;
-	u8			set_tc_index;
 	u32			default_index;	/* index range is 0...0xffff */
-#define DSMARK_EMBEDDED_SZ	16
-	struct mask_value	embedded[DSMARK_EMBEDDED_SZ];
+	int			set_tc_index;
 };
 
 static inline int dsmark_valid_index(struct dsmark_qdisc_data *p, u16 index)
@@ -122,6 +116,7 @@ static int dsmark_change(struct Qdisc *sch, u32 classid, u32 parent,
 	struct nlattr *opt = tca[TCA_OPTIONS];
 	struct nlattr *tb[TCA_DSMARK_MAX + 1];
 	int err = -EINVAL;
+	u8 mask = 0;
 
 	pr_debug("%s(sch %p,[qdisc %p],classid %x,parent %x), arg 0x%lx\n",
 		 __func__, sch, p, classid, parent, *arg);
@@ -138,11 +133,14 @@ static int dsmark_change(struct Qdisc *sch, u32 classid, u32 parent,
 	if (err < 0)
 		goto errout;
 
+	if (tb[TCA_DSMARK_MASK])
+		mask = nla_get_u8(tb[TCA_DSMARK_MASK]);
+
 	if (tb[TCA_DSMARK_VALUE])
-		p->mv[*arg - 1].value = nla_get_u8(tb[TCA_DSMARK_VALUE]);
+		p->value[*arg - 1] = nla_get_u8(tb[TCA_DSMARK_VALUE]);
 
 	if (tb[TCA_DSMARK_MASK])
-		p->mv[*arg - 1].mask = nla_get_u8(tb[TCA_DSMARK_MASK]);
+		p->mask[*arg - 1] = mask;
 
 	err = 0;
 
@@ -157,8 +155,8 @@ static int dsmark_delete(struct Qdisc *sch, unsigned long arg)
 	if (!dsmark_valid_index(p, arg))
 		return -EINVAL;
 
-	p->mv[arg - 1].mask = 0xff;
-	p->mv[arg - 1].value = 0;
+	p->mask[arg - 1] = 0xff;
+	p->value[arg - 1] = 0;
 
 	return 0;
 }
@@ -175,7 +173,7 @@ static void dsmark_walk(struct Qdisc *sch, struct qdisc_walker *walker)
 		return;
 
 	for (i = 0; i < p->indices; i++) {
-		if (p->mv[i].mask == 0xff && !p->mv[i].value)
+		if (p->mask[i] == 0xff && !p->value[i])
 			goto ignore;
 		if (walker->count >= walker->skip) {
 			if (walker->fn(sch, i + 1, walker) < 0) {
@@ -188,8 +186,8 @@ ignore:
 	}
 }
 
-static inline struct tcf_proto __rcu **dsmark_find_tcf(struct Qdisc *sch,
-						       unsigned long cl)
+static inline struct tcf_proto **dsmark_find_tcf(struct Qdisc *sch,
+						 unsigned long cl)
 {
 	struct dsmark_qdisc_data *p = qdisc_priv(sch);
 	return &p->filter_list;
@@ -205,7 +203,7 @@ static int dsmark_enqueue(struct sk_buff *skb, struct Qdisc *sch)
 	pr_debug("%s(skb %p,sch %p,[qdisc %p])\n", __func__, skb, sch, p);
 
 	if (p->set_tc_index) {
-		switch (tc_skb_protocol(skb)) {
+		switch (skb->protocol) {
 		case htons(ETH_P_IP):
 			if (skb_cow_head(skb, sizeof(struct iphdr)))
 				goto drop;
@@ -231,8 +229,7 @@ static int dsmark_enqueue(struct sk_buff *skb, struct Qdisc *sch)
 		skb->tc_index = TC_H_MIN(skb->priority);
 	else {
 		struct tcf_result res;
-		struct tcf_proto *fl = rcu_dereference_bh(p->filter_list);
-		int result = tc_classify(skb, fl, &res, false);
+		int result = tc_classify(skb, p->filter_list, &res);
 
 		pr_debug("result %d class 0x%04x\n", result, res.classid);
 
@@ -260,7 +257,7 @@ static int dsmark_enqueue(struct sk_buff *skb, struct Qdisc *sch)
 	err = qdisc_enqueue(skb, p->q);
 	if (err != NET_XMIT_SUCCESS) {
 		if (net_xmit_drop_count(err))
-			qdisc_qstats_drop(sch);
+			sch->qstats.drops++;
 		return err;
 	}
 
@@ -291,14 +288,14 @@ static struct sk_buff *dsmark_dequeue(struct Qdisc *sch)
 	index = skb->tc_index & (p->indices - 1);
 	pr_debug("index %d->%d\n", skb->tc_index, index);
 
-	switch (tc_skb_protocol(skb)) {
+	switch (skb->protocol) {
 	case htons(ETH_P_IP):
-		ipv4_change_dsfield(ip_hdr(skb), p->mv[index].mask,
-				    p->mv[index].value);
+		ipv4_change_dsfield(ip_hdr(skb), p->mask[index],
+				    p->value[index]);
 			break;
 	case htons(ETH_P_IPV6):
-		ipv6_change_dsfield(ipv6_hdr(skb), p->mv[index].mask,
-				    p->mv[index].value);
+		ipv6_change_dsfield(ipv6_hdr(skb), p->mask[index],
+				    p->value[index]);
 			break;
 	default:
 		/*
@@ -306,9 +303,9 @@ static struct sk_buff *dsmark_dequeue(struct Qdisc *sch)
 		 * This way, we can send non-IP traffic through dsmark
 		 * and don't need yet another qdisc as a bypass.
 		 */
-		if (p->mv[index].mask != 0xff || p->mv[index].value)
+		if (p->mask[index] != 0xff || p->value[index])
 			pr_warn("%s: unsupported protocol %d\n",
-				__func__, ntohs(tc_skb_protocol(skb)));
+				__func__, ntohs(skb->protocol));
 		break;
 	}
 
@@ -348,7 +345,7 @@ static int dsmark_init(struct Qdisc *sch, struct nlattr *opt)
 	int err = -EINVAL;
 	u32 default_index = NO_DEFAULT_INDEX;
 	u16 indices;
-	int i;
+	u8 *mask;
 
 	pr_debug("%s(sch %p,[qdisc %p],opt %p)\n", __func__, sch, p, opt);
 
@@ -368,18 +365,18 @@ static int dsmark_init(struct Qdisc *sch, struct nlattr *opt)
 	if (tb[TCA_DSMARK_DEFAULT_INDEX])
 		default_index = nla_get_u16(tb[TCA_DSMARK_DEFAULT_INDEX]);
 
-	if (indices <= DSMARK_EMBEDDED_SZ)
-		p->mv = p->embedded;
-	else
-		p->mv = kmalloc_array(indices, sizeof(*p->mv), GFP_KERNEL);
-	if (!p->mv) {
+	mask = kmalloc(indices * 2, GFP_KERNEL);
+	if (mask == NULL) {
 		err = -ENOMEM;
 		goto errout;
 	}
-	for (i = 0; i < indices; i++) {
-		p->mv[i].mask = 0xff;
-		p->mv[i].value = 0;
-	}
+
+	p->mask = mask;
+	memset(p->mask, 0xff, indices);
+
+	p->value = p->mask + indices;
+	memset(p->value, 0, indices);
+
 	p->indices = indices;
 	p->default_index = default_index;
 	p->set_tc_index = nla_get_flag(tb[TCA_DSMARK_SET_TC_INDEX]);
@@ -412,8 +409,7 @@ static void dsmark_destroy(struct Qdisc *sch)
 
 	tcf_destroy_chain(&p->filter_list);
 	qdisc_destroy(p->q);
-	if (p->mv != p->embedded)
-		kfree(p->mv);
+	kfree(p->mask);
 }
 
 static int dsmark_dump_class(struct Qdisc *sch, unsigned long cl,
@@ -433,8 +429,8 @@ static int dsmark_dump_class(struct Qdisc *sch, unsigned long cl,
 	opts = nla_nest_start(skb, TCA_OPTIONS);
 	if (opts == NULL)
 		goto nla_put_failure;
-	if (nla_put_u8(skb, TCA_DSMARK_MASK, p->mv[cl - 1].mask) ||
-	    nla_put_u8(skb, TCA_DSMARK_VALUE, p->mv[cl - 1].value))
+	if (nla_put_u8(skb, TCA_DSMARK_MASK, p->mask[cl - 1]) ||
+	    nla_put_u8(skb, TCA_DSMARK_VALUE, p->value[cl - 1]))
 		goto nla_put_failure;
 
 	return nla_nest_end(skb, opts);

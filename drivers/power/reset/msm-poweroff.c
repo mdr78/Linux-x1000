@@ -20,27 +20,21 @@
 #include <linux/platform_device.h>
 #include <linux/module.h>
 #include <linux/reboot.h>
-#include <linux/pm.h>
+
+#include <asm/system_misc.h>
 
 static void __iomem *msm_ps_hold;
-static int do_msm_restart(struct notifier_block *nb, unsigned long action,
-			   void *data)
+
+static void do_msm_restart(enum reboot_mode reboot_mode, const char *cmd)
 {
 	writel(0, msm_ps_hold);
 	mdelay(10000);
-
-	return NOTIFY_DONE;
 }
-
-static struct notifier_block restart_nb = {
-	.notifier_call = do_msm_restart,
-	.priority = 128,
-};
 
 static void do_msm_poweroff(void)
 {
 	/* TODO: Add poweroff capability */
-	do_msm_restart(&restart_nb, 0, NULL);
+	do_msm_restart(REBOOT_HARD, NULL);
 }
 
 static int msm_restart_probe(struct platform_device *pdev)
@@ -53,10 +47,8 @@ static int msm_restart_probe(struct platform_device *pdev)
 	if (IS_ERR(msm_ps_hold))
 		return PTR_ERR(msm_ps_hold);
 
-	register_restart_handler(&restart_nb);
-
 	pm_power_off = do_msm_poweroff;
-
+	arm_pm_restart = do_msm_restart;
 	return 0;
 }
 

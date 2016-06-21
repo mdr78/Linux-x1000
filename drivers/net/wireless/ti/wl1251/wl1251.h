@@ -276,11 +276,9 @@ struct wl1251 {
 	void *if_priv;
 	const struct wl1251_if_operations *if_ops;
 
-	int power_gpio;
+	void (*set_power)(bool enable);
 	int irq;
 	bool use_eeprom;
-
-	struct regulator *vio;
 
 	spinlock_t wl_lock;
 

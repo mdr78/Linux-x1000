@@ -51,6 +51,9 @@ config ARCH_HAS_ILOG2_U32
 config ARCH_HAS_ILOG2_U64
 	bool
 
+config ARCH_HAS_CPUFREQ
+	bool
+
 config GENERIC_HWEIGHT
 	def_bool y
 
@@ -84,6 +87,7 @@ config ARCH_PUV3
 	select GENERIC_CLOCKEVENTS
 	select HAVE_CLK
 	select ARCH_REQUIRE_GPIOLIB
+	select ARCH_HAS_CPUFREQ
 
 # CONFIGs for ARCH_PUV3
 
@@ -194,7 +198,9 @@ menu "Power management options"
 
 source "kernel/power/Kconfig"
 
+if ARCH_HAS_CPUFREQ
 source "drivers/cpufreq/Kconfig"
+endif
 
 config ARCH_SUSPEND_POSSIBLE
 	def_bool y if !ARCH_FPGA
@@ -222,7 +228,7 @@ config I2C_BATTERY_BQ27200
 	tristate "I2C Battery BQ27200 Support"
 	select I2C_PUV3
 	select POWER_SUPPLY
-	select BATTERY_BQ27XXX
+	select BATTERY_BQ27x00
 
 config I2C_EEPROM_AT24
 	tristate "I2C EEPROMs AT24 support"

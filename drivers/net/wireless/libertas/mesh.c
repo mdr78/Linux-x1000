@@ -93,6 +93,7 @@ static int lbs_mesh_config(struct lbs_private *priv, uint16_t action,
 {
 	struct cmd_ds_mesh_config cmd;
 	struct mrvl_meshie *ie;
+	DECLARE_SSID_BUF(ssid);
 
 	memset(&cmd, 0, sizeof(cmd));
 	cmd.channel = cpu_to_le16(chan);
@@ -121,9 +122,9 @@ static int lbs_mesh_config(struct lbs_private *priv, uint16_t action,
 	default:
 		return -1;
 	}
-	lbs_deb_cmd("mesh config action %d type %x channel %d SSID %*pE\n",
-		    action, priv->mesh_tlv, chan, priv->mesh_ssid_len,
-		    priv->mesh_ssid);
+	lbs_deb_cmd("mesh config action %d type %x channel %d SSID %s\n",
+		    action, priv->mesh_tlv, chan,
+		    print_ssid(ssid, priv->mesh_ssid, priv->mesh_ssid_len));
 
 	return __lbs_mesh_config_send(priv, &cmd, action, priv->mesh_tlv);
 }
@@ -999,7 +1000,7 @@ static int lbs_add_mesh(struct lbs_private *priv)
 		goto done;
 	}
 
-	mesh_dev = alloc_netdev(0, "msh%d", NET_NAME_UNKNOWN, ether_setup);
+	mesh_dev = alloc_netdev(0, "msh%d", ether_setup);
 	if (!mesh_dev) {
 		lbs_deb_mesh("init mshX device failed\n");
 		ret = -ENOMEM;

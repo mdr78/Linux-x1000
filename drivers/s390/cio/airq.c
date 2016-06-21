@@ -87,7 +87,7 @@ static irqreturn_t do_airq_interrupt(int irq, void *dummy)
 	struct airq_struct *airq;
 	struct hlist_head *head;
 
-	set_cpu_flag(CIF_NOHZ_DELAY);
+	__this_cpu_write(s390_idle.nohz_delay, 1);
 	tpi_info = (struct tpi_info *) &get_irq_regs()->int_code;
 	head = &airq_lists[tpi_info->isc];
 	rcu_read_lock();
@@ -186,70 +186,55 @@ void airq_iv_release(struct airq_iv *iv)
 EXPORT_SYMBOL(airq_iv_release);
 
 /**
- * airq_iv_alloc - allocate irq bits from an interrupt vector
+ * airq_iv_alloc_bit - allocate an irq bit from an interrupt vector
  * @iv: pointer to an interrupt vector structure
- * @num: number of consecutive irq bits to allocate
  *
- * Returns the bit number of the first irq in the allocated block of irqs,
- * or -1UL if no bit is available or the AIRQ_IV_ALLOC flag has not been
- * specified
+ * Returns the bit number of the allocated irq, or -1UL if no bit
+ * is available or the AIRQ_IV_ALLOC flag has not been specified
  */
-unsigned long airq_iv_alloc(struct airq_iv *iv, unsigned long num)
+unsigned long airq_iv_alloc_bit(struct airq_iv *iv)
 {
-	unsigned long bit, i, flags;
+	unsigned long bit;
 
-	if (!iv->avail || num == 0)
+	if (!iv->avail)
 		return -1UL;
-	spin_lock_irqsave(&iv->lock, flags);
+	spin_lock(&iv->lock);
 	bit = find_first_bit_inv(iv->avail, iv->bits);
-	while (bit + num <= iv->bits) {
-		for (i = 1; i < num; i++)
-			if (!test_bit_inv(bit + i, iv->avail))
-				break;
-		if (i >= num) {
-			/* Found a suitable block of irqs */
-			for (i = 0; i < num; i++)
-				clear_bit_inv(bit + i, iv->avail);
-			if (bit + num >= iv->end)
-				iv->end = bit + num + 1;
-			break;
-		}
-		bit = find_next_bit_inv(iv->avail, iv->bits, bit + i + 1);
-	}
-	if (bit + num > iv->bits)
+	if (bit < iv->bits) {
+		clear_bit_inv(bit, iv->avail);
+		if (bit >= iv->end)
+			iv->end = bit + 1;
+	} else
 		bit = -1UL;
-	spin_unlock_irqrestore(&iv->lock, flags);
+	spin_unlock(&iv->lock);
 	return bit;
+
 }
-EXPORT_SYMBOL(airq_iv_alloc);
+EXPORT_SYMBOL(airq_iv_alloc_bit);
 
 /**
- * airq_iv_free - free irq bits of an interrupt vector
+ * airq_iv_free_bit - free an irq bit of an interrupt vector
  * @iv: pointer to interrupt vector structure
- * @bit: number of the first irq bit to free
- * @num: number of consecutive irq bits to free
+ * @bit: number of the irq bit to free
  */
-void airq_iv_free(struct airq_iv *iv, unsigned long bit, unsigned long num)
+void airq_iv_free_bit(struct airq_iv *iv, unsigned long bit)
 {
-	unsigned long i, flags;
-
-	if (!iv->avail || num == 0)
+	if (!iv->avail)
 		return;
-	spin_lock_irqsave(&iv->lock, flags);
-	for (i = 0; i < num; i++) {
-		/* Clear (possibly left over) interrupt bit */
-		clear_bit_inv(bit + i, iv->vector);
-		/* Make the bit positions available again */
-		set_bit_inv(bit + i, iv->avail);
-	}
-	if (bit + num >= iv->end) {
+	spin_lock(&iv->lock);
+	/* Clear (possibly left over) interrupt bit */
+	clear_bit_inv(bit, iv->vector);
+	/* Make the bit position available again */
+	set_bit_inv(bit, iv->avail);
+	if (bit == iv->end - 1) {
 		/* Find new end of bit-field */
-		while (iv->end > 0 && !test_bit_inv(iv->end - 1, iv->avail))
-			iv->end--;
+		while (--iv->end > 0)
+			if (!test_bit_inv(iv->end - 1, iv->avail))
+				break;
 	}
-	spin_unlock_irqrestore(&iv->lock, flags);
+	spin_unlock(&iv->lock);
 }
-EXPORT_SYMBOL(airq_iv_free);
+EXPORT_SYMBOL(airq_iv_free_bit);
 
 /**
  * airq_iv_scan - scan interrupt vector for non-zero bits

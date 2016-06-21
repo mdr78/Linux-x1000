@@ -15,8 +15,8 @@
 #include <linux/sched.h>
 #include <linux/interrupt.h>
 #include <linux/module.h>
-#include <linux/uaccess.h>
 
+#include <asm/uaccess.h>
 #include <asm/traps.h>
 
 /* Various important other fields */
@@ -149,7 +149,7 @@ int fixup_exception(struct pt_regs *regs)
 	fix = search_exception_tables(regs->iaoq[0]);
 	if (fix) {
 		struct exception_data *d;
-		d = this_cpu_ptr(&exception_data);
+		d = &__get_cpu_var(exception_data);
 		d->fault_ip = regs->iaoq[0];
 		d->fault_space = regs->isr;
 		d->fault_addr = regs->ior;
@@ -207,7 +207,7 @@ void do_page_fault(struct pt_regs *regs, unsigned long code,
 	int fault;
 	unsigned int flags;
 
-	if (faulthandler_disabled())
+	if (in_atomic())
 		goto no_context;
 
 	tsk = current;
@@ -256,8 +256,6 @@ good_area:
 		 */
 		if (fault & VM_FAULT_OOM)
 			goto out_of_memory;
-		else if (fault & VM_FAULT_SIGSEGV)
-			goto bad_area;
 		else if (fault & VM_FAULT_SIGBUS)
 			goto bad_area;
 		BUG();

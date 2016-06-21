@@ -62,7 +62,7 @@ static const struct lp3943_reg_cfg lp3943_mux_cfg[] = {
 	{ LP3943_REG_MUX3, 0xC0, 6 },
 };
 
-static const struct mfd_cell lp3943_devs[] = {
+static struct mfd_cell lp3943_devs[] = {
 	{
 		.name = "lp3943-pwm",
 		.of_compatible = "ti,lp3943-pwm",
@@ -154,6 +154,7 @@ static struct i2c_driver lp3943_driver = {
 	.remove = lp3943_remove,
 	.driver = {
 		.name = "lp3943",
+		.owner = THIS_MODULE,
 		.of_match_table = of_match_ptr(lp3943_of_match),
 	},
 	.id_table = lp3943_ids,

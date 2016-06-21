@@ -834,6 +834,7 @@ static void digi_set_termios(struct tty_struct *tty,
 			arg |= DIGI_OUTPUT_FLOW_CONTROL_CTS;
 		} else {
 			arg &= ~DIGI_OUTPUT_FLOW_CONTROL_CTS;
+			tty->hw_stopped = 0;
 		}
 
 		buf[i++] = DIGI_CMD_SET_OUTPUT_FLOW_CONTROL;
@@ -1499,11 +1500,15 @@ static int digi_read_oob_callback(struct urb *urb)
 			if (val & DIGI_READ_INPUT_SIGNALS_CTS) {
 				priv->dp_modem_signals |= TIOCM_CTS;
 				/* port must be open to use tty struct */
-				if (rts)
+				if (rts) {
+					tty->hw_stopped = 0;
 					tty_port_tty_wakeup(&port->port);
+				}
 			} else {
 				priv->dp_modem_signals &= ~TIOCM_CTS;
 				/* port must be open to use tty struct */
+				if (rts)
+					tty->hw_stopped = 1;
 			}
 			if (val & DIGI_READ_INPUT_SIGNALS_DSR)
 				priv->dp_modem_signals |= TIOCM_DSR;

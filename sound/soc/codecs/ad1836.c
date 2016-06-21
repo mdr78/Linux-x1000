@@ -40,8 +40,8 @@ struct ad1836_priv {
  */
 static const char *ad1836_deemp[] = {"None", "44.1kHz", "32kHz", "48kHz"};
 
-static SOC_ENUM_SINGLE_DECL(ad1836_deemp_enum,
-			    AD1836_DAC_CTRL1, 8, ad1836_deemp);
+static const struct soc_enum ad1836_deemp_enum =
+	SOC_ENUM_SINGLE(AD1836_DAC_CTRL1, 8, 4, ad1836_deemp);
 
 #define AD1836_DAC_VOLUME(x) \
 	SOC_DOUBLE_R("DAC" #x " Playback Volume", AD1836_DAC_L_VOL(x), \
@@ -251,7 +251,7 @@ static int ad1836_resume(struct snd_soc_codec *codec)
 static int ad1836_probe(struct snd_soc_codec *codec)
 {
 	struct ad1836_priv *ad1836 = snd_soc_codec_get_drvdata(codec);
-	struct snd_soc_dapm_context *dapm = snd_soc_codec_get_dapm(codec);
+	struct snd_soc_dapm_context *dapm = &codec->dapm;
 	int num_dacs, num_adcs;
 	int ret = 0;
 	int i;
@@ -404,6 +404,7 @@ MODULE_DEVICE_TABLE(spi, ad1836_ids);
 static struct spi_driver ad1836_spi_driver = {
 	.driver = {
 		.name	= "ad1836",
+		.owner	= THIS_MODULE,
 	},
 	.probe		= ad1836_spi_probe,
 	.remove		= ad1836_spi_remove,

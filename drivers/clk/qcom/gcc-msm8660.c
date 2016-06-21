@@ -25,7 +25,6 @@
 #include <dt-bindings/clock/qcom,gcc-msm8660.h>
 #include <dt-bindings/reset/qcom,gcc-msm8660.h>
 
-#include "common.h"
 #include "clk-regmap.h"
 #include "clk-pll.h"
 #include "clk-rcg.h"
@@ -59,29 +58,27 @@ static struct clk_regmap pll8_vote = {
 	},
 };
 
-enum {
-	P_PXO,
-	P_PLL8,
-	P_CXO,
+#define P_PXO	0
+#define P_PLL8	1
+#define P_CXO	2
+
+static const u8 gcc_pxo_pll8_map[] = {
+	[P_PXO]		= 0,
+	[P_PLL8]	= 3,
 };
 
-static const struct parent_map gcc_pxo_pll8_map[] = {
-	{ P_PXO, 0 },
-	{ P_PLL8, 3 }
-};
-
-static const char * const gcc_pxo_pll8[] = {
+static const char *gcc_pxo_pll8[] = {
 	"pxo",
 	"pll8_vote",
 };
 
-static const struct parent_map gcc_pxo_pll8_cxo_map[] = {
-	{ P_PXO, 0 },
-	{ P_PLL8, 3 },
-	{ P_CXO, 5 }
+static const u8 gcc_pxo_pll8_cxo_map[] = {
+	[P_PXO]		= 0,
+	[P_PLL8]	= 3,
+	[P_CXO]		= 5,
 };
 
-static const char * const gcc_pxo_pll8_cxo[] = {
+static const char *gcc_pxo_pll8_cxo[] = {
 	"pxo",
 	"pll8_vote",
 	"cxo",
@@ -1917,7 +1914,7 @@ static struct clk_rcg usb_fs1_xcvr_fs_src = {
 	}
 };
 
-static const char * const usb_fs1_xcvr_fs_src_p[] = { "usb_fs1_xcvr_fs_src" };
+static const char *usb_fs1_xcvr_fs_src_p[] = { "usb_fs1_xcvr_fs_src" };
 
 static struct clk_branch usb_fs1_xcvr_fs_clk = {
 	.halt_reg = 0x2fcc,
@@ -1984,7 +1981,7 @@ static struct clk_rcg usb_fs2_xcvr_fs_src = {
 	}
 };
 
-static const char * const usb_fs2_xcvr_fs_src_p[] = { "usb_fs2_xcvr_fs_src" };
+static const char *usb_fs2_xcvr_fs_src_p[] = { "usb_fs2_xcvr_fs_src" };
 
 static struct clk_branch usb_fs2_xcvr_fs_clk = {
 	.halt_reg = 0x2fcc,
@@ -2704,24 +2701,51 @@ static const struct regmap_config gcc_msm8660_regmap_config = {
 	.fast_io	= true,
 };
 
-static const struct qcom_cc_desc gcc_msm8660_desc = {
-	.config = &gcc_msm8660_regmap_config,
-	.clks = gcc_msm8660_clks,
-	.num_clks = ARRAY_SIZE(gcc_msm8660_clks),
-	.resets = gcc_msm8660_resets,
-	.num_resets = ARRAY_SIZE(gcc_msm8660_resets),
-};
-
 static const struct of_device_id gcc_msm8660_match_table[] = {
 	{ .compatible = "qcom,gcc-msm8660" },
 	{ }
 };
 MODULE_DEVICE_TABLE(of, gcc_msm8660_match_table);
 
+struct qcom_cc {
+	struct qcom_reset_controller reset;
+	struct clk_onecell_data data;
+	struct clk *clks[];
+};
+
 static int gcc_msm8660_probe(struct platform_device *pdev)
 {
-	struct clk *clk;
+	void __iomem *base;
+	struct resource *res;
+	int i, ret;
 	struct device *dev = &pdev->dev;
+	struct clk *clk;
+	struct clk_onecell_data *data;
+	struct clk **clks;
+	struct regmap *regmap;
+	size_t num_clks;
+	struct qcom_reset_controller *reset;
+	struct qcom_cc *cc;
+
+	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
+	base = devm_ioremap_resource(dev, res);
+	if (IS_ERR(base))
+		return PTR_ERR(base);
+
+	regmap = devm_regmap_init_mmio(dev, base, &gcc_msm8660_regmap_config);
+	if (IS_ERR(regmap))
+		return PTR_ERR(regmap);
+
+	num_clks = ARRAY_SIZE(gcc_msm8660_clks);
+	cc = devm_kzalloc(dev, sizeof(*cc) + sizeof(*clks) * num_clks,
+			  GFP_KERNEL);
+	if (!cc)
+		return -ENOMEM;
+
+	clks = cc->clks;
+	data = &cc->data;
+	data->clks = clks;
+	data->clk_num = num_clks;
 
 	/* Temporary until RPM clocks supported */
 	clk = clk_register_fixed_rate(dev, "cxo", NULL, CLK_IS_ROOT, 19200000);
@@ -2732,13 +2756,48 @@ static int gcc_msm8660_probe(struct platform_device *pdev)
 	if (IS_ERR(clk))
 		return PTR_ERR(clk);
 
-	return qcom_cc_probe(pdev, &gcc_msm8660_desc);
+	for (i = 0; i < num_clks; i++) {
+		if (!gcc_msm8660_clks[i])
+			continue;
+		clk = devm_clk_register_regmap(dev, gcc_msm8660_clks[i]);
+		if (IS_ERR(clk))
+			return PTR_ERR(clk);
+		clks[i] = clk;
+	}
+
+	ret = of_clk_add_provider(dev->of_node, of_clk_src_onecell_get, data);
+	if (ret)
+		return ret;
+
+	reset = &cc->reset;
+	reset->rcdev.of_node = dev->of_node;
+	reset->rcdev.ops = &qcom_reset_ops,
+	reset->rcdev.owner = THIS_MODULE,
+	reset->rcdev.nr_resets = ARRAY_SIZE(gcc_msm8660_resets),
+	reset->regmap = regmap;
+	reset->reset_map = gcc_msm8660_resets,
+	platform_set_drvdata(pdev, &reset->rcdev);
+
+	ret = reset_controller_register(&reset->rcdev);
+	if (ret)
+		of_clk_del_provider(dev->of_node);
+
+	return ret;
+}
+
+static int gcc_msm8660_remove(struct platform_device *pdev)
+{
+	of_clk_del_provider(pdev->dev.of_node);
+	reset_controller_unregister(platform_get_drvdata(pdev));
+	return 0;
 }
 
 static struct platform_driver gcc_msm8660_driver = {
 	.probe		= gcc_msm8660_probe,
+	.remove		= gcc_msm8660_remove,
 	.driver		= {
 		.name	= "gcc-msm8660",
+		.owner	= THIS_MODULE,
 		.of_match_table = gcc_msm8660_match_table,
 	},
 };

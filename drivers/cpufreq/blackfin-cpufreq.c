@@ -195,6 +195,7 @@ static struct cpufreq_driver bfin_driver = {
 	.target_index = bfin_target,
 	.get = bfin_getfreq_khz,
 	.init = __bfin_cpu_init,
+	.exit = cpufreq_generic_exit,
 	.name = "bfin cpufreq",
 	.attr = cpufreq_generic_attr,
 };

@@ -3,7 +3,6 @@ config ALPHA
 	default y
 	select ARCH_MIGHT_HAVE_PC_PARPORT
 	select ARCH_MIGHT_HAVE_PC_SERIO
-	select ARCH_USE_CMPXCHG_LOCKREF
 	select HAVE_AOUT
 	select HAVE_IDE
 	select HAVE_OPROFILE
@@ -23,7 +22,6 @@ config ALPHA
 	select GENERIC_SMP_IDLE_THREAD
 	select GENERIC_STRNCPY_FROM_USER
 	select GENERIC_STRNLEN_USER
-	select HAVE_ARCH_AUDITSYSCALL
 	select HAVE_MOD_ARCH_SPECIFIC
 	select MODULES_USE_ELF_RELA
 	select ODD_RT_SIGACTION
@@ -76,10 +74,6 @@ config NEED_SG_DMA_LENGTH
 config GENERIC_ISA_DMA
 	bool
 	default y
-
-config PGTABLE_LEVELS
-	int
-	default 3
 
 source "init/Kconfig"
 source "kernel/Kconfig.freezer"

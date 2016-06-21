@@ -15,7 +15,6 @@
 #include <linux/iio/common/st_sensors.h>
 
 #define LPS001WP_PRESS_DEV_NAME		"lps001wp"
-#define LPS25H_PRESS_DEV_NAME		"lps25h"
 #define LPS331AP_PRESS_DEV_NAME		"lps331ap"
 
 /**
@@ -26,7 +25,8 @@ static const struct st_sensors_platform_data default_press_pdata = {
 	.drdy_int_pin = 1,
 };
 
-int st_press_common_probe(struct iio_dev *indio_dev);
+int st_press_common_probe(struct iio_dev *indio_dev,
+					struct st_sensors_platform_data *pdata);
 void st_press_common_remove(struct iio_dev *indio_dev);
 
 #ifdef CONFIG_IIO_BUFFER

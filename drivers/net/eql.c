@@ -199,7 +199,7 @@ static void __init eql_setup(struct net_device *dev)
 
 	dev->type       	= ARPHRD_SLIP;
 	dev->tx_queue_len 	= 5;		/* Hands them off fast */
-	netif_keep_dst(dev);
+	dev->priv_flags	       &= ~IFF_XMIT_DST_RELEASE;
 }
 
 static int eql_open(struct net_device *dev)
@@ -585,8 +585,7 @@ static int __init eql_init_module(void)
 
 	pr_info("%s\n", version);
 
-	dev_eql = alloc_netdev(sizeof(equalizer_t), "eql", NET_NAME_UNKNOWN,
-			       eql_setup);
+	dev_eql = alloc_netdev(sizeof(equalizer_t), "eql", eql_setup);
 	if (!dev_eql)
 		return -ENOMEM;
 

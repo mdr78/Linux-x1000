@@ -215,7 +215,6 @@ struct ehci_hcd {			/* one per controller */
 	/* SILICON QUIRKS */
 	unsigned		no_selective_suspend:1;
 	unsigned		has_fsl_port_bug:1; /* FreeScale */
-	unsigned		has_fsl_hs_errata:1;	/* Freescale HS quirk */
 	unsigned		big_endian_mmio:1;
 	unsigned		big_endian_desc:1;
 	unsigned		big_endian_capbase:1;
@@ -227,6 +226,22 @@ struct ehci_hcd {			/* one per controller */
 	unsigned		frame_index_bug:1; /* MosChip (AKA NetMos) */
 	unsigned		need_oc_pp_cycle:1; /* MPC834X port power */
 	unsigned		imx28_write_fix:1; /* For Freescale i.MX28 */
+
+	unsigned		has_x1000_phy:1;
+	/* Intel Quark X10xx needs squelch adjustment during HS enumeration
+	 * to eliminate noise at around default power on squelch of 112.5mV
+	 * which causes the noise to look like signalling. We need to adjust
+	 * the squelch to eliminate that false signalling.
+	 * First we adjust it lo and if the false signalling is now damped,
+	 * enumeration works OK. If that fails  we adjust hi and see
+	 * if it enumerates OK, if not we are at the END and will default to
+	 * full speed.  */
+	#define QRK_SQUELCH_DEFAULT	0 /* apply default of 112.5 mV */
+	#define QRK_SQUELCH_LO		1 /* apply low  of 100 mV */
+	#define QRK_SQUELCH_HI		2 /* apply high of 125 mV */
+
+	unsigned		x1000_phy_squelch:2;
+					/*Squelch state during quirk */
 
 	/* required for usb32 quirk */
 	#define OHCI_CTRL_HCFS          (3 << 6)
@@ -687,17 +702,6 @@ ehci_port_speed(struct ehci_hcd *ehci, unsigned int portsc)
 #define	ehci_has_fsl_portno_bug(e)		(0)
 #endif
 
-#define PORTSC_FSL_PFSC	24	/* Port Force Full-Speed Connect */
-
-#if defined(CONFIG_PPC_85xx)
-/* Some Freescale processors have an erratum (USB A-005275) in which
- * incoming packets get corrupted in HS mode
- */
-#define ehci_has_fsl_hs_errata(e)	((e)->has_fsl_hs_errata)
-#else
-#define ehci_has_fsl_hs_errata(e)	(0)
-#endif
-
 /*
  * While most USB host controllers implement their registers in
  * little-endian format, a minority (celleb companion chip) implement
@@ -871,8 +875,6 @@ static inline u32 hc32_to_cpup (const struct ehci_hcd *ehci, const __hc32 *x)
 struct ehci_driver_overrides {
 	size_t		extra_priv_size;
 	int		(*reset)(struct usb_hcd *hcd);
-	int		(*port_power)(struct usb_hcd *hcd,
-				int portnum, bool enable);
 };
 
 extern void	ehci_init_driver(struct hc_driver *drv,
@@ -880,16 +882,10 @@ extern void	ehci_init_driver(struct hc_driver *drv,
 extern int	ehci_setup(struct usb_hcd *hcd);
 extern int	ehci_handshake(struct ehci_hcd *ehci, void __iomem *ptr,
 				u32 mask, u32 done, int usec);
-extern int	ehci_reset(struct ehci_hcd *ehci);
 
 #ifdef CONFIG_PM
 extern int	ehci_suspend(struct usb_hcd *hcd, bool do_wakeup);
-extern int	ehci_resume(struct usb_hcd *hcd, bool force_reset);
-extern void	ehci_adjust_port_wakeup_flags(struct ehci_hcd *ehci,
-			bool suspending, bool do_wakeup);
+extern int	ehci_resume(struct usb_hcd *hcd, bool hibernated);
 #endif	/* CONFIG_PM */
-
-extern int	ehci_hub_control(struct usb_hcd	*hcd, u16 typeReq, u16 wValue,
-				 u16 wIndex, char *buf, u16 wLength);
 
 #endif /* __LINUX_EHCI_HCD_H */

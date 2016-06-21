@@ -28,6 +28,8 @@
 __iomem void *rt_sysc_membase;
 __iomem void *rt_memc_membase;
 
+extern struct boot_param_header __dtb_start;
+
 __iomem void *plat_of_remap_node(const char *node)
 {
 	struct resource res;
@@ -50,18 +52,30 @@ __iomem void *plat_of_remap_node(const char *node)
 
 void __init device_tree_init(void)
 {
-	unflatten_and_copy_device_tree();
-}
+	unsigned long base, size;
+	void *fdt_copy;
 
-static int memory_dtb;
+	if (!initial_boot_params)
+		return;
 
-static int __init early_init_dt_find_memory(unsigned long node,
-				const char *uname, int depth, void *data)
-{
-	if (depth == 1 && !strcmp(uname, "memory@0"))
-		memory_dtb = 1;
+	base = virt_to_phys((void *)initial_boot_params);
+	size = be32_to_cpu(initial_boot_params->totalsize);
 
-	return 0;
+	/* Before we do anything, lets reserve the dt blob */
+	reserve_bootmem(base, size, BOOTMEM_DEFAULT);
+
+	/* The strings in the flattened tree are referenced directly by the
+	 * device tree, so copy the flattened device tree from init memory
+	 * to regular memory.
+	 */
+	fdt_copy = alloc_bootmem(size);
+	memcpy(fdt_copy, initial_boot_params, size);
+	initial_boot_params = fdt_copy;
+
+	unflatten_device_tree();
+
+	/* free the space reserved for the dt blob */
+	free_bootmem(base, size);
 }
 
 void __init plat_mem_setup(void)
@@ -72,12 +86,9 @@ void __init plat_mem_setup(void)
 	 * Load the builtin devicetree. This causes the chosen node to be
 	 * parsed resulting in our memory appearing
 	 */
-	__dt_setup_arch(__dtb_start);
+	__dt_setup_arch(&__dtb_start);
 
-	of_scan_flat_dt(early_init_dt_find_memory, NULL);
-	if (memory_dtb)
-		of_scan_flat_dt(early_init_dt_scan_memory, NULL);
-	else if (soc_info.mem_size)
+	if (soc_info.mem_size)
 		add_memory_region(soc_info.mem_base, soc_info.mem_size * SZ_1M,
 				  BOOT_MEM_RAM);
 	else
@@ -88,9 +99,19 @@ void __init plat_mem_setup(void)
 
 static int __init plat_of_setup(void)
 {
-	__dt_register_buses(soc_info.compatible, "palmbus");
+	static struct of_device_id of_ids[3];
+	int len = sizeof(of_ids[0].compatible);
 
-	/* make sure that the reset controller is setup early */
+	if (!of_have_populated_dt())
+		panic("device tree not present");
+
+	strlcpy(of_ids[0].compatible, soc_info.compatible, len);
+	strncpy(of_ids[1].compatible, "palmbus", len);
+
+	if (of_platform_populate(NULL, of_ids, NULL, NULL))
+		panic("failed to populate DT");
+
+	/* make sure ithat the reset controller is setup early */
 	ralink_rst_init();
 
 	return 0;

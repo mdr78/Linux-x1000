@@ -79,10 +79,6 @@ struct nes_mr {
 	u16               pbls_used;
 	u8                mode;
 	u8                pbl_4k;
-	__le64            *pages;
-	dma_addr_t        paddr;
-	u32               max_pages;
-	u32		  npages;
 };
 
 struct nes_hw_pb {
@@ -188,6 +184,5 @@ struct nes_qp {
 	u8                    pau_busy;
 	u8                    pau_pending;
 	u8                    pau_state;
-	__u64                 nesuqp_addr;
 };
 #endif			/* NES_VERBS_H */

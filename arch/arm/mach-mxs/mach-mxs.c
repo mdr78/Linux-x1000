@@ -157,8 +157,6 @@ enum mac_oui {
 	OUI_FSL,
 	OUI_DENX,
 	OUI_CRYSTALFONTZ,
-	OUI_I2SE,
-	OUI_ARMADEUS,
 };
 
 static void __init update_fec_mac_prop(enum mac_oui oui)
@@ -213,16 +211,6 @@ static void __init update_fec_mac_prop(enum mac_oui oui)
 			macaddr[1] = 0xb9;
 			macaddr[2] = 0xe1;
 			break;
-		case OUI_I2SE:
-			macaddr[0] = 0x00;
-			macaddr[1] = 0x01;
-			macaddr[2] = 0x87;
-			break;
-		case OUI_ARMADEUS:
-			macaddr[0] = 0x00;
-			macaddr[1] = 0x1e;
-			macaddr[2] = 0xac;
-			break;
 		}
 		val = ocotp[i];
 		macaddr[3] = (val >> 16) & 0xff;
@@ -246,11 +234,6 @@ static void __init imx28_evk_init(void)
 	update_fec_mac_prop(OUI_FSL);
 
 	mxs_saif_clkmux_select(MXS_DIGCTL_SAIF_CLKMUX_EXTMSTR0);
-}
-
-static void __init imx28_apf28_init(void)
-{
-	update_fec_mac_prop(OUI_ARMADEUS);
 }
 
 static int apx4devkit_phy_fixup(struct phy_device *phy)
@@ -282,7 +265,7 @@ static void __init apx4devkit_init(void)
 #define TX28_FEC_PHY_RESET	MXS_GPIO_NR(4, 13)
 #define TX28_FEC_nINT		MXS_GPIO_NR(4, 5)
 
-static const struct gpio const tx28_gpios[] __initconst = {
+static const struct gpio tx28_gpios[] __initconst = {
 	{ ENET0_MDC__GPIO_4_0, GPIOF_OUT_INIT_LOW, "GPIO_4_0" },
 	{ ENET0_MDIO__GPIO_4_1, GPIOF_OUT_INIT_LOW, "GPIO_4_1" },
 	{ ENET0_RX_EN__GPIO_4_2, GPIOF_OUT_INIT_LOW, "GPIO_4_2" },
@@ -345,11 +328,6 @@ static void __init tx28_post_init(void)
 static void __init crystalfontz_init(void)
 {
 	update_fec_mac_prop(OUI_CRYSTALFONTZ);
-}
-
-static void __init duckbill_init(void)
-{
-	update_fec_mac_prop(OUI_I2SE);
 }
 
 static void __init m28cu3_init(void)
@@ -448,11 +426,6 @@ static int __init mxs_restart_init(void)
 	return 0;
 }
 
-static void __init eukrea_mbmx283lc_init(void)
-{
-	mxs_saif_clkmux_select(MXS_DIGCTL_SAIF_CLKMUX_EXTMSTR0);
-}
-
 static void __init mxs_machine_init(void)
 {
 	struct device_node *root;
@@ -485,16 +458,10 @@ static void __init mxs_machine_init(void)
 
 	if (of_machine_is_compatible("fsl,imx28-evk"))
 		imx28_evk_init();
-	if (of_machine_is_compatible("armadeus,imx28-apf28"))
-		imx28_apf28_init();
 	else if (of_machine_is_compatible("bluegiga,apx4devkit"))
 		apx4devkit_init();
 	else if (of_machine_is_compatible("crystalfontz,cfa10036"))
 		crystalfontz_init();
-	else if (of_machine_is_compatible("eukrea,mbmx283lc"))
-		eukrea_mbmx283lc_init();
-	else if (of_machine_is_compatible("i2se,duckbill"))
-		duckbill_init();
 	else if (of_machine_is_compatible("msr,m28cu3"))
 		m28cu3_init();
 
@@ -528,7 +495,7 @@ static void mxs_restart(enum reboot_mode mode, const char *cmd)
 	soft_restart(0);
 }
 
-static const char *const mxs_dt_compat[] __initconst = {
+static const char *mxs_dt_compat[] __initdata = {
 	"fsl,imx28",
 	"fsl,imx23",
 	NULL,

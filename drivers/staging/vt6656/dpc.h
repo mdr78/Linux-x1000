@@ -30,8 +30,15 @@
 #define __DPC_H__
 
 #include "device.h"
+#include "wcmd.h"
 
-int vnt_rx_data(struct vnt_private *, struct vnt_rcb *,
-	unsigned long bytes_received);
+void RXvWorkItem(struct work_struct *work);
+
+void RXvMngWorkItem(struct work_struct *work);
+
+void RXvFreeRCB(struct vnt_rcb *pRCB, int bReAllocSkb);
+
+int RXbBulkInProcessData(struct vnt_private *, struct vnt_rcb *pRCB,
+	unsigned long BytesToIndicate);
 
 #endif /* __RXTX_H__ */

@@ -68,10 +68,10 @@ static int sh_cpufreq_target(struct cpufreq_policy *policy,
 	freqs.new	= (freq + 500) / 1000;
 	freqs.flags	= 0;
 
-	cpufreq_freq_transition_begin(policy, &freqs);
+	cpufreq_notify_transition(policy, &freqs, CPUFREQ_PRECHANGE);
 	set_cpus_allowed_ptr(current, &cpus_allowed);
 	clk_set_rate(cpuclk, freq);
-	cpufreq_freq_transition_end(policy, &freqs, 0);
+	cpufreq_notify_transition(policy, &freqs, CPUFREQ_POSTCHANGE);
 
 	dev_dbg(dev, "set frequency %lu Hz\n", freq);
 
@@ -143,6 +143,7 @@ static int sh_cpufreq_cpu_exit(struct cpufreq_policy *policy)
 	unsigned int cpu = policy->cpu;
 	struct clk *cpuclk = &per_cpu(sh_cpuclk, cpu);
 
+	cpufreq_frequency_table_put_attr(cpu);
 	clk_put(cpuclk);
 
 	return 0;

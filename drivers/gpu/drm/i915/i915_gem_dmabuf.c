@@ -161,8 +161,12 @@ static void i915_gem_dmabuf_vunmap(struct dma_buf *dma_buf, void *vaddr)
 {
 	struct drm_i915_gem_object *obj = dma_buf_to_obj(dma_buf);
 	struct drm_device *dev = obj->base.dev;
+	int ret;
 
-	mutex_lock(&dev->struct_mutex);
+	ret = i915_mutex_lock_interruptible(dev);
+	if (ret)
+		return;
+
 	if (--obj->vmapping_count == 0) {
 		vunmap(obj->dma_buf_vmapping);
 		obj->dma_buf_vmapping = NULL;
@@ -229,22 +233,7 @@ static const struct dma_buf_ops i915_dmabuf_ops =  {
 struct dma_buf *i915_gem_prime_export(struct drm_device *dev,
 				      struct drm_gem_object *gem_obj, int flags)
 {
-	struct drm_i915_gem_object *obj = to_intel_bo(gem_obj);
-	DEFINE_DMA_BUF_EXPORT_INFO(exp_info);
-
-	exp_info.ops = &i915_dmabuf_ops;
-	exp_info.size = gem_obj->size;
-	exp_info.flags = flags;
-	exp_info.priv = gem_obj;
-
-
-	if (obj->ops->dmabuf_export) {
-		int ret = obj->ops->dmabuf_export(obj);
-		if (ret)
-			return ERR_PTR(ret);
-	}
-
-	return dma_buf_export(&exp_info);
+	return dma_buf_export(gem_obj, &i915_dmabuf_ops, gem_obj->size, flags);
 }
 
 static int i915_gem_object_get_pages_dmabuf(struct drm_i915_gem_object *obj)
@@ -256,6 +245,7 @@ static int i915_gem_object_get_pages_dmabuf(struct drm_i915_gem_object *obj)
 		return PTR_ERR(sg);
 
 	obj->pages = sg;
+	obj->has_dma_mapping = true;
 	return 0;
 }
 
@@ -263,6 +253,7 @@ static void i915_gem_object_put_pages_dmabuf(struct drm_i915_gem_object *obj)
 {
 	dma_buf_unmap_attachment(obj->base.import_attach,
 				 obj->pages, DMA_BIDIRECTIONAL);
+	obj->has_dma_mapping = false;
 }
 
 static const struct drm_i915_gem_object_ops i915_gem_object_dmabuf_ops = {

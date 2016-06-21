@@ -231,7 +231,7 @@ use_legacy_interrupts:
 
 static void esas2r_claim_interrupts(struct esas2r_adapter *a)
 {
-	unsigned long flags = 0;
+	unsigned long flags = IRQF_DISABLED;
 
 	if (a->intr_mode == INTR_MODE_LEGACY)
 		flags |= IRQF_SHARED;
@@ -813,13 +813,12 @@ static void esas2r_init_pci_cfg_space(struct esas2r_adapter *a)
 		pci_read_config_word(a->pcid, pcie_cap_reg + PCI_EXP_DEVCTL,
 				     &devcontrol);
 
-		if ((devcontrol & PCI_EXP_DEVCTL_READRQ) >
-		     PCI_EXP_DEVCTL_READRQ_512B) {
+		if ((devcontrol & PCI_EXP_DEVCTL_READRQ) > 0x2000) {
 			esas2r_log(ESAS2R_LOG_INFO,
 				   "max read request size > 512B");
 
 			devcontrol &= ~PCI_EXP_DEVCTL_READRQ;
-			devcontrol |= PCI_EXP_DEVCTL_READRQ_512B;
+			devcontrol |= 0x2000;
 			pci_write_config_word(a->pcid,
 					      pcie_cap_reg + PCI_EXP_DEVCTL,
 					      devcontrol);

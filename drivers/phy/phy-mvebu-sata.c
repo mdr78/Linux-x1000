@@ -75,7 +75,7 @@ static int phy_mvebu_sata_power_off(struct phy *phy)
 	return 0;
 }
 
-static const struct phy_ops phy_mvebu_sata_ops = {
+static struct phy_ops phy_mvebu_sata_ops = {
 	.power_on	= phy_mvebu_sata_power_on,
 	.power_off	= phy_mvebu_sata_power_off,
 	.owner		= THIS_MODULE,
@@ -89,8 +89,6 @@ static int phy_mvebu_sata_probe(struct platform_device *pdev)
 	struct phy *phy;
 
 	priv = devm_kzalloc(&pdev->dev, sizeof(*priv), GFP_KERNEL);
-	if (!priv)
-		return -ENOMEM;
 
 	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
 	priv->base = devm_ioremap_resource(&pdev->dev, res);
@@ -101,7 +99,7 @@ static int phy_mvebu_sata_probe(struct platform_device *pdev)
 	if (IS_ERR(priv->clk))
 		return PTR_ERR(priv->clk);
 
-	phy = devm_phy_create(&pdev->dev, NULL, &phy_mvebu_sata_ops);
+	phy = devm_phy_create(&pdev->dev, &phy_mvebu_sata_ops, NULL);
 	if (IS_ERR(phy))
 		return PTR_ERR(phy);
 
@@ -128,6 +126,7 @@ static struct platform_driver phy_mvebu_sata_driver = {
 	.probe	= phy_mvebu_sata_probe,
 	.driver = {
 		.name	= "phy-mvebu-sata",
+		.owner	= THIS_MODULE,
 		.of_match_table	= phy_mvebu_sata_of_match,
 	}
 };

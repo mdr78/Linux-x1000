@@ -88,8 +88,7 @@ static void clear_global_latency_tracing(void)
 }
 
 static void __sched
-account_global_scheduler_latency(struct task_struct *tsk,
-				 struct latency_record *lat)
+account_global_scheduler_latency(struct task_struct *tsk, struct latency_record *lat)
 {
 	int firstnonnull = MAXLR + 1;
 	int i;
@@ -256,7 +255,7 @@ static int lstats_show(struct seq_file *m, void *v)
 					break;
 				seq_printf(m, " %ps", (void *)bt);
 			}
-			seq_puts(m, "\n");
+			seq_printf(m, "\n");
 		}
 	}
 	return 0;

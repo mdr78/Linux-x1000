@@ -81,7 +81,6 @@ static const char version[] =
 #include <linux/workqueue.h>
 #include <linux/of.h>
 #include <linux/of_device.h>
-#include <linux/of_gpio.h>
 
 #include <linux/netdevice.h>
 #include <linux/etherdevice.h>
@@ -90,11 +89,6 @@ static const char version[] =
 #include <asm/io.h>
 
 #include "smc91x.h"
-
-#if defined(CONFIG_ASSABET_NEPONSET)
-#include <mach/assabet.h>
-#include <mach/neponset.h>
-#endif
 
 #ifndef SMC_NOWAIT
 # define SMC_NOWAIT		0
@@ -153,19 +147,18 @@ MODULE_ALIAS("platform:smc91x");
  */
 #define MII_DELAY		1
 
-#define DBG(n, dev, fmt, ...)					\
-	do {							\
-		if (SMC_DEBUG >= (n))				\
-			netdev_dbg(dev, fmt, ##__VA_ARGS__);	\
+#if SMC_DEBUG > 0
+#define DBG(n, dev, args...)				\
+	do {						\
+		if (SMC_DEBUG >= (n))			\
+			netdev_dbg(dev, args);		\
 	} while (0)
 
-#define PRINTK(dev, fmt, ...)					\
-	do {							\
-		if (SMC_DEBUG > 0)				\
-			netdev_info(dev, fmt, ##__VA_ARGS__);	\
-		else						\
-			netdev_dbg(dev, fmt, ##__VA_ARGS__);	\
-	} while (0)
+#define PRINTK(dev, args...)   netdev_info(dev, args)
+#else
+#define DBG(n, dev, args...)   do { } while (0)
+#define PRINTK(dev, args...)   netdev_dbg(dev, args)
+#endif
 
 #if SMC_DEBUG > 3
 static void PRINT_PKT(u_char *buf, int length)
@@ -198,7 +191,7 @@ static void PRINT_PKT(u_char *buf, int length)
 	pr_cont("\n");
 }
 #else
-static inline void PRINT_PKT(u_char *buf, int length) { }
+#define PRINT_PKT(x...)  do { } while (0)
 #endif
 
 
@@ -628,7 +621,7 @@ static void smc_hardware_send_pkt(unsigned long data)
 done:	if (!THROTTLE_TX_PKTS)
 		netif_wake_queue(dev);
 
-	dev_consume_skb_any(skb);
+	dev_kfree_skb(skb);
 }
 
 /*
@@ -664,7 +657,7 @@ static int smc_hard_start_xmit(struct sk_buff *skb, struct net_device *dev)
 		netdev_warn(dev, "Far too big packet error.\n");
 		dev->stats.tx_errors++;
 		dev->stats.tx_dropped++;
-		dev_kfree_skb_any(skb);
+		dev_kfree_skb(skb);
 		return NETDEV_TX_OK;
 	}
 
@@ -1788,7 +1781,7 @@ static int smc_findirq(struct smc_local *lp)
 	int timeout = 20;
 	unsigned long cookie;
 
-	DBG(2, lp->dev, "%s: %s\n", CARDNAME, __func__);
+	DBG(2, dev, "%s: %s\n", CARDNAME, __func__);
 
 	cookie = probe_irq_on();
 
@@ -1973,6 +1966,9 @@ static int smc_probe(struct net_device *dev, void __iomem *ioaddr,
 	}
 	dev->irq = irq_canonicalize(dev->irq);
 
+	/* Fill in the fields of the device structure with ethernet values. */
+	ether_setup(dev);
+
 	dev->watchdog_timeo = msecs_to_jiffies(watchdog);
 	dev->netdev_ops = &smc_netdev_ops;
 	dev->ethtool_ops = &smc_ethtool_ops;
@@ -2018,18 +2014,10 @@ static int smc_probe(struct net_device *dev, void __iomem *ioaddr,
 	lp->cfg.flags |= SMC91X_USE_DMA;
 #  endif
 	if (lp->cfg.flags & SMC91X_USE_DMA) {
-		dma_cap_mask_t mask;
-		struct pxad_param param;
-
-		dma_cap_zero(mask);
-		dma_cap_set(DMA_SLAVE, mask);
-		param.prio = PXAD_PRIO_LOWEST;
-		param.drcmr = -1UL;
-
-		lp->dma_chan =
-			dma_request_slave_channel_compat(mask, pxad_filter_fn,
-							 &param, &dev->dev,
-							 "data");
+		int dma = pxa_request_dma(dev->name, DMA_PRIO_LOW,
+					  smc_pxa_dma_irq, NULL);
+		if (dma >= 0)
+			dev->dma = dma;
 	}
 #endif
 
@@ -2040,8 +2028,8 @@ static int smc_probe(struct net_device *dev, void __iomem *ioaddr,
 			    version_string, revision_register & 0x0f,
 			    lp->base, dev->irq);
 
-		if (lp->dma_chan)
-			pr_cont(" DMA %p", lp->dma_chan);
+		if (dev->dma != (unsigned char)-1)
+			pr_cont(" DMA %d", dev->dma);
 
 		pr_cont("%s%s\n",
 			lp->cfg.flags & SMC91X_NOWAIT ? " [nowait]" : "",
@@ -2066,8 +2054,8 @@ static int smc_probe(struct net_device *dev, void __iomem *ioaddr,
 
 err_out:
 #ifdef CONFIG_ARCH_PXA
-	if (retval && lp->dma_chan)
-		dma_release_channel(lp->dma_chan);
+	if (retval && dev->dma != (unsigned char)-1)
+		pxa_free_dma(dev->dma);
 #endif
 	return retval;
 }
@@ -2202,31 +2190,6 @@ static const struct of_device_id smc91x_match[] = {
 	{},
 };
 MODULE_DEVICE_TABLE(of, smc91x_match);
-
-/**
- * of_try_set_control_gpio - configure a gpio if it exists
- */
-static int try_toggle_control_gpio(struct device *dev,
-				   struct gpio_desc **desc,
-				   const char *name, int index,
-				   int value, unsigned int nsdelay)
-{
-	struct gpio_desc *gpio = *desc;
-	enum gpiod_flags flags = value ? GPIOD_OUT_LOW : GPIOD_OUT_HIGH;
-
-	gpio = devm_gpiod_get_index_optional(dev, name, index, flags);
-	if (IS_ERR(gpio))
-		return PTR_ERR(gpio);
-
-	if (gpio) {
-		if (nsdelay)
-			usleep_range(nsdelay, 2 * nsdelay);
-		gpiod_set_value_cansleep(gpio, value);
-	}
-	*desc = gpio;
-
-	return 0;
-}
 #endif
 
 /*
@@ -2246,10 +2209,9 @@ static int smc_drv_probe(struct platform_device *pdev)
 	const struct of_device_id *match = NULL;
 	struct smc_local *lp;
 	struct net_device *ndev;
-	struct resource *res;
+	struct resource *res, *ires;
 	unsigned int __iomem *addr;
 	unsigned long irq_flags = SMC_IRQ_FLAGS;
-	unsigned long irq_resflags;
 	int ret;
 
 	ndev = alloc_etherdev(sizeof(struct smc_local));
@@ -2276,28 +2238,6 @@ static int smc_drv_probe(struct platform_device *pdev)
 	if (match) {
 		struct device_node *np = pdev->dev.of_node;
 		u32 val;
-
-		/* Optional pwrdwn GPIO configured? */
-		ret = try_toggle_control_gpio(&pdev->dev, &lp->power_gpio,
-					      "power", 0, 0, 100);
-		if (ret)
-			return ret;
-
-		/*
-		 * Optional reset GPIO configured? Minimum 100 ns reset needed
-		 * according to LAN91C96 datasheet page 14.
-		 */
-		ret = try_toggle_control_gpio(&pdev->dev, &lp->reset_gpio,
-					      "reset", 0, 0, 100);
-		if (ret)
-			return ret;
-
-		/*
-		 * Need to wait for optional EEPROM to load, max 750 us according
-		 * to LAN91C96 datasheet page 55.
-		 */
-		if (lp->reset_gpio)
-			usleep_range(750, 1000);
 
 		/* Combination of IO widths supported, default to 16-bit */
 		if (!of_property_read_u32(np, "reg-io-width", &val)) {
@@ -2341,26 +2281,22 @@ static int smc_drv_probe(struct platform_device *pdev)
 		goto out_free_netdev;
 	}
 
-	ndev->irq = platform_get_irq(pdev, 0);
-	if (ndev->irq <= 0) {
+	ires = platform_get_resource(pdev, IORESOURCE_IRQ, 0);
+	if (!ires) {
 		ret = -ENODEV;
 		goto out_release_io;
 	}
-	/*
-	 * If this platform does not specify any special irqflags, or if
-	 * the resource supplies a trigger, override the irqflags with
-	 * the trigger flags from the resource.
-	 */
-	irq_resflags = irqd_get_trigger_type(irq_get_irq_data(ndev->irq));
-	if (irq_flags == -1 || irq_resflags & IRQF_TRIGGER_MASK)
-		irq_flags = irq_resflags & IRQF_TRIGGER_MASK;
+
+	ndev->irq = ires->start;
+
+	if (irq_flags == -1 || ires->flags & IRQF_TRIGGER_MASK)
+		irq_flags = ires->flags & IRQF_TRIGGER_MASK;
 
 	ret = smc_request_attrib(pdev, ndev);
 	if (ret)
 		goto out_release_io;
-#if defined(CONFIG_ASSABET_NEPONSET)
-	if (machine_is_assabet() && machine_has_neponset())
-		neponset_ncr_set(NCR_ENET_OSC_EN);
+#if defined(CONFIG_SA1100_ASSABET)
+	neponset_ncr_set(NCR_ENET_OSC_EN);
 #endif
 	platform_set_drvdata(pdev, ndev);
 	ret = smc_enable_device(pdev);
@@ -2378,7 +2314,6 @@ static int smc_drv_probe(struct platform_device *pdev)
 		struct smc_local *lp = netdev_priv(ndev);
 		lp->device = &pdev->dev;
 		lp->physaddr = res->start;
-
 	}
 #endif
 
@@ -2415,8 +2350,8 @@ static int smc_drv_remove(struct platform_device *pdev)
 	free_irq(ndev->irq, ndev);
 
 #ifdef CONFIG_ARCH_PXA
-	if (lp->dma_chan)
-		dma_release_channel(lp->dma_chan);
+	if (ndev->dma != (unsigned char)-1)
+		pxa_free_dma(ndev->dma);
 #endif
 	iounmap(lp->base);
 
@@ -2477,6 +2412,7 @@ static struct platform_driver smc_driver = {
 	.remove		= smc_drv_remove,
 	.driver		= {
 		.name	= CARDNAME,
+		.owner	= THIS_MODULE,
 		.pm	= &smc_drv_pm_ops,
 		.of_match_table = of_match_ptr(smc91x_match),
 	},

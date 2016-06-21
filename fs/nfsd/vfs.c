@@ -16,7 +16,6 @@
 #include <linux/fs.h>
 #include <linux/file.h>
 #include <linux/splice.h>
-#include <linux/falloc.h>
 #include <linux/fcntl.h>
 #include <linux/namei.h>
 #include <linux/delay.h>
@@ -174,7 +173,7 @@ int nfsd_mountpoint(struct dentry *dentry, struct svc_export *exp)
 		return 1;
 	if (!(exp->ex_flags & NFSEXP_V4ROOT))
 		return 0;
-	return d_inode(dentry) != NULL;
+	return dentry->d_inode != NULL;
 }
 
 __be32
@@ -190,7 +189,8 @@ nfsd_lookup_dentry(struct svc_rqst *rqstp, struct svc_fh *fhp,
 	dprintk("nfsd: nfsd_lookup(fh %s, %.*s)\n", SVCFH_fmt(fhp), len,name);
 
 	dparent = fhp->fh_dentry;
-	exp = exp_get(fhp->fh_export);
+	exp  = fhp->fh_export;
+	exp_get(exp);
 
 	/* Lookup the name, but don't follow links */
 	if (isdotent(name, len)) {
@@ -270,7 +270,7 @@ nfsd_lookup(struct svc_rqst *rqstp, struct svc_fh *fhp, const char *name,
 	 * dentry may be negative, it may need to be updated.
 	 */
 	err = fh_compose(resfh, exp, dentry, fhp);
-	if (!err && d_really_is_negative(dentry))
+	if (!err && !dentry->d_inode)
 		err = nfserr_noent;
 out:
 	dput(dentry);
@@ -284,7 +284,7 @@ out:
 static int
 commit_metadata(struct svc_fh *fhp)
 {
-	struct inode *inode = d_inode(fhp->fh_dentry);
+	struct inode *inode = fhp->fh_dentry->d_inode;
 	const struct export_operations *export_ops = inode->i_sb->s_export_op;
 
 	if (!EX_ISSYNC(fhp->fh_export))
@@ -302,6 +302,42 @@ commit_metadata(struct svc_fh *fhp)
 static void
 nfsd_sanitize_attrs(struct inode *inode, struct iattr *iap)
 {
+	/*
+	 * NFSv2 does not differentiate between "set-[ac]time-to-now"
+	 * which only requires access, and "set-[ac]time-to-X" which
+	 * requires ownership.
+	 * So if it looks like it might be "set both to the same time which
+	 * is close to now", and if inode_change_ok fails, then we
+	 * convert to "set to now" instead of "set to explicit time"
+	 *
+	 * We only call inode_change_ok as the last test as technically
+	 * it is not an interface that we should be using.
+	 */
+#define BOTH_TIME_SET (ATTR_ATIME_SET | ATTR_MTIME_SET)
+#define	MAX_TOUCH_TIME_ERROR (30*60)
+	if ((iap->ia_valid & BOTH_TIME_SET) == BOTH_TIME_SET &&
+	    iap->ia_mtime.tv_sec == iap->ia_atime.tv_sec) {
+		/*
+		 * Looks probable.
+		 *
+		 * Now just make sure time is in the right ballpark.
+		 * Solaris, at least, doesn't seem to care what the time
+		 * request is.  We require it be within 30 minutes of now.
+		 */
+		time_t delta = iap->ia_atime.tv_sec - get_seconds();
+		if (delta < 0)
+			delta = -delta;
+		if (delta < MAX_TOUCH_TIME_ERROR &&
+		    inode_change_ok(inode, iap) != 0) {
+			/*
+			 * Turn off ATTR_[AM]TIME_SET but leave ATTR_[AM]TIME.
+			 * This will cause notify_change to set these times
+			 * to "now"
+			 */
+			iap->ia_valid &= ~BOTH_TIME_SET;
+		}
+	}
+
 	/* sanitize the mode change */
 	if (iap->ia_valid & ATTR_MODE) {
 		iap->ia_mode &= S_IALLUGO;
@@ -328,7 +364,7 @@ static __be32
 nfsd_get_write_access(struct svc_rqst *rqstp, struct svc_fh *fhp,
 		struct iattr *iap)
 {
-	struct inode *inode = d_inode(fhp->fh_dentry);
+	struct inode *inode = fhp->fh_dentry->d_inode;
 	int host_err;
 
 	if (iap->ia_size < inode->i_size) {
@@ -390,7 +426,7 @@ nfsd_setattr(struct svc_rqst *rqstp, struct svc_fh *fhp, struct iattr *iap,
 	}
 
 	dentry = fhp->fh_dentry;
-	inode = d_inode(dentry);
+	inode = dentry->d_inode;
 
 	/* Ignore any mode updates on symlinks */
 	if (S_ISLNK(inode->i_mode))
@@ -410,16 +446,6 @@ nfsd_setattr(struct svc_rqst *rqstp, struct svc_fh *fhp, struct iattr *iap,
 		if (err)
 			goto out;
 		size_change = 1;
-
-		/*
-		 * RFC5661, Section 18.30.4:
-		 *   Changing the size of a file with SETATTR indirectly
-		 *   changes the time_modify and change attributes.
-		 *
-		 * (and similar for the older RFCs)
-		 */
-		if (iap->ia_size != i_size_read(inode))
-			iap->ia_valid |= ATTR_MTIME;
 	}
 
 	iap->ia_valid |= ATTR_CTIME;
@@ -438,7 +464,7 @@ out_put_write_access:
 	if (size_change)
 		put_write_access(inode);
 	if (!err)
-		err = nfserrno(commit_metadata(fhp));
+		commit_metadata(fhp);
 out:
 	return err;
 }
@@ -459,7 +485,7 @@ out:
  */
 int nfsd4_is_junction(struct dentry *dentry)
 {
-	struct inode *inode = d_inode(dentry);
+	struct inode *inode = dentry->d_inode;
 
 	if (inode == NULL)
 		return 0;
@@ -485,9 +511,9 @@ __be32 nfsd4_set_nfs4_label(struct svc_rqst *rqstp, struct svc_fh *fhp,
 
 	dentry = fhp->fh_dentry;
 
-	mutex_lock(&d_inode(dentry)->i_mutex);
+	mutex_lock(&dentry->d_inode->i_mutex);
 	host_error = security_inode_setsecctx(dentry, label->data, label->len);
-	mutex_unlock(&d_inode(dentry)->i_mutex);
+	mutex_unlock(&dentry->d_inode->i_mutex);
 	return nfserrno(host_error);
 }
 #else
@@ -498,21 +524,6 @@ __be32 nfsd4_set_nfs4_label(struct svc_rqst *rqstp, struct svc_fh *fhp,
 }
 #endif
 
-__be32 nfsd4_vfs_fallocate(struct svc_rqst *rqstp, struct svc_fh *fhp,
-			   struct file *file, loff_t offset, loff_t len,
-			   int flags)
-{
-	int error;
-
-	if (!S_ISREG(file_inode(file)->i_mode))
-		return nfserr_inval;
-
-	error = vfs_fallocate(file, flags, offset, len);
-	if (!error)
-		error = commit_metadata(fhp);
-
-	return nfserrno(error);
-}
 #endif /* defined(CONFIG_NFSD_V4) */
 
 #ifdef CONFIG_NFSD_V3
@@ -574,9 +585,9 @@ nfsd_access(struct svc_rqst *rqstp, struct svc_fh *fhp, u32 *access, u32 *suppor
 	export = fhp->fh_export;
 	dentry = fhp->fh_dentry;
 
-	if (d_is_reg(dentry))
+	if (S_ISREG(dentry->d_inode->i_mode))
 		map = nfs3_regaccess;
-	else if (d_is_dir(dentry))
+	else if (S_ISDIR(dentry->d_inode->i_mode))
 		map = nfs3_diraccess;
 	else
 		map = nfs3_anyaccess;
@@ -639,7 +650,6 @@ nfsd_open(struct svc_rqst *rqstp, struct svc_fh *fhp, umode_t type,
 {
 	struct path	path;
 	struct inode	*inode;
-	struct file	*file;
 	int		flags = O_RDONLY|O_LARGEFILE;
 	__be32		err;
 	int		host_err = 0;
@@ -665,7 +675,7 @@ nfsd_open(struct svc_rqst *rqstp, struct svc_fh *fhp, umode_t type,
 
 	path.mnt = fhp->fh_export->ex_path.mnt;
 	path.dentry = fhp->fh_dentry;
-	inode = d_inode(path.dentry);
+	inode = path.dentry->d_inode;
 
 	/* Disallow write access to files with the append-only bit set
 	 * or any access when mandatory locking enabled
@@ -694,25 +704,19 @@ nfsd_open(struct svc_rqst *rqstp, struct svc_fh *fhp, umode_t type,
 		else
 			flags = O_WRONLY|O_LARGEFILE;
 	}
+	*filp = dentry_open(&path, flags, current_cred());
+	if (IS_ERR(*filp)) {
+		host_err = PTR_ERR(*filp);
+		*filp = NULL;
+	} else {
+		host_err = ima_file_check(*filp, may_flags);
 
-	file = dentry_open(&path, flags, current_cred());
-	if (IS_ERR(file)) {
-		host_err = PTR_ERR(file);
-		goto out_nfserr;
+		if (may_flags & NFSD_MAY_64BIT_COOKIE)
+			(*filp)->f_mode |= FMODE_64BITHASH;
+		else
+			(*filp)->f_mode |= FMODE_32BITHASH;
 	}
 
-	host_err = ima_file_check(file, may_flags, 0);
-	if (host_err) {
-		fput(file);
-		goto out_nfserr;
-	}
-
-	if (may_flags & NFSD_MAY_64BIT_COOKIE)
-		file->f_mode |= FMODE_64BITHASH;
-	else
-		file->f_mode |= FMODE_32BITHASH;
-
-	*filp = file;
 out_nfserr:
 	err = nfserrno(host_err);
 out:
@@ -720,12 +724,23 @@ out:
 	return err;
 }
 
-struct raparms *
-nfsd_init_raparms(struct file *file)
+/*
+ * Close a file.
+ */
+void
+nfsd_close(struct file *filp)
 {
-	struct inode *inode = file_inode(file);
-	dev_t dev = inode->i_sb->s_dev;
-	ino_t ino = inode->i_ino;
+	fput(filp);
+}
+
+/*
+ * Obtain the readahead parameters for the file
+ * specified by (dev, ino).
+ */
+
+static inline struct raparms *
+nfsd_get_raparms(dev_t dev, ino_t ino)
+{
 	struct raparms	*ra, **rap, **frap = NULL;
 	int depth = 0;
 	unsigned int hash;
@@ -762,21 +777,7 @@ found:
 	ra->p_count++;
 	nfsdstats.ra_depth[depth*10/nfsdstats.ra_size]++;
 	spin_unlock(&rab->pb_lock);
-
-	if (ra->p_set)
-		file->f_ra = ra->p_ra;
 	return ra;
-}
-
-void nfsd_put_raparams(struct file *file, struct raparms *ra)
-{
-	struct raparm_hbucket *rab = &raparm_hash[ra->p_hindex];
-
-	spin_lock(&rab->pb_lock);
-	ra->p_ra = file->f_ra;
-	ra->p_set = 1;
-	ra->p_count--;
-	spin_unlock(&rab->pb_lock);
 }
 
 /*
@@ -820,54 +821,54 @@ static int nfsd_direct_splice_actor(struct pipe_inode_info *pipe,
 }
 
 static __be32
-nfsd_finish_read(struct file *file, unsigned long *count, int host_err)
+nfsd_vfs_read(struct svc_rqst *rqstp, struct svc_fh *fhp, struct file *file,
+              loff_t offset, struct kvec *vec, int vlen, unsigned long *count)
 {
+	mm_segment_t	oldfs;
+	__be32		err;
+	int		host_err;
+
+	err = nfserr_perm;
+
+	if (file->f_op->splice_read && rqstp->rq_splice_ok) {
+		struct splice_desc sd = {
+			.len		= 0,
+			.total_len	= *count,
+			.pos		= offset,
+			.u.data		= rqstp,
+		};
+
+		rqstp->rq_next_page = rqstp->rq_respages + 1;
+		host_err = splice_direct_to_actor(file, &sd, nfsd_direct_splice_actor);
+	} else {
+		oldfs = get_fs();
+		set_fs(KERNEL_DS);
+		host_err = vfs_readv(file, (struct iovec __user *)vec, vlen, &offset);
+		set_fs(oldfs);
+	}
+
 	if (host_err >= 0) {
 		nfsdstats.io_read += host_err;
 		*count = host_err;
+		err = 0;
 		fsnotify_access(file);
-		return 0;
 	} else 
-		return nfserrno(host_err);
+		err = nfserrno(host_err);
+	return err;
 }
 
-__be32 nfsd_splice_read(struct svc_rqst *rqstp,
-		     struct file *file, loff_t offset, unsigned long *count)
+static void kill_suid(struct dentry *dentry)
 {
-	struct splice_desc sd = {
-		.len		= 0,
-		.total_len	= *count,
-		.pos		= offset,
-		.u.data		= rqstp,
-	};
-	int host_err;
+	struct iattr	ia;
+	ia.ia_valid = ATTR_KILL_SUID | ATTR_KILL_SGID | ATTR_KILL_PRIV;
 
-	rqstp->rq_next_page = rqstp->rq_respages + 1;
-	host_err = splice_direct_to_actor(file, &sd, nfsd_direct_splice_actor);
-	return nfsd_finish_read(file, count, host_err);
-}
-
-__be32 nfsd_readv(struct file *file, loff_t offset, struct kvec *vec, int vlen,
-		unsigned long *count)
-{
-	mm_segment_t oldfs;
-	int host_err;
-
-	oldfs = get_fs();
-	set_fs(KERNEL_DS);
-	host_err = vfs_readv(file, (struct iovec __user *)vec, vlen, &offset);
-	set_fs(oldfs);
-	return nfsd_finish_read(file, count, host_err);
-}
-
-static __be32
-nfsd_vfs_read(struct svc_rqst *rqstp, struct file *file,
-	      loff_t offset, struct kvec *vec, int vlen, unsigned long *count)
-{
-	if (file->f_op->splice_read && test_bit(RQ_SPLICE_OK, &rqstp->rq_flags))
-		return nfsd_splice_read(rqstp, file, offset, count);
-	else
-		return nfsd_readv(file, offset, vec, vlen, count);
+	mutex_lock(&dentry->d_inode->i_mutex);
+	/*
+	 * Note we call this on write, so notify_change will not
+	 * encounter any conflicting delegations:
+	 */
+	notify_change(dentry, &ia, NULL);
+	mutex_unlock(&dentry->d_inode->i_mutex);
 }
 
 /*
@@ -907,12 +908,13 @@ static int wait_for_concurrent_writes(struct file *file)
 	return err;
 }
 
-__be32
+static __be32
 nfsd_vfs_write(struct svc_rqst *rqstp, struct svc_fh *fhp, struct file *file,
 				loff_t offset, struct kvec *vec, int vlen,
 				unsigned long *cnt, int *stablep)
 {
 	struct svc_export	*exp;
+	struct dentry		*dentry;
 	struct inode		*inode;
 	mm_segment_t		oldfs;
 	__be32			err = 0;
@@ -920,19 +922,9 @@ nfsd_vfs_write(struct svc_rqst *rqstp, struct svc_fh *fhp, struct file *file,
 	int			stable = *stablep;
 	int			use_wgather;
 	loff_t			pos = offset;
-	loff_t			end = LLONG_MAX;
-	unsigned int		pflags = current->flags;
 
-	if (test_bit(RQ_LOCAL, &rqstp->rq_flags))
-		/*
-		 * We want less throttling in balance_dirty_pages()
-		 * and shrink_inactive_list() so that nfs to
-		 * localhost doesn't cause nfsd to lock up due to all
-		 * the client's dirty pages or its congested queue.
-		 */
-		current->flags |= PF_LESS_THROTTLE;
-
-	inode = file_inode(file);
+	dentry = file->f_path.dentry;
+	inode = dentry->d_inode;
 	exp   = fhp->fh_export;
 
 	use_wgather = (rqstp->rq_vers == 2) && EX_WGATHER(exp);
@@ -950,14 +942,15 @@ nfsd_vfs_write(struct svc_rqst *rqstp, struct svc_fh *fhp, struct file *file,
 	nfsdstats.io_write += host_err;
 	fsnotify_modify(file);
 
+	/* clear setuid/setgid flag after write */
+	if (inode->i_mode & (S_ISUID | S_ISGID))
+		kill_suid(dentry);
+
 	if (stable) {
-		if (use_wgather) {
+		if (use_wgather)
 			host_err = wait_for_concurrent_writes(file);
-		} else {
-			if (*cnt)
-				end = offset + *cnt - 1;
-			host_err = vfs_fsync_range(file, offset, end, 0);
-		}
+		else
+			host_err = vfs_fsync_range(file, offset, offset+*cnt, 0);
 	}
 
 out_nfserr:
@@ -966,8 +959,6 @@ out_nfserr:
 		err = 0;
 	else
 		err = nfserrno(host_err);
-	if (test_bit(RQ_LOCAL, &rqstp->rq_flags))
-		tsk_restore_flags(current, pflags, PF_LESS_THROTTLE);
 	return err;
 }
 
@@ -980,6 +971,7 @@ __be32 nfsd_read(struct svc_rqst *rqstp, struct svc_fh *fhp,
 	loff_t offset, struct kvec *vec, int vlen, unsigned long *count)
 {
 	struct file *file;
+	struct inode *inode;
 	struct raparms	*ra;
 	__be32 err;
 
@@ -987,12 +979,47 @@ __be32 nfsd_read(struct svc_rqst *rqstp, struct svc_fh *fhp,
 	if (err)
 		return err;
 
-	ra = nfsd_init_raparms(file);
-	err = nfsd_vfs_read(rqstp, file, offset, vec, vlen, count);
-	if (ra)
-		nfsd_put_raparams(file, ra);
-	fput(file);
+	inode = file_inode(file);
 
+	/* Get readahead parameters */
+	ra = nfsd_get_raparms(inode->i_sb->s_dev, inode->i_ino);
+
+	if (ra && ra->p_set)
+		file->f_ra = ra->p_ra;
+
+	err = nfsd_vfs_read(rqstp, fhp, file, offset, vec, vlen, count);
+
+	/* Write back readahead params */
+	if (ra) {
+		struct raparm_hbucket *rab = &raparm_hash[ra->p_hindex];
+		spin_lock(&rab->pb_lock);
+		ra->p_ra = file->f_ra;
+		ra->p_set = 1;
+		ra->p_count--;
+		spin_unlock(&rab->pb_lock);
+	}
+
+	nfsd_close(file);
+	return err;
+}
+
+/* As above, but use the provided file descriptor. */
+__be32
+nfsd_read_file(struct svc_rqst *rqstp, struct svc_fh *fhp, struct file *file,
+		loff_t offset, struct kvec *vec, int vlen,
+		unsigned long *count)
+{
+	__be32		err;
+
+	if (file) {
+		err = nfsd_permission(rqstp, fhp->fh_export, fhp->fh_dentry,
+				NFSD_MAY_READ|NFSD_MAY_OWNER_OVERRIDE);
+		if (err)
+			goto out;
+		err = nfsd_vfs_read(rqstp, fhp, file, offset, vec, vlen, count);
+	} else /* Note file may still be NULL in NFSv4 special stateid case: */
+		err = nfsd_read(rqstp, fhp, offset, vec, vlen, count);
+out:
 	return err;
 }
 
@@ -1023,7 +1050,7 @@ nfsd_write(struct svc_rqst *rqstp, struct svc_fh *fhp, struct file *file,
 		if (cnt)
 			err = nfsd_vfs_write(rqstp, fhp, file, offset, vec, vlen,
 					     cnt, stablep);
-		fput(file);
+		nfsd_close(file);
 	}
 out:
 	return err;
@@ -1068,7 +1095,7 @@ nfsd_commit(struct svc_rqst *rqstp, struct svc_fh *fhp,
 			err = nfserr_notsupp;
 	}
 
-	fput(file);
+	nfsd_close(file);
 out:
 	return err;
 }
@@ -1091,8 +1118,7 @@ nfsd_create_setattr(struct svc_rqst *rqstp, struct svc_fh *resfhp,
 		iap->ia_valid &= ~(ATTR_UID|ATTR_GID);
 	if (iap->ia_valid)
 		return nfsd_setattr(rqstp, resfhp, iap, 0, (time_t)0);
-	/* Callers expect file metadata to be committed here */
-	return nfserrno(commit_metadata(resfhp));
+	return 0;
 }
 
 /* HPUX client sometimes creates a file in mode 000, and sets size to 0.
@@ -1141,7 +1167,7 @@ nfsd_create(struct svc_rqst *rqstp, struct svc_fh *fhp,
 		goto out;
 
 	dentry = fhp->fh_dentry;
-	dirp = d_inode(dentry);
+	dirp = dentry->d_inode;
 
 	err = nfserr_notdir;
 	if (!dirp->i_op->lookup)
@@ -1180,7 +1206,7 @@ nfsd_create(struct svc_rqst *rqstp, struct svc_fh *fhp,
 	 * Make sure the child dentry is still negative ...
 	 */
 	err = nfserr_exist;
-	if (d_really_is_positive(dchild)) {
+	if (dchild->d_inode) {
 		dprintk("nfsd_create: dentry %pd/%pd not negative!\n",
 			dentry, dchild);
 		goto out; 
@@ -1224,10 +1250,9 @@ nfsd_create(struct svc_rqst *rqstp, struct svc_fh *fhp,
 	err = nfsd_create_setattr(rqstp, resfhp, iap);
 
 	/*
-	 * nfsd_create_setattr already committed the child.  Transactional
-	 * filesystems had a chance to commit changes for both parent and
-	 * child * simultaneously making the following commit_metadata a
-	 * noop.
+	 * nfsd_setattr already committed the child.  Transactional filesystems
+	 * had a chance to commit changes for both parent and child
+	 * simultaneously making the following commit_metadata a noop.
 	 */
 	err2 = nfserrno(commit_metadata(fhp));
 	if (err2)
@@ -1248,6 +1273,12 @@ out_nfserr:
 }
 
 #ifdef CONFIG_NFSD_V3
+
+static inline int nfsd_create_is_exclusive(int createmode)
+{
+	return createmode == NFS3_CREATE_EXCLUSIVE
+	       || createmode == NFS4_CREATE_EXCLUSIVE4_1;
+}
 
 /*
  * NFSv3 and NFSv4 version of nfsd_create
@@ -1277,7 +1308,7 @@ do_nfsd_create(struct svc_rqst *rqstp, struct svc_fh *fhp,
 		goto out;
 
 	dentry = fhp->fh_dentry;
-	dirp = d_inode(dentry);
+	dirp = dentry->d_inode;
 
 	/* Get all the sanity checks out of the way before
 	 * we lock the parent. */
@@ -1300,7 +1331,7 @@ do_nfsd_create(struct svc_rqst *rqstp, struct svc_fh *fhp,
 		goto out_nfserr;
 
 	/* If file doesn't exist, check for permissions to create one */
-	if (d_really_is_negative(dchild)) {
+	if (!dchild->d_inode) {
 		err = fh_verify(rqstp, fhp, S_IFDIR, NFSD_MAY_CREATE);
 		if (err)
 			goto out;
@@ -1321,12 +1352,12 @@ do_nfsd_create(struct svc_rqst *rqstp, struct svc_fh *fhp,
 		v_atime = verifier[1]&0x7fffffff;
 	}
 	
-	if (d_really_is_positive(dchild)) {
+	if (dchild->d_inode) {
 		err = 0;
 
 		switch (createmode) {
 		case NFS3_CREATE_UNCHECKED:
-			if (! d_is_reg(dchild))
+			if (! S_ISREG(dchild->d_inode->i_mode))
 				goto out;
 			else if (truncp) {
 				/* in nfsv4, we need to treat this case a little
@@ -1344,17 +1375,17 @@ do_nfsd_create(struct svc_rqst *rqstp, struct svc_fh *fhp,
 			}
 			break;
 		case NFS3_CREATE_EXCLUSIVE:
-			if (   d_inode(dchild)->i_mtime.tv_sec == v_mtime
-			    && d_inode(dchild)->i_atime.tv_sec == v_atime
-			    && d_inode(dchild)->i_size  == 0 ) {
+			if (   dchild->d_inode->i_mtime.tv_sec == v_mtime
+			    && dchild->d_inode->i_atime.tv_sec == v_atime
+			    && dchild->d_inode->i_size  == 0 ) {
 				if (created)
 					*created = 1;
 				break;
 			}
 		case NFS4_CREATE_EXCLUSIVE4_1:
-			if (   d_inode(dchild)->i_mtime.tv_sec == v_mtime
-			    && d_inode(dchild)->i_atime.tv_sec == v_atime
-			    && d_inode(dchild)->i_size  == 0 ) {
+			if (   dchild->d_inode->i_mtime.tv_sec == v_mtime
+			    && dchild->d_inode->i_atime.tv_sec == v_atime
+			    && dchild->d_inode->i_size  == 0 ) {
 				if (created)
 					*created = 1;
 				goto set_attr;
@@ -1392,8 +1423,7 @@ do_nfsd_create(struct svc_rqst *rqstp, struct svc_fh *fhp,
 	err = nfsd_create_setattr(rqstp, resfhp, iap);
 
 	/*
-	 * nfsd_create_setattr already committed the child
-	 * (and possibly also the parent).
+	 * nfsd_setattr already committed the child (and possibly also the parent).
 	 */
 	if (!err)
 		err = nfserrno(commit_metadata(fhp));
@@ -1437,7 +1467,7 @@ nfsd_readlink(struct svc_rqst *rqstp, struct svc_fh *fhp, char *buf, int *lenp)
 
 	path.mnt = fhp->fh_export->ex_path.mnt;
 	path.dentry = fhp->fh_dentry;
-	inode = d_inode(path.dentry);
+	inode = path.dentry->d_inode;
 
 	err = nfserr_inval;
 	if (!inode->i_op->readlink)
@@ -1471,15 +1501,16 @@ out_nfserr:
 __be32
 nfsd_symlink(struct svc_rqst *rqstp, struct svc_fh *fhp,
 				char *fname, int flen,
-				char *path,
-				struct svc_fh *resfhp)
+				char *path,  int plen,
+				struct svc_fh *resfhp,
+				struct iattr *iap)
 {
 	struct dentry	*dentry, *dnew;
 	__be32		err, cerr;
 	int		host_err;
 
 	err = nfserr_noent;
-	if (!flen || path[0] == '\0')
+	if (!flen || !plen)
 		goto out;
 	err = nfserr_exist;
 	if (isdotent(fname, flen))
@@ -1500,7 +1531,18 @@ nfsd_symlink(struct svc_rqst *rqstp, struct svc_fh *fhp,
 	if (IS_ERR(dnew))
 		goto out_nfserr;
 
-	host_err = vfs_symlink(d_inode(dentry), dnew, path);
+	if (unlikely(path[plen] != 0)) {
+		char *path_alloced = kmalloc(plen+1, GFP_KERNEL);
+		if (path_alloced == NULL)
+			host_err = -ENOMEM;
+		else {
+			strncpy(path_alloced, path, plen);
+			path_alloced[plen] = 0;
+			host_err = vfs_symlink(dentry->d_inode, dnew, path_alloced);
+			kfree(path_alloced);
+		}
+	} else
+		host_err = vfs_symlink(dentry->d_inode, dnew, path);
 	err = nfserrno(host_err);
 	if (!err)
 		err = nfserrno(commit_metadata(fhp));
@@ -1539,7 +1581,7 @@ nfsd_link(struct svc_rqst *rqstp, struct svc_fh *ffhp,
 	if (err)
 		goto out;
 	err = nfserr_isdir;
-	if (d_is_dir(tfhp->fh_dentry))
+	if (S_ISDIR(tfhp->fh_dentry->d_inode->i_mode))
 		goto out;
 	err = nfserr_perm;
 	if (!len)
@@ -1556,7 +1598,7 @@ nfsd_link(struct svc_rqst *rqstp, struct svc_fh *ffhp,
 
 	fh_lock_nested(ffhp, I_MUTEX_PARENT);
 	ddir = ffhp->fh_dentry;
-	dirp = d_inode(ddir);
+	dirp = ddir->d_inode;
 
 	dnew = lookup_one_len(name, ddir, len);
 	host_err = PTR_ERR(dnew);
@@ -1566,7 +1608,7 @@ nfsd_link(struct svc_rqst *rqstp, struct svc_fh *ffhp,
 	dold = tfhp->fh_dentry;
 
 	err = nfserr_noent;
-	if (d_really_is_negative(dold))
+	if (!dold->d_inode)
 		goto out_dput;
 	host_err = vfs_link(dold, dirp, dnew, NULL);
 	if (!host_err) {
@@ -1613,10 +1655,10 @@ nfsd_rename(struct svc_rqst *rqstp, struct svc_fh *ffhp, char *fname, int flen,
 		goto out;
 
 	fdentry = ffhp->fh_dentry;
-	fdir = d_inode(fdentry);
+	fdir = fdentry->d_inode;
 
 	tdentry = tfhp->fh_dentry;
-	tdir = d_inode(tdentry);
+	tdir = tdentry->d_inode;
 
 	err = nfserr_perm;
 	if (!flen || isdotent(fname, flen) || !tlen || isdotent(tname, tlen))
@@ -1631,7 +1673,7 @@ nfsd_rename(struct svc_rqst *rqstp, struct svc_fh *ffhp, char *fname, int flen,
 	/* cannot use fh_lock as we need deadlock protective ordering
 	 * so do it by hand */
 	trap = lock_rename(tdentry, fdentry);
-	ffhp->fh_locked = tfhp->fh_locked = true;
+	ffhp->fh_locked = tfhp->fh_locked = 1;
 	fill_pre_wcc(ffhp);
 	fill_pre_wcc(tfhp);
 
@@ -1641,7 +1683,7 @@ nfsd_rename(struct svc_rqst *rqstp, struct svc_fh *ffhp, char *fname, int flen,
 		goto out_nfserr;
 
 	host_err = -ENOENT;
-	if (d_really_is_negative(odentry))
+	if (!odentry->d_inode)
 		goto out_dput_old;
 	host_err = -EINVAL;
 	if (odentry == trap)
@@ -1661,7 +1703,7 @@ nfsd_rename(struct svc_rqst *rqstp, struct svc_fh *ffhp, char *fname, int flen,
 	if (ffhp->fh_export->ex_path.dentry != tfhp->fh_export->ex_path.dentry)
 		goto out_dput_new;
 
-	host_err = vfs_rename(fdir, odentry, tdir, ndentry, NULL, 0);
+	host_err = vfs_rename(fdir, odentry, tdir, ndentry, NULL);
 	if (!host_err) {
 		host_err = commit_metadata(tfhp);
 		if (!host_err)
@@ -1673,15 +1715,15 @@ nfsd_rename(struct svc_rqst *rqstp, struct svc_fh *ffhp, char *fname, int flen,
 	dput(odentry);
  out_nfserr:
 	err = nfserrno(host_err);
-	/*
-	 * We cannot rely on fh_unlock on the two filehandles,
+
+	/* we cannot reply on fh_unlock on the two filehandles,
 	 * as that would do the wrong thing if the two directories
-	 * were the same, so again we do it by hand.
+	 * were the same, so again we do it by hand
 	 */
 	fill_post_wcc(ffhp);
 	fill_post_wcc(tfhp);
 	unlock_rename(tdentry, fdentry);
-	ffhp->fh_locked = tfhp->fh_locked = false;
+	ffhp->fh_locked = tfhp->fh_locked = 0;
 	fh_drop_write(ffhp);
 
 out:
@@ -1714,21 +1756,21 @@ nfsd_unlink(struct svc_rqst *rqstp, struct svc_fh *fhp, int type,
 
 	fh_lock_nested(fhp, I_MUTEX_PARENT);
 	dentry = fhp->fh_dentry;
-	dirp = d_inode(dentry);
+	dirp = dentry->d_inode;
 
 	rdentry = lookup_one_len(fname, dentry, flen);
 	host_err = PTR_ERR(rdentry);
 	if (IS_ERR(rdentry))
 		goto out_nfserr;
 
-	if (d_really_is_negative(rdentry)) {
+	if (!rdentry->d_inode) {
 		dput(rdentry);
 		err = nfserr_noent;
 		goto out;
 	}
 
 	if (!type)
-		type = d_inode(rdentry)->i_mode & S_IFMT;
+		type = rdentry->d_inode->i_mode & S_IFMT;
 
 	if (type != S_IFDIR)
 		host_err = vfs_unlink(dirp, rdentry, NULL);
@@ -1766,12 +1808,10 @@ struct readdir_data {
 	int		full;
 };
 
-static int nfsd_buffered_filldir(struct dir_context *ctx, const char *name,
-				 int namlen, loff_t offset, u64 ino,
-				 unsigned int d_type)
+static int nfsd_buffered_filldir(void *__buf, const char *name, int namlen,
+				 loff_t offset, u64 ino, unsigned int d_type)
 {
-	struct readdir_data *buf =
-		container_of(ctx, struct readdir_data, ctx);
+	struct readdir_data *buf = __buf;
 	struct buffered_dirent *de = (void *)(buf->dirent + buf->used);
 	unsigned int reclen;
 
@@ -1791,7 +1831,7 @@ static int nfsd_buffered_filldir(struct dir_context *ctx, const char *name,
 	return 0;
 }
 
-static __be32 nfsd_buffered_readdir(struct file *file, nfsd_filldir_t func,
+static __be32 nfsd_buffered_readdir(struct file *file, filldir_t func,
 				    struct readdir_cd *cdp, loff_t *offsetp)
 {
 	struct buffered_dirent *de;
@@ -1875,7 +1915,7 @@ static __be32 nfsd_buffered_readdir(struct file *file, nfsd_filldir_t func,
  */
 __be32
 nfsd_readdir(struct svc_rqst *rqstp, struct svc_fh *fhp, loff_t *offsetp, 
-	     struct readdir_cd *cdp, nfsd_filldir_t func)
+	     struct readdir_cd *cdp, filldir_t func)
 {
 	__be32		err;
 	struct file	*file;
@@ -1901,7 +1941,7 @@ nfsd_readdir(struct svc_rqst *rqstp, struct svc_fh *fhp, loff_t *offsetp,
 	if (err == nfserr_eof || err == nfserr_toosmall)
 		err = nfs_ok; /* can still be found in ->err */
 out_close:
-	fput(file);
+	nfsd_close(file);
 out:
 	return err;
 }
@@ -1939,7 +1979,7 @@ __be32
 nfsd_permission(struct svc_rqst *rqstp, struct svc_export *exp,
 					struct dentry *dentry, int acc)
 {
-	struct inode	*inode = d_inode(dentry);
+	struct inode	*inode = dentry->d_inode;
 	int		err;
 
 	if ((acc & NFSD_MAY_MASK) == NFSD_MAY_NOP)
@@ -2050,7 +2090,8 @@ nfsd_racache_init(int cache_size)
 	if (raparm_hash[0].pb_head)
 		return 0;
 	nperbucket = DIV_ROUND_UP(cache_size, RAPARM_HASH_SIZE);
-	nperbucket = max(2, nperbucket);
+	if (nperbucket < 2)
+		nperbucket = 2;
 	cache_size = nperbucket * RAPARM_HASH_SIZE;
 
 	dprintk("nfsd: allocating %d readahead buffers.\n", cache_size);

@@ -3267,6 +3267,7 @@ static int block_til_ready(struct tty_struct *tty, struct file * filp,
 	DECLARE_WAITQUEUE(wait, current);
 	int		retval;
 	bool		do_clocal = false;
+	bool		extra_count = false;
 	unsigned long	flags;
 	int		dcd;
 	struct tty_port *port = &info->port;
@@ -3299,7 +3300,10 @@ static int block_til_ready(struct tty_struct *tty, struct file * filp,
 			 __FILE__,__LINE__, tty->driver->name, port->count );
 
 	spin_lock_irqsave(&info->irq_spinlock, flags);
-	port->count--;
+	if (!tty_hung_up_p(filp)) {
+		extra_count = true;
+		port->count--;
+	}
 	spin_unlock_irqrestore(&info->irq_spinlock, flags);
 	port->blocked_open++;
 	
@@ -3314,11 +3318,12 @@ static int block_til_ready(struct tty_struct *tty, struct file * filp,
 					-EAGAIN : -ERESTARTSYS;
 			break;
 		}
-
+		
 		dcd = tty_port_carrier_raised(&info->port);
-		if (do_clocal || dcd)
-			break;
-
+		
+ 		if (!(port->flags & ASYNC_CLOSING) && (do_clocal || dcd))
+ 			break;
+			
 		if (signal_pending(current)) {
 			retval = -ERESTARTSYS;
 			break;
@@ -3337,7 +3342,7 @@ static int block_til_ready(struct tty_struct *tty, struct file * filp,
 	remove_wait_queue(&port->open_wait, &wait);
 	
 	/* FIXME: Racy on hangup during close wait */
-	if (!tty_hung_up_p(filp))
+	if (extra_count)
 		port->count++;
 	port->blocked_open--;
 	
@@ -3397,6 +3402,15 @@ static int mgsl_open(struct tty_struct *tty, struct file * filp)
 		printk("%s(%d):mgsl_open(%s), old ref count = %d\n",
 			 __FILE__,__LINE__,tty->driver->name, info->port.count);
 
+	/* If port is closing, signal caller to try again */
+	if (tty_hung_up_p(filp) || info->port.flags & ASYNC_CLOSING){
+		wait_event_interruptible_tty(tty, info->port.close_wait,
+				     !(info->port.flags & ASYNC_CLOSING));
+		retval = ((info->port.flags & ASYNC_HUP_NOTIFY) ?
+			-EAGAIN : -ERESTARTSYS);
+		goto cleanup;
+	}
+	
 	info->port.low_latency = (info->port.flags & ASYNC_LOW_LATENCY) ? 1 : 0;
 
 	spin_lock_irqsave(&info->netlock, flags);
@@ -4400,8 +4414,7 @@ static void synclink_cleanup(void)
 	printk("Unloading %s: %s\n", driver_name, driver_version);
 
 	if (serial_driver) {
-		rc = tty_unregister_driver(serial_driver);
-		if (rc)
+		if ((rc = tty_unregister_driver(serial_driver)))
 			printk("%s(%d) failed to unregister tty driver err=%d\n",
 			       __FILE__,__LINE__,rc);
 		put_tty_driver(serial_driver);
@@ -6625,7 +6638,7 @@ static bool mgsl_get_rx_frame(struct mgsl_struct *info)
 			unsigned char *ptmp = info->intermediate_rxbuffer;
 
 			if ( !(status & RXSTATUS_CRC_ERROR))
-				info->icount.rxok++;
+			info->icount.rxok++;
 			
 			while(copy_count) {
 				int partial_count;
@@ -7742,8 +7755,7 @@ static int hdlcdev_open(struct net_device *dev)
 		printk("%s:hdlcdev_open(%s)\n",__FILE__,dev->name);
 
 	/* generic HDLC layer open processing */
-	rc = hdlc_open(dev);
-	if (rc)
+	if ((rc = hdlc_open(dev)))
 		return rc;
 
 	/* arbitrate between network and tty opens */
@@ -7854,7 +7866,6 @@ static int hdlcdev_ioctl(struct net_device *dev, struct ifreq *ifr, int cmd)
 					      HDLC_FLAG_TXC_TXCPIN | HDLC_FLAG_TXC_DPLL |
 					      HDLC_FLAG_TXC_BRG    | HDLC_FLAG_TXC_RXCPIN);
 
-		memset(&new_line, 0, sizeof(new_line));
 		switch (flags){
 		case (HDLC_FLAG_RXC_RXCPIN | HDLC_FLAG_TXC_TXCPIN): new_line.clock_type = CLOCK_EXT; break;
 		case (HDLC_FLAG_RXC_BRG    | HDLC_FLAG_TXC_BRG):    new_line.clock_type = CLOCK_INT; break;
@@ -8010,8 +8021,7 @@ static int hdlcdev_init(struct mgsl_struct *info)
 
 	/* allocate and initialize network and HDLC layer objects */
 
-	dev = alloc_hdlcdev(info);
-	if (!dev) {
+	if (!(dev = alloc_hdlcdev(info))) {
 		printk(KERN_ERR "%s:hdlc device allocation failure\n",__FILE__);
 		return -ENOMEM;
 	}
@@ -8032,8 +8042,7 @@ static int hdlcdev_init(struct mgsl_struct *info)
 	hdlc->xmit   = hdlcdev_xmit;
 
 	/* register objects with HDLC layer */
-	rc = register_hdlc_device(dev);
-	if (rc) {
+	if ((rc = register_hdlc_device(dev))) {
 		printk(KERN_WARNING "%s:unable to register hdlc device\n",__FILE__);
 		free_netdev(dev);
 		return rc;
@@ -8069,8 +8078,7 @@ static int synclink_init_one (struct pci_dev *dev,
 		return -EIO;
 	}
 
-	info = mgsl_allocate_device();
-	if (!info) {
+	if (!(info = mgsl_allocate_device())) {
 		printk("can't allocate device instance data.\n");
 		return -EIO;
 	}

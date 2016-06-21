@@ -83,7 +83,7 @@
 #define RIO_CTAG_UDEVID	0x0001ffff /* Unique device identifier */
 
 extern struct bus_type rio_bus_type;
-extern struct class rio_mport_class;
+extern struct device rio_bus;
 
 struct rio_mport;
 struct rio_dev;
@@ -201,7 +201,6 @@ struct rio_dev {
 #define rio_dev_f(n) list_entry(n, struct rio_dev, net_list)
 #define	to_rio_dev(n) container_of(n, struct rio_dev, dev)
 #define sw_to_rio_dev(n) container_of(n, struct rio_dev, rswitch[0])
-#define	to_rio_mport(n) container_of(n, struct rio_mport, dev)
 
 /**
  * struct rio_msg - RIO message event
@@ -249,7 +248,6 @@ enum rio_phy_type {
  * @phy_type: RapidIO phy type
  * @phys_efptr: RIO port extended features pointer
  * @name: Port name string
- * @dev: device structure associated with an mport
  * @priv: Master port private data
  * @dma: DMA device associated with mport
  * @nscan: RapidIO network enumeration/discovery operations
@@ -274,7 +272,6 @@ struct rio_mport {
 	enum rio_phy_type phy_type;	/* RapidIO phy type */
 	u32 phys_efptr;
 	unsigned char name[RIO_MAX_MPORT_NAME];
-	struct device dev;
 	void *priv;		/* Master port private data */
 #ifdef CONFIG_RAPIDIO_DMA_ENGINE
 	struct dma_device	dma;
@@ -298,7 +295,7 @@ struct rio_id_table {
  * struct rio_net - RIO network info
  * @node: Node in global list of RIO networks
  * @devices: List of devices in this network
- * @switches: List of switches in this network
+ * @switches: List of switches in this netowrk
  * @mports: List of master ports accessing this network
  * @hport: Default port for accessing this network
  * @id: RIO network ID

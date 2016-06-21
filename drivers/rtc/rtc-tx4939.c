@@ -176,8 +176,8 @@ static irqreturn_t tx4939_rtc_interrupt(int irq, void *dev_id)
 		tx4939_rtc_cmd(rtcreg, TX4939_RTCCTL_COMMAND_NOP);
 	}
 	spin_unlock(&pdata->lock);
-	rtc_update_irq(pdata->rtc, 1, events);
-
+	if (likely(pdata->rtc))
+		rtc_update_irq(pdata->rtc, 1, events);
 	return IRQ_HANDLED;
 }
 
@@ -199,7 +199,8 @@ static ssize_t tx4939_rtc_nvram_read(struct file *filp, struct kobject *kobj,
 	ssize_t count;
 
 	spin_lock_irq(&pdata->lock);
-	for (count = 0; count < size; count++) {
+	for (count = 0; size > 0 && pos < TX4939_RTC_REG_RAMSIZE;
+	     count++, size--) {
 		__raw_writel(pos++, &rtcreg->adr);
 		*buf++ = __raw_readl(&rtcreg->dat);
 	}
@@ -217,7 +218,8 @@ static ssize_t tx4939_rtc_nvram_write(struct file *filp, struct kobject *kobj,
 	ssize_t count;
 
 	spin_lock_irq(&pdata->lock);
-	for (count = 0; count < size; count++) {
+	for (count = 0; size > 0 && pos < TX4939_RTC_REG_RAMSIZE;
+	     count++, size--) {
 		__raw_writel(pos++, &rtcreg->adr);
 		__raw_writel(*buf++, &rtcreg->dat);
 	}
@@ -285,6 +287,7 @@ static struct platform_driver tx4939_rtc_driver = {
 	.remove		= __exit_p(tx4939_rtc_remove),
 	.driver		= {
 		.name	= "tx4939rtc",
+		.owner	= THIS_MODULE,
 	},
 };
 

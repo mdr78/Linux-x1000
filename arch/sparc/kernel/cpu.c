@@ -22,7 +22,6 @@
 #include <asm/cpudata.h>
 
 #include "kernel.h"
-#include "entry.h"
 
 DEFINE_PER_CPU(cpuinfo_sparc, __cpu_data) = { 0 };
 EXPORT_PER_CPU_SYMBOL(__cpu_data);

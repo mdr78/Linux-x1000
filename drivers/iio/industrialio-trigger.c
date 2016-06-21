@@ -40,14 +40,7 @@ static DEFINE_MUTEX(iio_trigger_list_lock);
 
 /**
  * iio_trigger_read_name() - retrieve useful identifying name
- * @dev:	device associated with the iio_trigger
- * @attr:	pointer to the device_attribute structure that is
- *		being processed
- * @buf:	buffer to print the name into
- *
- * Return: a negative number on failure or the number of written
- *	   characters on success.
- */
+ **/
 static ssize_t iio_trigger_read_name(struct device *dev,
 				     struct device_attribute *attr,
 				     char *buf)
@@ -69,9 +62,10 @@ int iio_trigger_register(struct iio_trigger *trig_info)
 	int ret;
 
 	trig_info->id = ida_simple_get(&iio_trigger_ida, 0, 0, GFP_KERNEL);
-	if (trig_info->id < 0)
-		return trig_info->id;
-
+	if (trig_info->id < 0) {
+		ret = trig_info->id;
+		goto error_ret;
+	}
 	/* Set the name used for the sysfs directory etc */
 	dev_set_name(&trig_info->dev, "trigger%ld",
 		     (unsigned long) trig_info->id);
@@ -89,6 +83,7 @@ int iio_trigger_register(struct iio_trigger *trig_info)
 
 error_unregister_id:
 	ida_simple_remove(&iio_trigger_ida, trig_info->id);
+error_ret:
 	return ret;
 }
 EXPORT_SYMBOL(iio_trigger_register);
@@ -121,7 +116,7 @@ static struct iio_trigger *iio_trigger_find_by_name(const char *name,
 	return trig;
 }
 
-void iio_trigger_poll(struct iio_trigger *trig)
+void iio_trigger_poll(struct iio_trigger *trig, s64 time)
 {
 	int i;
 
@@ -140,12 +135,12 @@ EXPORT_SYMBOL(iio_trigger_poll);
 
 irqreturn_t iio_trigger_generic_data_rdy_poll(int irq, void *private)
 {
-	iio_trigger_poll(private);
+	iio_trigger_poll(private, iio_get_time_ns());
 	return IRQ_HANDLED;
 }
 EXPORT_SYMBOL(iio_trigger_generic_data_rdy_poll);
 
-void iio_trigger_poll_chained(struct iio_trigger *trig)
+void iio_trigger_poll_chained(struct iio_trigger *trig, s64 time)
 {
 	int i;
 
@@ -168,7 +163,7 @@ void iio_trigger_notify_done(struct iio_trigger *trig)
 		trig->ops->try_reenable)
 		if (trig->ops->try_reenable(trig))
 			/* Missed an interrupt so launch new poll now */
-			iio_trigger_poll(trig);
+			iio_trigger_poll(trig, 0);
 }
 EXPORT_SYMBOL(iio_trigger_notify_done);
 
@@ -239,12 +234,13 @@ static int iio_trigger_detach_poll_func(struct iio_trigger *trig,
 	if (trig->ops && trig->ops->set_trigger_state && no_other_users) {
 		ret = trig->ops->set_trigger_state(trig, false);
 		if (ret)
-			return ret;
+			goto error_ret;
 	}
 	iio_trigger_put_irq(trig, pf->irq);
 	free_irq(pf->irq, pf);
 	module_put(pf->indio_dev->info->driver_module);
 
+error_ret:
 	return ret;
 }
 
@@ -295,17 +291,10 @@ EXPORT_SYMBOL_GPL(iio_dealloc_pollfunc);
 
 /**
  * iio_trigger_read_current() - trigger consumer sysfs query current trigger
- * @dev:	device associated with an industrial I/O device
- * @attr:	pointer to the device_attribute structure that
- *		is being processed
- * @buf:	buffer where the current trigger name will be printed into
  *
  * For trigger consumers the current_trigger interface allows the trigger
  * used by the device to be queried.
- *
- * Return: a negative number on failure, the number of characters written
- *	   on success or 0 if no trigger is available
- */
+ **/
 static ssize_t iio_trigger_read_current(struct device *dev,
 					struct device_attribute *attr,
 					char *buf)
@@ -319,18 +308,11 @@ static ssize_t iio_trigger_read_current(struct device *dev,
 
 /**
  * iio_trigger_write_current() - trigger consumer sysfs set current trigger
- * @dev:	device associated with an industrial I/O device
- * @attr:	device attribute that is being processed
- * @buf:	string buffer that holds the name of the trigger
- * @len:	length of the trigger name held by buf
  *
  * For trigger consumers the current_trigger interface allows the trigger
  * used for this device to be specified at run time based on the trigger's
  * name.
- *
- * Return: negative error code on failure or length of the buffer
- *	   on success
- */
+ **/
 static ssize_t iio_trigger_write_current(struct device *dev,
 					 struct device_attribute *attr,
 					 const char *buf,
@@ -366,18 +348,10 @@ static ssize_t iio_trigger_write_current(struct device *dev,
 
 	indio_dev->trig = trig;
 
-	if (oldtrig) {
-		if (indio_dev->modes & INDIO_EVENT_TRIGGERED)
-			iio_trigger_detach_poll_func(oldtrig,
-						     indio_dev->pollfunc_event);
+	if (oldtrig)
 		iio_trigger_put(oldtrig);
-	}
-	if (indio_dev->trig) {
+	if (indio_dev->trig)
 		iio_trigger_get(indio_dev->trig);
-		if (indio_dev->modes & INDIO_EVENT_TRIGGERED)
-			iio_trigger_attach_poll_func(indio_dev->trig,
-						     indio_dev->pollfunc_event);
-	}
 
 	return len;
 }

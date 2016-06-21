@@ -663,7 +663,6 @@ long compat_blkdev_ioctl(struct file *file, unsigned cmd, unsigned long arg)
 	fmode_t mode = file->f_mode;
 	struct backing_dev_info *bdi;
 	loff_t size;
-	unsigned int max_sectors;
 
 	/*
 	 * O_NDELAY can be altered using fcntl(.., F_SETFL, ..), so we have
@@ -709,6 +708,8 @@ long compat_blkdev_ioctl(struct file *file, unsigned cmd, unsigned long arg)
 		if (!arg)
 			return -EINVAL;
 		bdi = blk_get_backing_dev_info(bdev);
+		if (bdi == NULL)
+			return -ENOTTY;
 		return compat_put_long(arg,
 				       (bdi->ra_pages * PAGE_CACHE_SIZE) / 512);
 	case BLKROGET: /* compatible */
@@ -718,9 +719,8 @@ long compat_blkdev_ioctl(struct file *file, unsigned cmd, unsigned long arg)
 	case BLKSSZGET: /* get block device hardware sector size */
 		return compat_put_int(arg, bdev_logical_block_size(bdev));
 	case BLKSECTGET:
-		max_sectors = min_t(unsigned int, USHRT_MAX,
-				    queue_max_sectors(bdev_get_queue(bdev)));
-		return compat_put_ushort(arg, max_sectors);
+		return compat_put_ushort(arg,
+					 queue_max_sectors(bdev_get_queue(bdev)));
 	case BLKROTATIONAL:
 		return compat_put_ushort(arg,
 					 !blk_queue_nonrot(bdev_get_queue(bdev)));
@@ -729,6 +729,8 @@ long compat_blkdev_ioctl(struct file *file, unsigned cmd, unsigned long arg)
 		if (!capable(CAP_SYS_ADMIN))
 			return -EACCES;
 		bdi = blk_get_backing_dev_info(bdev);
+		if (bdi == NULL)
+			return -ENOTTY;
 		bdi->ra_pages = (arg * 512) / PAGE_CACHE_SIZE;
 		return 0;
 	case BLKGETSIZE:

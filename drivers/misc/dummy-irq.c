@@ -61,4 +61,3 @@ MODULE_LICENSE("GPL");
 MODULE_AUTHOR("Jiri Kosina");
 module_param(irq, uint, 0444);
 MODULE_PARM_DESC(irq, "The IRQ to register for");
-MODULE_DESCRIPTION("Dummy IRQ handler driver");

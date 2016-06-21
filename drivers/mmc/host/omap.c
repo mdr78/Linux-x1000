@@ -26,7 +26,6 @@
 #include <linux/omap-dma.h>
 #include <linux/mmc/host.h>
 #include <linux/mmc/card.h>
-#include <linux/mmc/mmc.h>
 #include <linux/clk.h>
 #include <linux/scatterlist.h>
 #include <linux/slab.h>
@@ -131,6 +130,7 @@ struct mmc_omap_host {
 	u32			dma_rx_burst;
 	struct dma_chan		*dma_tx;
 	u32			dma_tx_burst;
+	struct resource		*mem_res;
 	void __iomem		*virt_base;
 	unsigned int		phys_base;
 	int			irq;
@@ -153,6 +153,7 @@ struct mmc_omap_host {
 	u32			total_bytes_left;
 
 	unsigned		features;
+	unsigned		use_dma:1;
 	unsigned		brs_received:1, dma_done:1;
 	unsigned		dma_in_use:1;
 	spinlock_t		dma_lock;
@@ -177,7 +178,7 @@ static void mmc_omap_fclk_offdelay(struct mmc_omap_slot *slot)
 	unsigned long tick_ns;
 
 	if (slot != NULL && slot->host->fclk_enabled && slot->fclk_freq > 0) {
-		tick_ns = DIV_ROUND_UP(NSEC_PER_SEC, slot->fclk_freq);
+		tick_ns = (1000000000 + slot->fclk_freq - 1) / slot->fclk_freq;
 		ndelay(8 * tick_ns);
 	}
 }
@@ -337,7 +338,6 @@ mmc_omap_start_command(struct mmc_omap_host *host, struct mmc_command *cmd)
 	u32 cmdreg;
 	u32 resptype;
 	u32 cmdtype;
-	u16 irq_mask;
 
 	host->cmd = cmd;
 
@@ -390,14 +390,12 @@ mmc_omap_start_command(struct mmc_omap_host *host, struct mmc_command *cmd)
 	OMAP_MMC_WRITE(host, CTO, 200);
 	OMAP_MMC_WRITE(host, ARGL, cmd->arg & 0xffff);
 	OMAP_MMC_WRITE(host, ARGH, cmd->arg >> 16);
-	irq_mask = OMAP_MMC_STAT_A_EMPTY    | OMAP_MMC_STAT_A_FULL    |
-		   OMAP_MMC_STAT_CMD_CRC    | OMAP_MMC_STAT_CMD_TOUT  |
-		   OMAP_MMC_STAT_DATA_CRC   | OMAP_MMC_STAT_DATA_TOUT |
-		   OMAP_MMC_STAT_END_OF_CMD | OMAP_MMC_STAT_CARD_ERR  |
-		   OMAP_MMC_STAT_END_OF_DATA;
-	if (cmd->opcode == MMC_ERASE)
-		irq_mask &= ~OMAP_MMC_STAT_DATA_TOUT;
-	OMAP_MMC_WRITE(host, IE, irq_mask);
+	OMAP_MMC_WRITE(host, IE,
+		       OMAP_MMC_STAT_A_EMPTY    | OMAP_MMC_STAT_A_FULL    |
+		       OMAP_MMC_STAT_CMD_CRC    | OMAP_MMC_STAT_CMD_TOUT  |
+		       OMAP_MMC_STAT_DATA_CRC   | OMAP_MMC_STAT_DATA_TOUT |
+		       OMAP_MMC_STAT_END_OF_CMD | OMAP_MMC_STAT_CARD_ERR  |
+		       OMAP_MMC_STAT_END_OF_DATA);
 	OMAP_MMC_WRITE(host, CMD, cmdreg);
 }
 
@@ -435,7 +433,7 @@ static void mmc_omap_send_stop_work(struct work_struct *work)
 	struct mmc_data *data = host->stop_data;
 	unsigned long tick_ns;
 
-	tick_ns = DIV_ROUND_UP(NSEC_PER_SEC, slot->fclk_freq);
+	tick_ns = (1000000000 + slot->fclk_freq - 1)/slot->fclk_freq;
 	ndelay(8*tick_ns);
 
 	mmc_omap_start_command(host, data->stop);
@@ -477,7 +475,7 @@ mmc_omap_send_abort(struct mmc_omap_host *host, int maxloops)
 	u16 stat = 0;
 
 	/* Sending abort takes 80 clocks. Have some extra and round up */
-	timeout = DIV_ROUND_UP(120 * USEC_PER_SEC, slot->fclk_freq);
+	timeout = (120*1000000 + slot->fclk_freq - 1)/slot->fclk_freq;
 	restarts = 0;
 	while (restarts < maxloops) {
 		OMAP_MMC_WRITE(host, STAT, 0xFFFF);
@@ -677,8 +675,8 @@ mmc_omap_xfer_data(struct mmc_omap_host *host, int write)
 	if (n > host->buffer_bytes_left)
 		n = host->buffer_bytes_left;
 
-	/* Round up to handle odd number of bytes to transfer */
-	nwords = DIV_ROUND_UP(n, 2);
+	nwords = n / 2;
+	nwords += n & 1; /* handle odd number of bytes to transfer */
 
 	host->buffer_bytes_left -= n;
 	host->total_bytes_left -= n;
@@ -947,8 +945,7 @@ static void
 mmc_omap_prepare_data(struct mmc_omap_host *host, struct mmc_request *req)
 {
 	struct mmc_data *data = req->data;
-	int i, use_dma = 1, block_size;
-	struct scatterlist *sg;
+	int i, use_dma, block_size;
 	unsigned sg_len;
 
 	host->data = data;
@@ -973,10 +970,13 @@ mmc_omap_prepare_data(struct mmc_omap_host *host, struct mmc_request *req)
 	sg_len = (data->blocks == 1) ? 1 : data->sg_len;
 
 	/* Only do DMA for entire blocks */
-	for_each_sg(data->sg, sg, sg_len, i) {
-		if ((sg->length % block_size) != 0) {
-			use_dma = 0;
-			break;
+	use_dma = host->use_dma;
+	if (use_dma) {
+		for (i = 0; i < sg_len; i++) {
+			if ((data->sg[i].length % block_size) != 0) {
+				use_dma = 0;
+				break;
+			}
 		}
 	}
 
@@ -1239,7 +1239,7 @@ static int mmc_omap_new_slot(struct mmc_omap_host *host, int id)
 
 	mmc->caps = 0;
 	if (host->pdata->slots[id].wires >= 4)
-		mmc->caps |= MMC_CAP_4_BIT_DATA | MMC_CAP_ERASE;
+		mmc->caps |= MMC_CAP_4_BIT_DATA;
 
 	mmc->ops = &mmc_omap_ops;
 	mmc->f_min = 400000;
@@ -1262,13 +1262,6 @@ static int mmc_omap_new_slot(struct mmc_omap_host *host, int id)
 	mmc->max_req_size = mmc->max_blk_size * mmc->max_blk_count;
 	mmc->max_seg_size = mmc->max_req_size;
 
-	if (slot->pdata->get_cover_state != NULL) {
-		setup_timer(&slot->cover_timer, mmc_omap_cover_timer,
-			    (unsigned long)slot);
-		tasklet_init(&slot->cover_tasklet, mmc_omap_cover_handler,
-			     (unsigned long)slot);
-	}
-
 	r = mmc_add_host(mmc);
 	if (r < 0)
 		goto err_remove_host;
@@ -1285,6 +1278,11 @@ static int mmc_omap_new_slot(struct mmc_omap_host *host, int id)
 					&dev_attr_cover_switch);
 		if (r < 0)
 			goto err_remove_slot_name;
+
+		setup_timer(&slot->cover_timer, mmc_omap_cover_timer,
+			    (unsigned long)slot);
+		tasklet_init(&slot->cover_tasklet, mmc_omap_cover_handler,
+			     (unsigned long)slot);
 		tasklet_schedule(&slot->cover_tasklet);
 	}
 
@@ -1335,19 +1333,21 @@ static int mmc_omap_probe(struct platform_device *pdev)
 		return -EPROBE_DEFER;
 	}
 
-	host = devm_kzalloc(&pdev->dev, sizeof(struct mmc_omap_host),
-			    GFP_KERNEL);
-	if (host == NULL)
-		return -ENOMEM;
-
+	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
 	irq = platform_get_irq(pdev, 0);
-	if (irq < 0)
+	if (res == NULL || irq < 0)
 		return -ENXIO;
 
-	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
-	host->virt_base = devm_ioremap_resource(&pdev->dev, res);
-	if (IS_ERR(host->virt_base))
-		return PTR_ERR(host->virt_base);
+	res = request_mem_region(res->start, resource_size(res),
+				 pdev->name);
+	if (res == NULL)
+		return -EBUSY;
+
+	host = kzalloc(sizeof(struct mmc_omap_host), GFP_KERNEL);
+	if (host == NULL) {
+		ret = -ENOMEM;
+		goto err_free_mem_region;
+	}
 
 	INIT_WORK(&host->slot_release_work, mmc_omap_slot_release_work);
 	INIT_WORK(&host->send_stop_work, mmc_omap_send_stop_work);
@@ -1369,11 +1369,20 @@ static int mmc_omap_probe(struct platform_device *pdev)
 	platform_set_drvdata(pdev, host);
 
 	host->id = pdev->id;
+	host->mem_res = res;
 	host->irq = irq;
-	host->phys_base = res->start;
+	host->use_dma = 1;
+	host->irq = irq;
+	host->phys_base = host->mem_res->start;
+	host->virt_base = ioremap(res->start, resource_size(res));
+	if (!host->virt_base)
+		goto err_ioremap;
+
 	host->iclk = clk_get(&pdev->dev, "ick");
-	if (IS_ERR(host->iclk))
-		return PTR_ERR(host->iclk);
+	if (IS_ERR(host->iclk)) {
+		ret = PTR_ERR(host->iclk);
+		goto err_free_mmc_host;
+	}
 	clk_enable(host->iclk);
 
 	host->fclk = clk_get(&pdev->dev, "fck");
@@ -1420,10 +1429,8 @@ static int mmc_omap_probe(struct platform_device *pdev)
 	host->reg_shift = (mmc_omap7xx() ? 1 : 2);
 
 	host->mmc_omap_wq = alloc_workqueue("mmc_omap", 0, 0);
-	if (!host->mmc_omap_wq) {
-		ret = -ENOMEM;
+	if (!host->mmc_omap_wq)
 		goto err_plat_cleanup;
-	}
 
 	for (i = 0; i < pdata->nr_slots; i++) {
 		ret = mmc_omap_new_slot(host, i);
@@ -1453,6 +1460,12 @@ err_free_dma:
 err_free_iclk:
 	clk_disable(host->iclk);
 	clk_put(host->iclk);
+err_free_mmc_host:
+	iounmap(host->virt_base);
+err_ioremap:
+	kfree(host);
+err_free_mem_region:
+	release_mem_region(res->start, resource_size(res));
 	return ret;
 }
 
@@ -1480,7 +1493,12 @@ static int mmc_omap_remove(struct platform_device *pdev)
 	if (host->dma_rx)
 		dma_release_channel(host->dma_rx);
 
+	iounmap(host->virt_base);
+	release_mem_region(pdev->resource[0].start,
+			   pdev->resource[0].end - pdev->resource[0].start + 1);
 	destroy_workqueue(host->mmc_omap_wq);
+
+	kfree(host);
 
 	return 0;
 }
@@ -1490,7 +1508,6 @@ static const struct of_device_id mmc_omap_match[] = {
 	{ .compatible = "ti,omap2420-mmc", },
 	{ },
 };
-MODULE_DEVICE_TABLE(of, mmc_omap_match);
 #endif
 
 static struct platform_driver mmc_omap_driver = {
@@ -1498,6 +1515,7 @@ static struct platform_driver mmc_omap_driver = {
 	.remove		= mmc_omap_remove,
 	.driver		= {
 		.name	= DRIVER_NAME,
+		.owner	= THIS_MODULE,
 		.of_match_table = of_match_ptr(mmc_omap_match),
 	},
 };

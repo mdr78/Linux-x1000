@@ -41,7 +41,6 @@
 #include <linux/init.h>
 #include <linux/seq_file.h>
 #include <linux/module.h>
-#include <linux/irq.h>
 
 #include <asm/traps.h>
 

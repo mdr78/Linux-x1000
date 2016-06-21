@@ -101,7 +101,7 @@ struct inode *coda_cnode_make(struct CodaFid *fid, struct super_block *sb)
 
 	inode = coda_iget(sb, fid, &attr);
 	if (IS_ERR(inode))
-		pr_warn("%s: coda_iget failed\n", __func__);
+		printk("coda_cnode_make: coda_iget failed\n");
 	return inode;
 }
 
@@ -137,7 +137,7 @@ struct inode *coda_fid_to_inode(struct CodaFid *fid, struct super_block *sb)
 	unsigned long hash = coda_f2i(fid);
 
 	if ( !sb ) {
-		pr_warn("%s: no sb!\n", __func__);
+		printk("coda_fid_to_inode: no sb!\n");
 		return NULL;
 	}
 

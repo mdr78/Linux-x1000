@@ -1,7 +1,7 @@
 /*
  * rcar_du_lvdscon.h  --  R-Car Display Unit LVDS Connector
  *
- * Copyright (C) 2013-2014 Renesas Electronics Corporation
+ * Copyright (C) 2013 Renesas Corporation
  *
  * Contact: Laurent Pinchart (laurent.pinchart@ideasonboard.com)
  *
@@ -16,9 +16,10 @@
 
 struct rcar_du_device;
 struct rcar_du_encoder;
+struct rcar_du_panel_data;
 
 int rcar_du_lvds_connector_init(struct rcar_du_device *rcdu,
 				struct rcar_du_encoder *renc,
-				struct device_node *np);
+				const struct rcar_du_panel_data *panel);
 
 #endif /* __RCAR_DU_LVDSCON_H__ */

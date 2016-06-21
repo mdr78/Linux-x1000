@@ -143,7 +143,7 @@ static int psm;
 static char *essid;
 
 /* Default to encapsulation unless translation requested */
-static bool translate = true;
+static bool translate = 1;
 
 static int country = USA;
 
@@ -343,7 +343,7 @@ static void ray_detach(struct pcmcia_device *link)
 	ray_release(link);
 
 	local = netdev_priv(dev);
-	del_timer_sync(&local->timer);
+	del_timer(&local->timer);
 
 	if (link->priv) {
 		unregister_netdev(dev);
@@ -808,7 +808,7 @@ static int ray_dev_init(struct net_device *dev)
 
 	/* copy mac and broadcast addresses to linux device */
 	memcpy(dev->dev_addr, &local->sparm.b4.a_mac_addr, ADDRLEN);
-	eth_broadcast_addr(dev->broadcast);
+	memset(dev->broadcast, 0xff, ETH_ALEN);
 
 	dev_dbg(&link->dev, "ray_dev_init ending\n");
 	return 0;

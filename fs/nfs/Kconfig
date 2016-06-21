@@ -1,6 +1,6 @@
 config NFS_FS
 	tristate "NFS client support"
-	depends on INET && FILE_LOCKING && MULTIUSER
+	depends on INET && FILE_LOCKING
 	select LOCKD
 	select SUNRPC
 	select NFS_ACL_SUPPORT if NFS_V3_ACL
@@ -38,19 +38,6 @@ config NFS_V2
 	  (RFC 1094) in the kernel's NFS client.
 
 	  If unsure, say Y.
-
-config NFS_DEF_FILE_IO_SIZE
-	int "Default size for NFS I/O read and write at runtime"
-	depends on NFS_FS
-	default "4096"
-	help
-	  To change the default rsize and wsize supported by the NFS client,
-	  adjust NFS_DEF_FILE_IO_SIZE.  64KB is a typical maximum, but some
-	  servers can support a megabyte or more.  The default is left at 4096
-	  bytes, which is reasonable for NFS over UDP, however, for some
-	  systems, setting a smaller value like 1024 can work around
-	  limitations in the driver or hardware and result in overall
-	  improved performance.
 
 config NFS_V3
 	tristate "NFS client support for NFS version 3"
@@ -140,11 +127,6 @@ config PNFS_OBJLAYOUT
 	tristate
 	depends on NFS_V4_1 && SCSI_OSD_ULD
 	default NFS_V4
-
-config PNFS_FLEXFILE_LAYOUT
-	tristate
-	depends on NFS_V4_1 && NFS_V3
-	default m
 
 config NFS_V4_1_IMPLEMENTATION_ID_DOMAIN
 	string "NFSv4.1 Implementation ID Domain"

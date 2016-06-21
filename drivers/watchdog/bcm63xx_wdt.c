@@ -15,6 +15,7 @@
 #include <linux/bitops.h>
 #include <linux/errno.h>
 #include <linux/fs.h>
+#include <linux/init.h>
 #include <linux/io.h>
 #include <linux/kernel.h>
 #include <linux/miscdevice.h>
@@ -44,6 +45,7 @@
 static struct {
 	void __iomem *regs;
 	struct timer_list timer;
+	int default_ticks;
 	unsigned long inuse;
 	atomic_t ticks;
 } bcm63xx_wdt_device;
@@ -304,6 +306,7 @@ static struct platform_driver bcm63xx_wdt_driver = {
 	.remove = bcm63xx_wdt_remove,
 	.shutdown = bcm63xx_wdt_shutdown,
 	.driver = {
+		.owner = THIS_MODULE,
 		.name = "bcm63xx-wdt",
 	}
 };

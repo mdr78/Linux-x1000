@@ -198,7 +198,7 @@ static int efm32_spi_txrx_bufs(struct spi_device *spi, struct spi_transfer *t)
 
 	efm32_spi_filltx(ddata);
 
-	reinit_completion(&ddata->done);
+	init_completion(&ddata->done);
 
 	efm32_spi_write32(ddata, REG_IF_TXBL | REG_IF_RXDATAV, REG_IEN);
 
@@ -287,23 +287,17 @@ static u32 efm32_spi_get_configured_location(struct efm32_spi_ddata *ddata)
 	return (reg & REG_ROUTE_LOCATION__MASK) >> __ffs(REG_ROUTE_LOCATION__MASK);
 }
 
-static void efm32_spi_probe_dt(struct platform_device *pdev,
+static int efm32_spi_probe_dt(struct platform_device *pdev,
 		struct spi_master *master, struct efm32_spi_ddata *ddata)
 {
 	struct device_node *np = pdev->dev.of_node;
 	u32 location;
 	int ret;
 
-	ret = of_property_read_u32(np, "energymicro,location", &location);
+	if (!np)
+		return 1;
 
-	if (ret)
-		/* fall back to wrongly namespaced property */
-		ret = of_property_read_u32(np, "efm32,location", &location);
-
-	if (ret)
-		/* fall back to old and (wrongly) generic property "location" */
-		ret = of_property_read_u32(np, "location", &location);
-
+	ret = of_property_read_u32(np, "location", &location);
 	if (!ret) {
 		dev_dbg(&pdev->dev, "using location %u\n", location);
 	} else {
@@ -314,6 +308,11 @@ static void efm32_spi_probe_dt(struct platform_device *pdev,
 	}
 
 	ddata->pdata.location = location;
+
+	/* spi core takes care about the bus number using an alias */
+	master->bus_num = -1;
+
+	return 0;
 }
 
 static int efm32_spi_probe(struct platform_device *pdev)
@@ -323,14 +322,9 @@ static int efm32_spi_probe(struct platform_device *pdev)
 	int ret;
 	struct spi_master *master;
 	struct device_node *np = pdev->dev.of_node;
-	int num_cs, i;
-
-	if (!np)
-		return -EINVAL;
+	unsigned int num_cs, i;
 
 	num_cs = of_gpio_named_count(np, "cs-gpios");
-	if (num_cs < 0)
-		return num_cs;
 
 	master = spi_alloc_master(&pdev->dev,
 			sizeof(*ddata) + num_cs * sizeof(unsigned));
@@ -355,7 +349,6 @@ static int efm32_spi_probe(struct platform_device *pdev)
 	ddata->bitbang.txrx_bufs = efm32_spi_txrx_bufs;
 
 	spin_lock_init(&ddata->lock);
-	init_completion(&ddata->done);
 
 	ddata->clk = devm_clk_get(&pdev->dev, NULL);
 	if (IS_ERR(ddata->clk)) {
@@ -422,7 +415,23 @@ static int efm32_spi_probe(struct platform_device *pdev)
 		goto err;
 	}
 
-	efm32_spi_probe_dt(pdev, master, ddata);
+	ret = efm32_spi_probe_dt(pdev, master, ddata);
+	if (ret > 0) {
+		/* not created by device tree */
+		const struct efm32_spi_pdata *pdata =
+			dev_get_platdata(&pdev->dev);
+
+		if (pdata)
+			ddata->pdata = *pdata;
+		else
+			ddata->pdata.location =
+				efm32_spi_get_configured_location(ddata);
+
+		master->bus_num = pdev->id;
+
+	} else if (ret < 0) {
+		goto err_disable_clk;
+	}
 
 	efm32_spi_write32(ddata, 0, REG_IEN);
 	efm32_spi_write32(ddata, REG_ROUTE_TXPEN | REG_ROUTE_RXPEN |
@@ -494,6 +503,7 @@ static struct platform_driver efm32_spi_driver = {
 
 	.driver = {
 		.name = DRIVER_NAME,
+		.owner = THIS_MODULE,
 		.of_match_table = efm32_spi_dt_ids,
 	},
 };

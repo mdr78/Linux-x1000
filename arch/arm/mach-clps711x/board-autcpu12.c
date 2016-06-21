@@ -73,7 +73,7 @@
 #define AUTCPU12_SMC_NCE	(AUTCPU12_MMGPIO_BASE + 0) /* Bit 0 */
 #define AUTCPU12_SMC_RDY	CLPS711X_GPIO(1, 2)
 #define AUTCPU12_SMC_ALE	CLPS711X_GPIO(1, 3)
-#define AUTCPU12_SMC_CLE	CLPS711X_GPIO(1, 4)
+#define AUTCPU12_SMC_CLE	CLPS711X_GPIO(1, 3)
 
 /* LCD contrast digital potentiometer */
 #define AUTCPU12_DPOT_CS	CLPS711X_GPIO(4, 0)
@@ -160,7 +160,7 @@ static struct platform_device autcpu12_mmgpio_pdev __initdata = {
 	},
 };
 
-static const struct gpio const autcpu12_gpios[] __initconst = {
+static const struct gpio autcpu12_gpios[] __initconst = {
 	{ AUTCPU12_DPOT_CS,	GPIOF_OUT_INIT_HIGH,	"DPOT CS" },
 	{ AUTCPU12_DPOT_CLK,	GPIOF_OUT_INIT_LOW,	"DPOT CLK" },
 	{ AUTCPU12_DPOT_UD,	GPIOF_OUT_INIT_LOW,	"DPOT UD" },
@@ -265,11 +265,14 @@ static void __init autcpu12_init_late(void)
 MACHINE_START(AUTCPU12, "autronix autcpu12")
 	/* Maintainer: Thomas Gleixner */
 	.atag_offset	= 0x20000,
+	.nr_irqs	= CLPS711X_NR_IRQS,
 	.map_io		= clps711x_map_io,
+	.init_early	= clps711x_init_early,
 	.init_irq	= clps711x_init_irq,
 	.init_time	= clps711x_timer_init,
 	.init_machine	= autcpu12_init,
 	.init_late	= autcpu12_init_late,
+	.handle_irq	= clps711x_handle_irq,
 	.restart	= clps711x_restart,
 MACHINE_END
 

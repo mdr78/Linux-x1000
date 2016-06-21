@@ -60,49 +60,6 @@ static inline int radix_tree_is_indirect_ptr(void *ptr)
 
 #define RADIX_TREE_MAX_TAGS 3
 
-#ifdef __KERNEL__
-#define RADIX_TREE_MAP_SHIFT	(CONFIG_BASE_SMALL ? 4 : 6)
-#else
-#define RADIX_TREE_MAP_SHIFT	3	/* For more stressful testing */
-#endif
-
-#define RADIX_TREE_MAP_SIZE	(1UL << RADIX_TREE_MAP_SHIFT)
-#define RADIX_TREE_MAP_MASK	(RADIX_TREE_MAP_SIZE-1)
-
-#define RADIX_TREE_TAG_LONGS	\
-	((RADIX_TREE_MAP_SIZE + BITS_PER_LONG - 1) / BITS_PER_LONG)
-
-#define RADIX_TREE_INDEX_BITS  (8 /* CHAR_BIT */ * sizeof(unsigned long))
-#define RADIX_TREE_MAX_PATH (DIV_ROUND_UP(RADIX_TREE_INDEX_BITS, \
-					  RADIX_TREE_MAP_SHIFT))
-
-/* Height component in node->path */
-#define RADIX_TREE_HEIGHT_SHIFT	(RADIX_TREE_MAX_PATH + 1)
-#define RADIX_TREE_HEIGHT_MASK	((1UL << RADIX_TREE_HEIGHT_SHIFT) - 1)
-
-/* Internally used bits of node->count */
-#define RADIX_TREE_COUNT_SHIFT	(RADIX_TREE_MAP_SHIFT + 1)
-#define RADIX_TREE_COUNT_MASK	((1UL << RADIX_TREE_COUNT_SHIFT) - 1)
-
-struct radix_tree_node {
-	unsigned int	path;	/* Offset in parent & height from the bottom */
-	unsigned int	count;
-	union {
-		struct {
-			/* Used when ascending tree */
-			struct radix_tree_node *parent;
-			/* For tree user */
-			void *private_data;
-		};
-		/* Used when freeing node */
-		struct rcu_head	rcu_head;
-	};
-	/* For tree user */
-	struct list_head private_list;
-	void __rcu	*slots[RADIX_TREE_MAP_SIZE];
-	unsigned long	tags[RADIX_TREE_MAX_TAGS][RADIX_TREE_TAG_LONGS];
-};
-
 /* root tags are stored in gfp_mask, shifted by __GFP_BITS_SHIFT */
 struct radix_tree_root {
 	unsigned int		height;
@@ -144,7 +101,6 @@ do {									\
  *   concurrently with other readers.
  *
  * The notable exceptions to this rule are the following functions:
- * __radix_tree_lookup
  * radix_tree_lookup
  * radix_tree_lookup_slot
  * radix_tree_tag_get
@@ -260,15 +216,9 @@ static inline void radix_tree_replace_slot(void **pslot, void *item)
 	rcu_assign_pointer(*pslot, item);
 }
 
-int __radix_tree_create(struct radix_tree_root *root, unsigned long index,
-			struct radix_tree_node **nodep, void ***slotp);
 int radix_tree_insert(struct radix_tree_root *, unsigned long, void *);
-void *__radix_tree_lookup(struct radix_tree_root *root, unsigned long index,
-			  struct radix_tree_node **nodep, void ***slotp);
 void *radix_tree_lookup(struct radix_tree_root *, unsigned long);
 void **radix_tree_lookup_slot(struct radix_tree_root *, unsigned long);
-bool __radix_tree_delete_node(struct radix_tree_root *root,
-			      struct radix_tree_node *node);
 void *radix_tree_delete_item(struct radix_tree_root *, unsigned long, void *);
 void *radix_tree_delete(struct radix_tree_root *, unsigned long);
 unsigned int
@@ -370,28 +320,12 @@ void **radix_tree_next_chunk(struct radix_tree_root *root,
 			     struct radix_tree_iter *iter, unsigned flags);
 
 /**
- * radix_tree_iter_retry - retry this chunk of the iteration
- * @iter:	iterator state
- *
- * If we iterate over a tree protected only by the RCU lock, a race
- * against deletion or creation may result in seeing a slot for which
- * radix_tree_deref_retry() returns true.  If so, call this function
- * and continue the iteration.
- */
-static inline __must_check
-void **radix_tree_iter_retry(struct radix_tree_iter *iter)
-{
-	iter->next_index = iter->index;
-	return NULL;
-}
-
-/**
  * radix_tree_chunk_size - get current chunk size
  *
  * @iter:	pointer to radix tree iterator
  * Returns:	current chunk size
  */
-static __always_inline long
+static __always_inline unsigned
 radix_tree_chunk_size(struct radix_tree_iter *iter)
 {
 	return iter->next_index - iter->index;
@@ -425,9 +359,9 @@ radix_tree_next_slot(void **slot, struct radix_tree_iter *iter, unsigned flags)
 			return slot + offset + 1;
 		}
 	} else {
-		long size = radix_tree_chunk_size(iter);
+		unsigned size = radix_tree_chunk_size(iter) - 1;
 
-		while (--size > 0) {
+		while (size--) {
 			slot++;
 			iter->index++;
 			if (likely(*slot))

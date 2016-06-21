@@ -47,7 +47,7 @@ static int pgcnt;
 static int read_eraseblock_by_page(int ebnum)
 {
 	int i, ret, err = 0;
-	loff_t addr = (loff_t)ebnum * mtd->erasesize;
+	loff_t addr = ebnum * mtd->erasesize;
 	void *buf = iobuf;
 	void *oobbuf = iobuf1;
 
@@ -190,12 +190,7 @@ static int __init mtd_readtest_init(void)
 			if (!err)
 				err = ret;
 		}
-
-		ret = mtdtest_relax();
-		if (ret) {
-			err = ret;
-			goto out;
-		}
+		cond_resched();
 	}
 
 	if (err)

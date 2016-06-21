@@ -4,7 +4,7 @@
  * Watchdog driver for ARM SP805 watchdog module
  *
  * Copyright (C) 2010 ST Microelectronics
- * Viresh Kumar <vireshk@kernel.org>
+ * Viresh Kumar <viresh.linux@gmail.com>
  *
  * This file is licensed under the terms of the GNU General Public
  * License version 2 or later. This program is licensed "as is" without any
@@ -16,6 +16,7 @@
 #include <linux/amba/bus.h>
 #include <linux/bitops.h>
 #include <linux/clk.h>
+#include <linux/init.h>
 #include <linux/io.h>
 #include <linux/ioport.h>
 #include <linux/kernel.h>
@@ -206,15 +207,27 @@ sp805_wdt_probe(struct amba_device *adev, const struct amba_id *id)
 	struct sp805_wdt *wdt;
 	int ret = 0;
 
+	if (!devm_request_mem_region(&adev->dev, adev->res.start,
+				resource_size(&adev->res), "sp805_wdt")) {
+		dev_warn(&adev->dev, "Failed to get memory region resource\n");
+		ret = -ENOENT;
+		goto err;
+	}
+
 	wdt = devm_kzalloc(&adev->dev, sizeof(*wdt), GFP_KERNEL);
 	if (!wdt) {
+		dev_warn(&adev->dev, "Kzalloc failed\n");
 		ret = -ENOMEM;
 		goto err;
 	}
 
-	wdt->base = devm_ioremap_resource(&adev->dev, &adev->res);
-	if (IS_ERR(wdt->base))
-		return PTR_ERR(wdt->base);
+	wdt->base = devm_ioremap(&adev->dev, adev->res.start,
+			resource_size(&adev->res));
+	if (!wdt->base) {
+		ret = -ENOMEM;
+		dev_warn(&adev->dev, "ioremap fail\n");
+		goto err;
+	}
 
 	wdt->clk = devm_clk_get(&adev->dev, NULL);
 	if (IS_ERR(wdt->clk)) {
@@ -226,7 +239,6 @@ sp805_wdt_probe(struct amba_device *adev, const struct amba_id *id)
 	wdt->adev = adev;
 	wdt->wdd.info = &wdt_info;
 	wdt->wdd.ops = &wdt_ops;
-	wdt->wdd.parent = &adev->dev;
 
 	spin_lock_init(&wdt->lock);
 	watchdog_set_nowayout(&wdt->wdd, nowayout);
@@ -304,6 +316,6 @@ static struct amba_driver sp805_wdt_driver = {
 
 module_amba_driver(sp805_wdt_driver);
 
-MODULE_AUTHOR("Viresh Kumar <vireshk@kernel.org>");
+MODULE_AUTHOR("Viresh Kumar <viresh.linux@gmail.com>");
 MODULE_DESCRIPTION("ARM SP805 Watchdog Driver");
 MODULE_LICENSE("GPL");

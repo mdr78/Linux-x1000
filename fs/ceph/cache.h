@@ -48,12 +48,6 @@ void ceph_readpage_to_fscache(struct inode *inode, struct page *page);
 void ceph_invalidate_fscache_page(struct inode* inode, struct page *page);
 void ceph_queue_revalidate(struct inode *inode);
 
-static inline void ceph_fscache_update_objectsize(struct inode *inode)
-{
-	struct ceph_inode_info *ci = ceph_inode(inode);
-	fscache_attr_changed(ci->fscache);
-}
-
 static inline void ceph_fscache_invalidate(struct inode *inode)
 {
 	fscache_invalidate(ceph_inode(inode)->fscache);
@@ -138,10 +132,6 @@ static inline int ceph_readpages_from_fscache(struct inode *inode,
 
 static inline void ceph_readpage_to_fscache(struct inode *inode,
 					    struct page *page)
-{
-}
-
-static inline void ceph_fscache_update_objectsize(struct inode *inode)
 {
 }
 

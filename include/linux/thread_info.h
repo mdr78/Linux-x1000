@@ -61,6 +61,8 @@ extern long do_no_restart_syscall(struct restart_block *parm);
 # define THREADINFO_GFP		(GFP_KERNEL | __GFP_NOTRACK)
 #endif
 
+#define THREADINFO_GFP_ACCOUNTED (THREADINFO_GFP | __GFP_KMEMCG)
+
 /*
  * flag set/clear/test wrappers
  * - pass TIF_xxxx constants to these functions
@@ -102,7 +104,19 @@ static inline int test_ti_thread_flag(struct thread_info *ti, int flag)
 #define test_thread_flag(flag) \
 	test_ti_thread_flag(current_thread_info(), flag)
 
-#define tif_need_resched() test_thread_flag(TIF_NEED_RESCHED)
+static inline __deprecated void set_need_resched(void)
+{
+	/*
+	 * Use of this function in deprecated.
+	 *
+	 * As of this writing there are only a few users in the DRM tree left
+	 * all of which are wrong and can be removed without causing too much
+	 * grief.
+	 *
+	 * The DRM people are aware and are working on removing the last few
+	 * instances.
+	 */
+}
 
 #if defined TIF_RESTORE_SIGMASK && !defined HAVE_SET_RESTORE_SIGMASK
 /*

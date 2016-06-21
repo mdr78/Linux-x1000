@@ -64,6 +64,10 @@ static inline void __handle_ipi(unsigned long *ops, struct ipi_data *ipi,
 			generic_smp_call_function_interrupt();
 			break;
 
+		case IPI_CALL_FUNC_SINGLE:
+			generic_smp_call_function_single_interrupt();
+			break;
+
 		case IPI_CPU_STOP:
 			/*
 			 * call vmstop()
@@ -244,7 +248,7 @@ void smp_send_stop(void)
 
 void arch_send_call_function_single_ipi(int cpu)
 {
-	send_ipi(cpumask_of(cpu), IPI_CALL_FUNC);
+	send_ipi(cpumask_of(cpu), IPI_CALL_FUNC_SINGLE);
 }
 
 void arch_send_call_function_ipi_mask(const struct cpumask *mask)

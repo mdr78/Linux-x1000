@@ -5,12 +5,11 @@
  */
 #include <linux/linkage.h>
 #include <linux/init.h>
-#include <asm/assembler.h>
 
 #include "proc-macros.S"
 
 ENTRY(nop_flush_icache_all)
-	ret	lr
+	mov	pc, lr
 ENDPROC(nop_flush_icache_all)
 
 	.globl nop_flush_kern_cache_all
@@ -30,7 +29,7 @@ ENDPROC(nop_flush_icache_all)
 
 ENTRY(nop_coherent_user_range)
 	mov	r0, 0
-	ret	lr
+	mov	pc, lr
 ENDPROC(nop_coherent_user_range)
 
 	.globl nop_flush_kern_dcache_area

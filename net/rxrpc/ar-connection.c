@@ -18,15 +18,11 @@
 #include <net/af_rxrpc.h>
 #include "ar-internal.h"
 
-/*
- * Time till a connection expires after last use (in seconds).
- */
-unsigned rxrpc_connection_expiry = 10 * 60;
-
 static void rxrpc_connection_reaper(struct work_struct *work);
 
 LIST_HEAD(rxrpc_connections);
 DEFINE_RWLOCK(rxrpc_connection_lock);
+static unsigned long rxrpc_connection_timeout = 10 * 60;
 static DECLARE_DELAYED_WORK(rxrpc_connection_reap, rxrpc_connection_reaper);
 
 /*
@@ -500,7 +496,7 @@ int rxrpc_connect_call(struct rxrpc_sock *rx,
 		if (bundle->num_conns >= 20) {
 			_debug("too many conns");
 
-			if (!gfpflags_allow_blocking(gfp)) {
+			if (!(gfp & __GFP_WAIT)) {
 				_leave(" = -EAGAIN");
 				return -EAGAIN;
 			}
@@ -808,7 +804,7 @@ void rxrpc_put_connection(struct rxrpc_connection *conn)
 
 	ASSERTCMP(atomic_read(&conn->usage), >, 0);
 
-	conn->put_time = ktime_get_seconds();
+	conn->put_time = get_seconds();
 	if (atomic_dec_and_test(&conn->usage)) {
 		_debug("zombie");
 		rxrpc_queue_delayed_work(&rxrpc_connection_reap, 0);
@@ -852,7 +848,7 @@ static void rxrpc_connection_reaper(struct work_struct *work)
 
 	_enter("");
 
-	now = ktime_get_seconds();
+	now = get_seconds();
 	earliest = ULONG_MAX;
 
 	write_lock_bh(&rxrpc_connection_lock);
@@ -866,7 +862,7 @@ static void rxrpc_connection_reaper(struct work_struct *work)
 
 		spin_lock(&conn->trans->client_lock);
 		write_lock(&conn->trans->conn_lock);
-		reap_time = conn->put_time + rxrpc_connection_expiry;
+		reap_time = conn->put_time + rxrpc_connection_timeout;
 
 		if (atomic_read(&conn->usage) > 0) {
 			;
@@ -920,7 +916,7 @@ void __exit rxrpc_destroy_all_connections(void)
 {
 	_enter("");
 
-	rxrpc_connection_expiry = 0;
+	rxrpc_connection_timeout = 0;
 	cancel_delayed_work(&rxrpc_connection_reap);
 	rxrpc_queue_delayed_work(&rxrpc_connection_reap, 0);
 

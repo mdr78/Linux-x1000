@@ -67,20 +67,9 @@ static int adp5588_gpio_get_value(struct gpio_chip *chip, unsigned off)
 {
 	struct adp5588_gpio *dev =
 	    container_of(chip, struct adp5588_gpio, gpio_chip);
-	unsigned bank = ADP5588_BANK(off);
-	unsigned bit = ADP5588_BIT(off);
-	int val;
 
-	mutex_lock(&dev->lock);
-
-	if (dev->dir[bank] & bit)
-		val = dev->dat_out[bank];
-	else
-		val = adp5588_gpio_read(dev->client, GPIO_DAT_STAT1 + bank);
-
-	mutex_unlock(&dev->lock);
-
-	return !!(val & bit);
+	return !!(adp5588_gpio_read(dev->client,
+		  GPIO_DAT_STAT1 + ADP5588_BANK(off)) & ADP5588_BIT(off));
 }
 
 static void adp5588_gpio_set_value(struct gpio_chip *chip,
@@ -305,7 +294,15 @@ static int adp5588_irq_setup(struct adp5588_gpio *dev)
 		irq_set_chip_and_handler(irq, &adp5588_irq_chip,
 					 handle_level_irq);
 		irq_set_nested_thread(irq, 1);
-		irq_modify_status(irq, IRQ_NOREQUEST, IRQ_NOPROBE);
+#ifdef CONFIG_ARM
+		/*
+		 * ARM needs us to explicitly flag the IRQ as VALID,
+		 * once we do so, it will also set the noprobe.
+		 */
+		set_irq_flags(irq, IRQF_VALID);
+#else
+		irq_set_noprobe(irq);
+#endif
 	}
 
 	ret = request_threaded_irq(client->irq,
@@ -359,7 +356,7 @@ static int adp5588_gpio_probe(struct i2c_client *client,
 	struct gpio_chip *gc;
 	int ret, i, revid;
 
-	if (!pdata) {
+	if (pdata == NULL) {
 		dev_err(&client->dev, "missing platform data\n");
 		return -ENODEV;
 	}
@@ -370,9 +367,11 @@ static int adp5588_gpio_probe(struct i2c_client *client,
 		return -EIO;
 	}
 
-	dev = devm_kzalloc(&client->dev, sizeof(*dev), GFP_KERNEL);
-	if (!dev)
+	dev = kzalloc(sizeof(*dev), GFP_KERNEL);
+	if (dev == NULL) {
+		dev_err(&client->dev, "failed to alloc memory\n");
 		return -ENOMEM;
+	}
 
 	dev->client = client;
 
@@ -387,7 +386,6 @@ static int adp5588_gpio_probe(struct i2c_client *client,
 	gc->ngpio = ADP5588_MAXGPIO;
 	gc->label = client->name;
 	gc->owner = THIS_MODULE;
-	gc->names = pdata->names;
 
 	mutex_init(&dev->lock);
 
@@ -438,6 +436,7 @@ static int adp5588_gpio_probe(struct i2c_client *client,
 err_irq:
 	adp5588_irq_teardown(dev);
 err:
+	kfree(dev);
 	return ret;
 }
 
@@ -463,6 +462,7 @@ static int adp5588_gpio_remove(struct i2c_client *client)
 
 	gpiochip_remove(&dev->gpio_chip);
 
+	kfree(dev);
 	return 0;
 }
 

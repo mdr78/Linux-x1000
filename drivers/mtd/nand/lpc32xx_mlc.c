@@ -495,8 +495,7 @@ static int lpc32xx_read_page(struct mtd_info *mtd, struct nand_chip *chip,
 
 static int lpc32xx_write_page_lowlevel(struct mtd_info *mtd,
 				       struct nand_chip *chip,
-				       const uint8_t *buf, int oob_required,
-				       int page)
+				       const uint8_t *buf, int oob_required)
 {
 	struct lpc32xx_nand_host *host = chip->priv;
 	const uint8_t *oobbuf = chip->oob_poi;
@@ -683,6 +682,7 @@ static int lpc32xx_nand_probe(struct platform_device *pdev)
 
 	nand_chip->priv = host;		/* link the private data structures */
 	mtd->priv = nand_chip;
+	mtd->owner = THIS_MODULE;
 	mtd->dev.parent = &pdev->dev;
 
 	/* Get NAND clock */
@@ -692,7 +692,7 @@ static int lpc32xx_nand_probe(struct platform_device *pdev)
 		res = -ENOENT;
 		goto err_exit1;
 	}
-	clk_prepare_enable(host->clk);
+	clk_enable(host->clk);
 
 	nand_chip->cmd_ctrl = lpc32xx_nand_cmd_ctrl;
 	nand_chip->dev_ready = lpc32xx_nand_device_ready;
@@ -720,6 +720,12 @@ static int lpc32xx_nand_probe(struct platform_device *pdev)
 	nand_chip->bbt_options = NAND_BBT_USE_FLASH | NAND_BBT_NO_OOB;
 	nand_chip->bbt_td = &lpc32xx_nand_bbt;
 	nand_chip->bbt_md = &lpc32xx_nand_bbt_mirror;
+
+	/* bitflip_threshold's default is defined as ecc_strength anyway.
+	 * Unfortunately, it is set only later at add_mtd_device(). Meanwhile
+	 * being 0, it causes bad block table scanning errors in
+	 * nand_scan_tail(), so preparing it here. */
+	mtd->bitflip_threshold = nand_chip->ecc.strength;
 
 	if (use_dma) {
 		res = lpc32xx_dma_setup(host);
@@ -800,7 +806,7 @@ err_exit3:
 	if (use_dma)
 		dma_release_channel(host->dma_chan);
 err_exit2:
-	clk_disable_unprepare(host->clk);
+	clk_disable(host->clk);
 	clk_put(host->clk);
 err_exit1:
 	lpc32xx_wp_enable(host);
@@ -822,7 +828,7 @@ static int lpc32xx_nand_remove(struct platform_device *pdev)
 	if (use_dma)
 		dma_release_channel(host->dma_chan);
 
-	clk_disable_unprepare(host->clk);
+	clk_disable(host->clk);
 	clk_put(host->clk);
 
 	lpc32xx_wp_enable(host);
@@ -837,7 +843,7 @@ static int lpc32xx_nand_resume(struct platform_device *pdev)
 	struct lpc32xx_nand_host *host = platform_get_drvdata(pdev);
 
 	/* Re-enable NAND clock */
-	clk_prepare_enable(host->clk);
+	clk_enable(host->clk);
 
 	/* Fresh init of NAND controller */
 	lpc32xx_nand_setup(host);
@@ -856,7 +862,7 @@ static int lpc32xx_nand_suspend(struct platform_device *pdev, pm_message_t pm)
 	lpc32xx_wp_enable(host);
 
 	/* Disable clock */
-	clk_disable_unprepare(host->clk);
+	clk_disable(host->clk);
 	return 0;
 }
 
@@ -878,6 +884,7 @@ static struct platform_driver lpc32xx_nand_driver = {
 	.suspend	= lpc32xx_nand_suspend,
 	.driver		= {
 		.name	= DRV_NAME,
+		.owner	= THIS_MODULE,
 		.of_match_table = lpc32xx_nand_match,
 	},
 };

@@ -21,8 +21,9 @@
 #include <target/target_core_base.h>
 #include <target/target_core_fabric.h>
 
-#include <target/iscsi/iscsi_target_core.h>
+#include "iscsi_target_core.h"
 #include "iscsi_target_seq_pdu_list.h"
+#include "iscsi_target_tq.h"
 #include "iscsi_target_erl0.h"
 #include "iscsi_target_erl1.h"
 #include "iscsi_target_erl2.h"
@@ -344,6 +345,7 @@ static int iscsit_dataout_check_datasn(
 	struct iscsi_cmd *cmd,
 	unsigned char *buf)
 {
+	int dump = 0, recovery = 0;
 	u32 data_sn = 0;
 	struct iscsi_conn *conn = cmd->conn;
 	struct iscsi_data *hdr = (struct iscsi_data *) buf;
@@ -368,11 +370,13 @@ static int iscsit_dataout_check_datasn(
 		pr_err("Command ITT: 0x%08x, received DataSN: 0x%08x"
 			" higher than expected 0x%08x.\n", cmd->init_task_tag,
 				be32_to_cpu(hdr->datasn), data_sn);
+		recovery = 1;
 		goto recover;
 	} else if (be32_to_cpu(hdr->datasn) < data_sn) {
 		pr_err("Command ITT: 0x%08x, received DataSN: 0x%08x"
 			" lower than expected 0x%08x, discarding payload.\n",
 			cmd->init_task_tag, be32_to_cpu(hdr->datasn), data_sn);
+		dump = 1;
 		goto dump;
 	}
 
@@ -388,7 +392,8 @@ dump:
 	if (iscsit_dump_data_payload(conn, payload_length, 1) < 0)
 		return DATAOUT_CANNOT_RECOVER;
 
-	return DATAOUT_WITHIN_COMMAND_RECOVERY;
+	return (recovery || dump) ? DATAOUT_WITHIN_COMMAND_RECOVERY :
+				DATAOUT_NORMAL;
 }
 
 static int iscsit_dataout_pre_datapduinorder_yes(
@@ -859,10 +864,7 @@ void iscsit_connection_reinstatement_rcfr(struct iscsi_conn *conn)
 	}
 	spin_unlock_bh(&conn->state_lock);
 
-	if (conn->tx_thread && conn->tx_thread_active)
-		send_sig(SIGINT, conn->tx_thread, 1);
-	if (conn->rx_thread && conn->rx_thread_active)
-		send_sig(SIGINT, conn->rx_thread, 1);
+	iscsi_thread_set_force_reinstatement(conn);
 
 sleep:
 	wait_for_completion(&conn->conn_wait_rcfr_comp);
@@ -887,10 +889,10 @@ void iscsit_cause_connection_reinstatement(struct iscsi_conn *conn, int sleep)
 		return;
 	}
 
-	if (conn->tx_thread && conn->tx_thread_active)
-		send_sig(SIGINT, conn->tx_thread, 1);
-	if (conn->rx_thread && conn->rx_thread_active)
-		send_sig(SIGINT, conn->rx_thread, 1);
+	if (iscsi_thread_set_force_reinstatement(conn) < 0) {
+		spin_unlock_bh(&conn->state_lock);
+		return;
+	}
 
 	atomic_set(&conn->connection_reinstatement, 1);
 	if (!sleep) {
@@ -955,4 +957,57 @@ void iscsit_take_action_for_connection_exit(struct iscsi_conn *conn)
 	spin_unlock_bh(&conn->state_lock);
 
 	iscsit_handle_connection_cleanup(conn);
+}
+
+/*
+ *	This is the simple function that makes the magic of
+ *	sync and steering happen in the follow paradoxical order:
+ *
+ *	0) Receive conn->of_marker (bytes left until next OFMarker)
+ *	   bytes into an offload buffer.  When we pass the exact number
+ *	   of bytes in conn->of_marker, iscsit_dump_data_payload() and hence
+ *	   rx_data() will automatically receive the identical u32 marker
+ *	   values and store it in conn->of_marker_offset;
+ *	1) Now conn->of_marker_offset will contain the offset to the start
+ *	   of the next iSCSI PDU.  Dump these remaining bytes into another
+ *	   offload buffer.
+ *	2) We are done!
+ *	   Next byte in the TCP stream will contain the next iSCSI PDU!
+ *	   Cool Huh?!
+ */
+int iscsit_recover_from_unknown_opcode(struct iscsi_conn *conn)
+{
+	/*
+	 * Make sure the remaining bytes to next maker is a sane value.
+	 */
+	if (conn->of_marker > (conn->conn_ops->OFMarkInt * 4)) {
+		pr_err("Remaining bytes to OFMarker: %u exceeds"
+			" OFMarkInt bytes: %u.\n", conn->of_marker,
+				conn->conn_ops->OFMarkInt * 4);
+		return -1;
+	}
+
+	pr_debug("Advancing %u bytes in TCP stream to get to the"
+			" next OFMarker.\n", conn->of_marker);
+
+	if (iscsit_dump_data_payload(conn, conn->of_marker, 0) < 0)
+		return -1;
+
+	/*
+	 * Make sure the offset marker we retrived is a valid value.
+	 */
+	if (conn->of_marker_offset > (ISCSI_HDR_LEN + (ISCSI_CRC_LEN * 2) +
+	    conn->conn_ops->MaxRecvDataSegmentLength)) {
+		pr_err("OfMarker offset value: %u exceeds limit.\n",
+			conn->of_marker_offset);
+		return -1;
+	}
+
+	pr_debug("Discarding %u bytes of TCP stream to get to the"
+			" next iSCSI Opcode.\n", conn->of_marker_offset);
+
+	if (iscsit_dump_data_payload(conn, conn->of_marker_offset, 0) < 0)
+		return -1;
+
+	return 0;
 }

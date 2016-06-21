@@ -3,15 +3,11 @@
 
 #include <stdbool.h>
 #include "util.h"
-#include "intlist.h"
 #include "probe-event.h"
 
 #define MAX_PROBE_BUFFER	1024
 #define MAX_PROBES		 128
 #define MAX_PROBE_ARGS		 128
-
-#define PROBE_ARG_VARS		"$vars"
-#define PROBE_ARG_PARAMS	"$params"
 
 static inline int is_c_varname(const char *name)
 {
@@ -33,14 +29,15 @@ struct debuginfo {
 	Dwarf_Addr	bias;
 };
 
-/* This also tries to open distro debuginfo */
 extern struct debuginfo *debuginfo__new(const char *path);
+extern struct debuginfo *debuginfo__new_online_kernel(unsigned long addr);
 extern void debuginfo__delete(struct debuginfo *dbg);
 
 /* Find probe_trace_events specified by perf_probe_event from debuginfo */
 extern int debuginfo__find_trace_events(struct debuginfo *dbg,
 					struct perf_probe_event *pev,
-					struct probe_trace_event **tevs);
+					struct probe_trace_event **tevs,
+					int max_tevs);
 
 /* Find a perf_probe_point from debuginfo */
 extern int debuginfo__find_probe_point(struct debuginfo *dbg,
@@ -54,11 +51,8 @@ extern int debuginfo__find_line_range(struct debuginfo *dbg,
 /* Find available variables */
 extern int debuginfo__find_available_vars_at(struct debuginfo *dbg,
 					     struct perf_probe_event *pev,
-					     struct variable_list **vls);
-
-/* Find a src file from a DWARF tag path */
-int get_real_path(const char *raw_path, const char *comp_dir,
-			 char **new_path);
+					     struct variable_list **vls,
+					     int max_points, bool externs);
 
 struct probe_finder {
 	struct perf_probe_event	*pev;		/* Target probe event */
@@ -72,7 +66,7 @@ struct probe_finder {
 	const char		*fname;		/* Real file name */
 	Dwarf_Die		cu_die;		/* Current CU */
 	Dwarf_Die		sp_die;
-	struct intlist		*lcache;	/* Line cache for lazy match */
+	struct list_head	lcache;		/* Line cache for lazy match */
 
 	/* For variable searching */
 #if _ELFUTILS_PREREQ(0, 142)
@@ -97,6 +91,7 @@ struct available_var_finder {
 	struct variable_list	*vls;		/* Found variable lists */
 	int			nvls;		/* Number of variable lists */
 	int			max_vls;	/* Max no. of variable lists */
+	bool			externs;	/* Find external vars too */
 	bool			child;		/* Search child scopes */
 };
 

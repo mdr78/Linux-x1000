@@ -71,7 +71,7 @@ struct rtc_device *alarmtimer_get_rtcdev(void)
 
 	return ret;
 }
-EXPORT_SYMBOL_GPL(alarmtimer_get_rtcdev);
+
 
 static int alarmtimer_rtc_add_device(struct device *dev,
 				struct class_interface *class_intf)
@@ -317,16 +317,19 @@ EXPORT_SYMBOL_GPL(alarm_init);
  * @alarm: ptr to alarm to set
  * @start: time to run the alarm
  */
-void alarm_start(struct alarm *alarm, ktime_t start)
+int alarm_start(struct alarm *alarm, ktime_t start)
 {
 	struct alarm_base *base = &alarm_bases[alarm->type];
 	unsigned long flags;
+	int ret;
 
 	spin_lock_irqsave(&base->lock, flags);
 	alarm->node.expires = start;
 	alarmtimer_enqueue(base, alarm);
-	hrtimer_start(&alarm->timer, alarm->node.expires, HRTIMER_MODE_ABS);
+	ret = hrtimer_start(&alarm->timer, alarm->node.expires,
+				HRTIMER_MODE_ABS);
 	spin_unlock_irqrestore(&base->lock, flags);
+	return ret;
 }
 EXPORT_SYMBOL_GPL(alarm_start);
 
@@ -335,12 +338,12 @@ EXPORT_SYMBOL_GPL(alarm_start);
  * @alarm: ptr to alarm to set
  * @start: time relative to now to run the alarm
  */
-void alarm_start_relative(struct alarm *alarm, ktime_t start)
+int alarm_start_relative(struct alarm *alarm, ktime_t start)
 {
 	struct alarm_base *base = &alarm_bases[alarm->type];
 
 	start = ktime_add(start, base->gettime());
-	alarm_start(alarm, start);
+	return alarm_start(alarm, start);
 }
 EXPORT_SYMBOL_GPL(alarm_start_relative);
 
@@ -492,12 +495,12 @@ static enum alarmtimer_restart alarm_handle_timer(struct alarm *alarm,
  */
 static int alarm_clock_getres(const clockid_t which_clock, struct timespec *tp)
 {
+	clockid_t baseid = alarm_bases[clock2alarm(which_clock)].base_clockid;
+
 	if (!alarmtimer_get_rtcdev())
 		return -EINVAL;
 
-	tp->tv_sec = 0;
-	tp->tv_nsec = hrtimer_resolution;
-	return 0;
+	return hrtimer_get_res(baseid, tp);
 }
 
 /**
@@ -785,7 +788,7 @@ static int alarm_timer_nsleep(const clockid_t which_clock, int flags,
 			goto out;
 	}
 
-	restart = &current->restart_block;
+	restart = &current_thread_info()->restart_block;
 	restart->fn = alarm_timer_nsleep_restart;
 	restart->nanosleep.clockid = type;
 	restart->nanosleep.expires = exp.tv64;

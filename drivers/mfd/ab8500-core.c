@@ -148,8 +148,8 @@ static const int ab9540_irq_regoffset[AB9540_NUM_IRQ_REGS] = {
 
 /* AB8540 support */
 static const int ab8540_irq_regoffset[AB8540_NUM_IRQ_REGS] = {
-	0, 1, 2, 3, 4, -1, -1, -1, -1, 11, 18, 19, 20, 21, 12, 13, 24, 5, 22,
-	23, 25, 26, 27, 28, 29, 30, 31,
+	0, 1, 2, 3, 4, -1, -1, -1, -1, 11, 18, 19, 20, 21, 12, 13, 24, 5, 22, 23,
+	25, 26, 27, 28, 29, 30, 31,
 };
 
 static const char ab8500_version_str[][7] = {
@@ -322,7 +322,7 @@ static int ab8500_mask_and_set_register(struct device *dev,
 	struct ab8500 *ab8500 = dev_get_drvdata(dev->parent);
 
 	atomic_inc(&ab8500->transfer_ongoing);
-	ret = mask_and_set_register_interruptible(ab8500, bank, reg,
+	ret= mask_and_set_register_interruptible(ab8500, bank, reg,
 						 bitmask, bitvalues);
 	atomic_dec(&ab8500->transfer_ongoing);
 	return ret;
@@ -415,11 +415,9 @@ static void ab8500_irq_unmask(struct irq_data *data)
 	if (type & IRQ_TYPE_EDGE_FALLING) {
 		if (offset >= AB8500_INT_GPIO6R && offset <= AB8500_INT_GPIO41R)
 			ab8500->mask[index + 2] &= ~mask;
-		else if (offset >= AB9540_INT_GPIO50R &&
-			 offset <= AB9540_INT_GPIO54R)
+		else if (offset >= AB9540_INT_GPIO50R && offset <= AB9540_INT_GPIO54R)
 			ab8500->mask[index + 1] &= ~mask;
-		else if (offset == AB8540_INT_GPIO43R ||
-			 offset == AB8540_INT_GPIO44R)
+		else if (offset == AB8540_INT_GPIO43R || offset == AB8540_INT_GPIO44R)
 			/* Here the falling IRQ is one bit lower */
 			ab8500->mask[index] &= ~(mask << 1);
 		else
@@ -453,7 +451,7 @@ static void update_latch_offset(u8 *offset, int i)
 	/* Fix inconsistent ab8540 bit mapping... */
 	if (unlikely(*offset == 16))
 			*offset = 25;
-	if ((i == 3) && (*offset >= 24))
+	if ((i==3) && (*offset >= 24))
 			*offset += 2;
 }
 
@@ -565,14 +563,18 @@ static int ab8500_irq_map(struct irq_domain *d, unsigned int virq,
 	irq_set_chip_and_handler(virq, &ab8500_irq_chip,
 				handle_simple_irq);
 	irq_set_nested_thread(virq, 1);
+#ifdef CONFIG_ARM
+	set_irq_flags(virq, IRQF_VALID);
+#else
 	irq_set_noprobe(virq);
+#endif
 
 	return 0;
 }
 
-static const struct irq_domain_ops ab8500_irq_ops = {
-	.map    = ab8500_irq_map,
-	.xlate  = irq_domain_xlate_twocell,
+static struct irq_domain_ops ab8500_irq_ops = {
+        .map    = ab8500_irq_map,
+        .xlate  = irq_domain_xlate_twocell,
 };
 
 static int ab8500_irq_init(struct ab8500 *ab8500, struct device_node *np)
@@ -589,8 +591,8 @@ static int ab8500_irq_init(struct ab8500 *ab8500, struct device_node *np)
 		num_irqs = AB8500_NR_IRQS;
 
 	/* If ->irq_base is zero this will give a linear mapping */
-	ab8500->domain = irq_domain_add_simple(ab8500->dev->of_node,
-			num_irqs, 0,
+	ab8500->domain = irq_domain_add_simple(NULL,
+			num_irqs, ab8500->irq_base,
 			&ab8500_irq_ops, ab8500);
 
 	if (!ab8500->domain) {
@@ -605,8 +607,8 @@ int ab8500_suspend(struct ab8500 *ab8500)
 {
 	if (atomic_read(&ab8500->transfer_ongoing))
 		return -EINVAL;
-
-	return 0;
+	else
+		return 0;
 }
 
 static struct resource ab8500_gpadc_resources[] = {
@@ -1549,7 +1551,7 @@ static struct attribute_group ab9540_attr_group = {
 
 static int ab8500_probe(struct platform_device *pdev)
 {
-	static const char *switch_off_status[] = {
+	static char *switch_off_status[] = {
 		"Swoff bit programming",
 		"Thermal protection activation",
 		"Vbat lower then BattOk falling threshold",
@@ -1558,7 +1560,7 @@ static int ab8500_probe(struct platform_device *pdev)
 		"Battery level lower than power on reset threshold",
 		"Power on key 1 pressed longer than 10 seconds",
 		"DB8500 thermal shutdown"};
-	static const char *turn_on_status[] = {
+	static char *turn_on_status[] = {
 		"Battery rising (Vbat)",
 		"Power On Key 1 dbF",
 		"Power On Key 2 dbF",
@@ -1577,17 +1579,18 @@ static int ab8500_probe(struct platform_device *pdev)
 	int i;
 	u8 value;
 
-	ab8500 = devm_kzalloc(&pdev->dev, sizeof(*ab8500), GFP_KERNEL);
+	ab8500 = devm_kzalloc(&pdev->dev, sizeof *ab8500, GFP_KERNEL);
 	if (!ab8500)
 		return -ENOMEM;
+
+	if (plat)
+		ab8500->irq_base = plat->irq_base;
 
 	ab8500->dev = &pdev->dev;
 
 	resource = platform_get_resource(pdev, IORESOURCE_IRQ, 0);
-	if (!resource) {
-		dev_err(&pdev->dev, "no IRQ resource\n");
+	if (!resource)
 		return -ENODEV;
-	}
 
 	ab8500->irq = resource->start;
 
@@ -1609,10 +1612,8 @@ static int ab8500_probe(struct platform_device *pdev)
 	else {
 		ret = get_register_interruptible(ab8500, AB8500_MISC,
 			AB8500_IC_NAME_REG, &value);
-		if (ret < 0) {
-			dev_err(&pdev->dev, "could not probe HW\n");
+		if (ret < 0)
 			return ret;
-		}
 
 		ab8500->version = value;
 	}
@@ -1634,7 +1635,7 @@ static int ab8500_probe(struct platform_device *pdev)
 		ab8500->mask_size = AB8540_NUM_IRQ_REGS;
 		ab8500->irq_reg_offset = ab8540_irq_regoffset;
 		ab8500->it_latchhier_num = AB8540_IT_LATCHHIER_NUM;
-	} /* Configure AB8500 or AB9540 IRQ */
+	}/* Configure AB8500 or AB9540 IRQ */
 	else if (is_ab9540(ab8500) || is_ab8505(ab8500)) {
 		ab8500->mask_size = AB9540_NUM_IRQ_REGS;
 		ab8500->irq_reg_offset = ab9540_irq_regoffset;
@@ -1644,12 +1645,10 @@ static int ab8500_probe(struct platform_device *pdev)
 		ab8500->irq_reg_offset = ab8500_irq_regoffset;
 		ab8500->it_latchhier_num = AB8500_IT_LATCHHIER_NUM;
 	}
-	ab8500->mask = devm_kzalloc(&pdev->dev, ab8500->mask_size,
-				    GFP_KERNEL);
+	ab8500->mask = devm_kzalloc(&pdev->dev, ab8500->mask_size, GFP_KERNEL);
 	if (!ab8500->mask)
 		return -ENOMEM;
-	ab8500->oldmask = devm_kzalloc(&pdev->dev, ab8500->mask_size,
-				       GFP_KERNEL);
+	ab8500->oldmask = devm_kzalloc(&pdev->dev, ab8500->mask_size, GFP_KERNEL);
 	if (!ab8500->oldmask)
 		return -ENOMEM;
 
@@ -1674,13 +1673,14 @@ static int ab8500_probe(struct platform_device *pdev)
 	if (value) {
 		for (i = 0; i < ARRAY_SIZE(switch_off_status); i++) {
 			if (value & 1)
-				pr_cont(" \"%s\"", switch_off_status[i]);
+				printk(KERN_CONT " \"%s\"",
+				       switch_off_status[i]);
 			value = value >> 1;
 
 		}
-		pr_cont("\n");
+		printk(KERN_CONT "\n");
 	} else {
-		pr_cont(" None\n");
+		printk(KERN_CONT " None\n");
 	}
 	ret = get_register_interruptible(ab8500, AB8500_SYS_CTRL1_BLOCK,
 		AB8500_TURN_ON_STATUS, &value);
@@ -1691,12 +1691,12 @@ static int ab8500_probe(struct platform_device *pdev)
 	if (value) {
 		for (i = 0; i < ARRAY_SIZE(turn_on_status); i++) {
 			if (value & 1)
-				pr_cont("\"%s\" ", turn_on_status[i]);
+				printk("\"%s\" ", turn_on_status[i]);
 			value = value >> 1;
 		}
-		pr_cont("\n");
+		printk("\n");
 	} else {
-		pr_cont("None\n");
+		printk("None\n");
 	}
 
 	if (plat && plat->init)
@@ -1750,7 +1750,7 @@ static int ab8500_probe(struct platform_device *pdev)
 	if (ret)
 		return ret;
 
-#ifdef CONFIG_DEBUG_FS
+#if CONFIG_DEBUG_FS
 	/* Pass to debugfs */
 	ab8500_debug_resources[0].start = ab8500->irq;
 	ab8500_debug_resources[0].end = ab8500->irq;
@@ -1759,30 +1759,30 @@ static int ab8500_probe(struct platform_device *pdev)
 	if (is_ab9540(ab8500))
 		ret = mfd_add_devices(ab8500->dev, 0, ab9540_devs,
 				ARRAY_SIZE(ab9540_devs), NULL,
-				0, ab8500->domain);
+				ab8500->irq_base, ab8500->domain);
 	else if (is_ab8540(ab8500)) {
 		ret = mfd_add_devices(ab8500->dev, 0, ab8540_devs,
 			      ARRAY_SIZE(ab8540_devs), NULL,
-			      0, ab8500->domain);
+			      ab8500->irq_base, NULL);
 		if (ret)
 			return ret;
 
 		if (is_ab8540_1p2_or_earlier(ab8500))
 			ret = mfd_add_devices(ab8500->dev, 0, ab8540_cut1_devs,
 			      ARRAY_SIZE(ab8540_cut1_devs), NULL,
-			      0, ab8500->domain);
+			      ab8500->irq_base, NULL);
 		else /* ab8540 >= cut2 */
 			ret = mfd_add_devices(ab8500->dev, 0, ab8540_cut2_devs,
 			      ARRAY_SIZE(ab8540_cut2_devs), NULL,
-			      0, ab8500->domain);
+			      ab8500->irq_base, NULL);
 	} else if (is_ab8505(ab8500))
 		ret = mfd_add_devices(ab8500->dev, 0, ab8505_devs,
 			      ARRAY_SIZE(ab8505_devs), NULL,
-			      0, ab8500->domain);
+			      ab8500->irq_base, ab8500->domain);
 	else
 		ret = mfd_add_devices(ab8500->dev, 0, ab8500_devs,
 				ARRAY_SIZE(ab8500_devs), NULL,
-				0, ab8500->domain);
+				ab8500->irq_base, ab8500->domain);
 	if (ret)
 		return ret;
 
@@ -1790,7 +1790,7 @@ static int ab8500_probe(struct platform_device *pdev)
 		/* Add battery management devices */
 		ret = mfd_add_devices(ab8500->dev, 0, ab8500_bm_devs,
 				      ARRAY_SIZE(ab8500_bm_devs), NULL,
-				      0, ab8500->domain);
+				      ab8500->irq_base, ab8500->domain);
 		if (ret)
 			dev_err(ab8500->dev, "error adding bm devices\n");
 	}
@@ -1844,6 +1844,7 @@ static const struct platform_device_id ab8500_id[] = {
 static struct platform_driver ab8500_core_driver = {
 	.driver = {
 		.name = "ab8500-core",
+		.owner = THIS_MODULE,
 	},
 	.probe	= ab8500_probe,
 	.remove	= ab8500_remove,

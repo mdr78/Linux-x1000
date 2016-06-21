@@ -127,12 +127,13 @@ static void msm_iommu_reset(void __iomem *base, int ncb)
 
 static int msm_iommu_probe(struct platform_device *pdev)
 {
-	struct resource *r;
+	struct resource *r, *r2;
 	struct clk *iommu_clk;
 	struct clk *iommu_pclk;
 	struct msm_iommu_drvdata *drvdata;
-	struct msm_iommu_dev *iommu_dev = dev_get_platdata(&pdev->dev);
+	struct msm_iommu_dev *iommu_dev = pdev->dev.platform_data;
 	void __iomem *regs_base;
+	resource_size_t	len;
 	int ret, irq, par;
 
 	if (pdev->id == -1) {
@@ -177,16 +178,35 @@ static int msm_iommu_probe(struct platform_device *pdev)
 		iommu_clk = NULL;
 
 	r = platform_get_resource_byname(pdev, IORESOURCE_MEM, "physbase");
-	regs_base = devm_ioremap_resource(&pdev->dev, r);
-	if (IS_ERR(regs_base)) {
-		ret = PTR_ERR(regs_base);
+
+	if (!r) {
+		ret = -ENODEV;
 		goto fail_clk;
+	}
+
+	len = resource_size(r);
+
+	r2 = request_mem_region(r->start, len, r->name);
+	if (!r2) {
+		pr_err("Could not request memory region: start=%p, len=%d\n",
+							(void *) r->start, len);
+		ret = -EBUSY;
+		goto fail_clk;
+	}
+
+	regs_base = ioremap(r2->start, len);
+
+	if (!regs_base) {
+		pr_err("Could not ioremap: start=%p, len=%d\n",
+			 (void *) r2->start, len);
+		ret = -EBUSY;
+		goto fail_mem;
 	}
 
 	irq = platform_get_irq_byname(pdev, "secure_irq");
 	if (irq < 0) {
 		ret = -ENODEV;
-		goto fail_clk;
+		goto fail_io;
 	}
 
 	msm_iommu_reset(regs_base, iommu_dev->ncb);
@@ -202,14 +222,14 @@ static int msm_iommu_probe(struct platform_device *pdev)
 	if (!par) {
 		pr_err("%s: Invalid PAR value detected\n", iommu_dev->name);
 		ret = -ENODEV;
-		goto fail_clk;
+		goto fail_io;
 	}
 
 	ret = request_irq(irq, msm_iommu_fault_handler, 0,
 			"msm_iommu_secure_irpt_handler", drvdata);
 	if (ret) {
 		pr_err("Request IRQ %d failed with ret=%d\n", irq, ret);
-		goto fail_clk;
+		goto fail_io;
 	}
 
 
@@ -224,11 +244,16 @@ static int msm_iommu_probe(struct platform_device *pdev)
 
 	platform_set_drvdata(pdev, drvdata);
 
-	clk_disable(iommu_clk);
+	if (iommu_clk)
+		clk_disable(iommu_clk);
 
 	clk_disable(iommu_pclk);
 
 	return 0;
+fail_io:
+	iounmap(regs_base);
+fail_mem:
+	release_mem_region(r->start, len);
 fail_clk:
 	if (iommu_clk) {
 		clk_disable(iommu_clk);
@@ -263,7 +288,7 @@ static int msm_iommu_remove(struct platform_device *pdev)
 
 static int msm_iommu_ctx_probe(struct platform_device *pdev)
 {
-	struct msm_iommu_ctx_dev *c = dev_get_platdata(&pdev->dev);
+	struct msm_iommu_ctx_dev *c = pdev->dev.platform_data;
 	struct msm_iommu_drvdata *drvdata;
 	struct msm_iommu_ctx_drvdata *ctx_drvdata;
 	int i, ret;
@@ -322,7 +347,8 @@ static int msm_iommu_ctx_probe(struct platform_device *pdev)
 		SET_NSCFG(drvdata->base, mid, 3);
 	}
 
-	clk_disable(drvdata->clk);
+	if (drvdata->clk)
+		clk_disable(drvdata->clk);
 	clk_disable(drvdata->pclk);
 
 	dev_info(&pdev->dev, "context %s using bank %d\n", c->name, c->num);

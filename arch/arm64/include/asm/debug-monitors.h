@@ -18,21 +18,6 @@
 
 #ifdef __KERNEL__
 
-#include <linux/errno.h>
-#include <linux/types.h>
-#include <asm/esr.h>
-#include <asm/insn.h>
-#include <asm/ptrace.h>
-
-/* Low-level stepping controls. */
-#define DBG_MDSCR_SS		(1 << 0)
-#define DBG_SPSR_SS		(1 << 21)
-
-/* MDSCR_EL1 enabling bits */
-#define DBG_MDSCR_KDE		(1 << 13)
-#define DBG_MDSCR_MDE		(1 << 15)
-#define DBG_MDSCR_MASK		~(DBG_MDSCR_KDE | DBG_MDSCR_MDE)
-
 #define	DBG_ESR_EVT(x)		(((x) >> 27) & 0x7)
 
 /* AArch64 */
@@ -41,42 +26,10 @@
 #define DBG_ESR_EVT_HWWP	0x2
 #define DBG_ESR_EVT_BRK		0x6
 
-/*
- * Break point instruction encoding
- */
-#define BREAK_INSTR_SIZE		AARCH64_INSN_SIZE
-
-/*
- * #imm16 values used for BRK instruction generation
- * Allowed values for kgbd are 0x400 - 0x7ff
- * 0x100: for triggering a fault on purpose (reserved)
- * 0x400: for dynamic BRK instruction
- * 0x401: for compile time BRK instruction
- * 0x800: kernel-mode BUG() and WARN() traps
- */
-#define FAULT_BRK_IMM			0x100
-#define KGDB_DYN_DBG_BRK_IMM		0x400
-#define KGDB_COMPILED_DBG_BRK_IMM	0x401
-#define BUG_BRK_IMM			0x800
-
-/*
- * BRK instruction encoding
- * The #imm16 value should be placed at bits[20:5] within BRK ins
- */
-#define AARCH64_BREAK_MON	0xd4200000
-
-/*
- * BRK instruction for provoking a fault on purpose
- * Unlike kgdb, #imm16 value with unallocated handler is used for faulting.
- */
-#define AARCH64_BREAK_FAULT	(AARCH64_BREAK_MON | (FAULT_BRK_IMM << 5))
-
-#define AARCH64_BREAK_KGDB_DYN_DBG	\
-	(AARCH64_BREAK_MON | (KGDB_DYN_DBG_BRK_IMM << 5))
-#define KGDB_DYN_BRK_INS_BYTE(x)	\
-	((AARCH64_BREAK_KGDB_DYN_DBG >> (8 * (x))) & 0xff)
-
-#define CACHE_FLUSH_IS_SAFE		1
+enum debug_el {
+	DBG_ACTIVE_EL0 = 0,
+	DBG_ACTIVE_EL1,
+};
 
 /* AArch32 */
 #define DBG_ESR_EVT_BKPT	0x4
@@ -89,6 +42,23 @@
 
 #ifndef __ASSEMBLY__
 struct task_struct;
+
+#define local_dbg_save(flags)							\
+	do {									\
+		typecheck(unsigned long, flags);				\
+		asm volatile(							\
+		"mrs	%0, daif			// local_dbg_save\n"	\
+		"msr	daifset, #8"						\
+		: "=r" (flags) : : "memory");					\
+	} while (0)
+
+#define local_dbg_restore(flags)						\
+	do {									\
+		typecheck(unsigned long, flags);				\
+		asm volatile(							\
+		"msr	daif, %0			// local_dbg_restore\n"	\
+		: : "r" (flags) : "memory");					\
+	} while (0)
 
 #define DBG_ARCH_ID_RESERVED	0	/* In case of ptrace ABI updates. */
 
@@ -115,13 +85,8 @@ void unregister_break_hook(struct break_hook *hook);
 
 u8 debug_monitors_arch(void);
 
-enum dbg_active_el {
-	DBG_ACTIVE_EL0 = 0,
-	DBG_ACTIVE_EL1,
-};
-
-void enable_debug_monitors(enum dbg_active_el el);
-void disable_debug_monitors(enum dbg_active_el el);
+void enable_debug_monitors(enum debug_el el);
+void disable_debug_monitors(enum debug_el el);
 
 void user_rewind_single_step(struct task_struct *task);
 void user_fastforward_single_step(struct task_struct *task);

@@ -34,6 +34,7 @@
 #include <linux/workqueue.h>
 #include <linux/pci.h>
 #include <linux/pci_hotplug.h>
+#include <linux/init.h>
 #include <asm/uaccess.h>
 #include "cpqphp.h"
 #include "cpqphp_nvram.h"
@@ -107,7 +108,7 @@ static spinlock_t int15_lock;
  */
 
 
-static u32 add_byte(u32 **p_buffer, u8 value, u32 *used, u32 *avail)
+static u32 add_byte( u32 **p_buffer, u8 value, u32 *used, u32 *avail)
 {
 	u8 **tByte;
 
@@ -122,7 +123,7 @@ static u32 add_byte(u32 **p_buffer, u8 value, u32 *used, u32 *avail)
 }
 
 
-static u32 add_dword(u32 **p_buffer, u32 value, u32 *used, u32 *avail)
+static u32 add_dword( u32 **p_buffer, u32 value, u32 *used, u32 *avail)
 {
 	if ((*used + 4) > *avail)
 		return(1);
@@ -204,8 +205,9 @@ static int load_HRT (void __iomem *rom_start)
 	u8 temp_byte = 0xFF;
 	u32 rc;
 
-	if (!check_for_compaq_ROM(rom_start))
+	if (!check_for_compaq_ROM(rom_start)) {
 		return -ENODEV;
+	}
 
 	available = 1024;
 
@@ -249,8 +251,9 @@ static u32 store_HRT (void __iomem *rom_start)
 
 	available = 1024;
 
-	if (!check_for_compaq_ROM(rom_start))
+	if (!check_for_compaq_ROM(rom_start)) {
 		return(1);
+	}
 
 	buffer = (u32*) evbuffer;
 
@@ -265,12 +268,12 @@ static u32 store_HRT (void __iomem *rom_start)
 	ctrl = cpqhp_ctrl_list;
 
 	/* The revision of this structure */
-	rc = add_byte(&pFill, 1 + ctrl->push_flag, &usedbytes, &available);
+	rc = add_byte( &pFill, 1 + ctrl->push_flag, &usedbytes, &available);
 	if (rc)
 		return(rc);
 
 	/* The number of controllers */
-	rc = add_byte(&pFill, 1, &usedbytes, &available);
+	rc = add_byte( &pFill, 1, &usedbytes, &available);
 	if (rc)
 		return(rc);
 
@@ -280,22 +283,22 @@ static u32 store_HRT (void __iomem *rom_start)
 		numCtrl++;
 
 		/* The bus number */
-		rc = add_byte(&pFill, ctrl->bus, &usedbytes, &available);
+		rc = add_byte( &pFill, ctrl->bus, &usedbytes, &available);
 		if (rc)
 			return(rc);
 
 		/* The device Number */
-		rc = add_byte(&pFill, PCI_SLOT(ctrl->pci_dev->devfn), &usedbytes, &available);
+		rc = add_byte( &pFill, PCI_SLOT(ctrl->pci_dev->devfn), &usedbytes, &available);
 		if (rc)
 			return(rc);
 
 		/* The function Number */
-		rc = add_byte(&pFill, PCI_FUNC(ctrl->pci_dev->devfn), &usedbytes, &available);
+		rc = add_byte( &pFill, PCI_FUNC(ctrl->pci_dev->devfn), &usedbytes, &available);
 		if (rc)
 			return(rc);
 
 		/* Skip the number of available entries */
-		rc = add_dword(&pFill, 0, &usedbytes, &available);
+		rc = add_dword( &pFill, 0, &usedbytes, &available);
 		if (rc)
 			return(rc);
 
@@ -309,12 +312,12 @@ static u32 store_HRT (void __iomem *rom_start)
 			loop ++;
 
 			/* base */
-			rc = add_dword(&pFill, resNode->base, &usedbytes, &available);
+			rc = add_dword( &pFill, resNode->base, &usedbytes, &available);
 			if (rc)
 				return(rc);
 
 			/* length */
-			rc = add_dword(&pFill, resNode->length, &usedbytes, &available);
+			rc = add_dword( &pFill, resNode->length, &usedbytes, &available);
 			if (rc)
 				return(rc);
 
@@ -334,12 +337,12 @@ static u32 store_HRT (void __iomem *rom_start)
 			loop ++;
 
 			/* base */
-			rc = add_dword(&pFill, resNode->base, &usedbytes, &available);
+			rc = add_dword( &pFill, resNode->base, &usedbytes, &available);
 			if (rc)
 				return(rc);
 
 			/* length */
-			rc = add_dword(&pFill, resNode->length, &usedbytes, &available);
+			rc = add_dword( &pFill, resNode->length, &usedbytes, &available);
 			if (rc)
 				return(rc);
 
@@ -359,12 +362,12 @@ static u32 store_HRT (void __iomem *rom_start)
 			loop ++;
 
 			/* base */
-			rc = add_dword(&pFill, resNode->base, &usedbytes, &available);
+			rc = add_dword( &pFill, resNode->base, &usedbytes, &available);
 			if (rc)
 				return(rc);
 
 			/* length */
-			rc = add_dword(&pFill, resNode->length, &usedbytes, &available);
+			rc = add_dword( &pFill, resNode->length, &usedbytes, &available);
 			if (rc)
 				return(rc);
 
@@ -384,12 +387,12 @@ static u32 store_HRT (void __iomem *rom_start)
 			loop ++;
 
 			/* base */
-			rc = add_dword(&pFill, resNode->base, &usedbytes, &available);
+			rc = add_dword( &pFill, resNode->base, &usedbytes, &available);
 			if (rc)
 				return(rc);
 
 			/* length */
-			rc = add_dword(&pFill, resNode->length, &usedbytes, &available);
+			rc = add_dword( &pFill, resNode->length, &usedbytes, &available);
 			if (rc)
 				return(rc);
 
@@ -425,9 +428,9 @@ static u32 store_HRT (void __iomem *rom_start)
 
 void compaq_nvram_init (void __iomem *rom_start)
 {
-	if (rom_start)
+	if (rom_start) {
 		compaq_int15_entry_point = (rom_start + ROM_INT15_PHY_ADDR - ROM_PHY_ADDR);
-
+	}
 	dbg("int15 entry  = %p\n", compaq_int15_entry_point);
 
 	/* initialize our int15 lock */
@@ -659,8 +662,9 @@ int compaq_nvram_store (void __iomem *rom_start)
 
 	if (evbuffer_init) {
 		rc = store_HRT(rom_start);
-		if (rc)
+		if (rc) {
 			err(msg_unable_to_save);
+		}
 	}
 	return rc;
 }

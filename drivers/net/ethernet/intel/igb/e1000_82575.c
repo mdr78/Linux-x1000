@@ -1,25 +1,29 @@
-/* Intel(R) Gigabit Ethernet Linux driver
- * Copyright(c) 2007-2015 Intel Corporation.
- *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms and conditions of the GNU General Public License,
- * version 2, as published by the Free Software Foundation.
- *
- * This program is distributed in the hope it will be useful, but WITHOUT
- * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
- * FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for
- * more details.
- *
- * You should have received a copy of the GNU General Public License along with
- * this program; if not, see <http://www.gnu.org/licenses/>.
- *
- * The full GNU General Public License is included in this distribution in
- * the file called "COPYING".
- *
- * Contact Information:
- * e1000-devel Mailing List <e1000-devel@lists.sourceforge.net>
- * Intel Corporation, 5200 N.E. Elam Young Parkway, Hillsboro, OR 97124-6497
- */
+/*******************************************************************************
+
+  Intel(R) Gigabit Ethernet Linux driver
+  Copyright(c) 2007-2013 Intel Corporation.
+
+  This program is free software; you can redistribute it and/or modify it
+  under the terms and conditions of the GNU General Public License,
+  version 2, as published by the Free Software Foundation.
+
+  This program is distributed in the hope it will be useful, but WITHOUT
+  ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
+  FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for
+  more details.
+
+  You should have received a copy of the GNU General Public License along with
+  this program; if not, write to the Free Software Foundation, Inc.,
+  51 Franklin St - Fifth Floor, Boston, MA 02110-1301 USA.
+
+  The full GNU General Public License is included in this distribution in
+  the file called "COPYING".
+
+  Contact Information:
+  e1000-devel Mailing List <e1000-devel@lists.sourceforge.net>
+  Intel Corporation, 5200 N.E. Elam Young Parkway, Hillsboro, OR 97124-6497
+
+*******************************************************************************/
 
 /* e1000_82575
  * e1000_82576
@@ -70,8 +74,11 @@ static s32  igb_validate_nvm_checksum_82580(struct e1000_hw *hw);
 static s32  igb_update_nvm_checksum_82580(struct e1000_hw *hw);
 static s32 igb_validate_nvm_checksum_i350(struct e1000_hw *hw);
 static s32 igb_update_nvm_checksum_i350(struct e1000_hw *hw);
-static const u16 e1000_82580_rxpbs_table[] = {
-	36, 72, 144, 1, 2, 4, 8, 16, 35, 70, 140 };
+static const u16 e1000_82580_rxpbs_table[] =
+	{ 36, 72, 144, 1, 2, 4, 8, 16,
+	  35, 70, 140 };
+#define E1000_82580_RXPBS_TABLE_SIZE \
+	(sizeof(e1000_82580_rxpbs_table)/sizeof(u16))
 
 /**
  *  igb_sgmii_uses_mdio_82575 - Determine if I2C pins are for external MDIO
@@ -139,6 +146,10 @@ static s32 igb_check_for_link_media_swap(struct e1000_hw *hw)
 	if (ret_val)
 		return ret_val;
 
+	/* reset page to 0 */
+	ret_val = phy->ops.write_reg(hw, E1000_M88E1112_PAGE_ADDR, 0);
+	if (ret_val)
+		return ret_val;
 
 	if (data & E1000_M88E1112_STATUS_LINK)
 		port = E1000_MEDIA_PORT_OTHER;
@@ -147,23 +158,11 @@ static s32 igb_check_for_link_media_swap(struct e1000_hw *hw)
 	if (port && (hw->dev_spec._82575.media_port != port)) {
 		hw->dev_spec._82575.media_port = port;
 		hw->dev_spec._82575.media_changed = true;
-	}
-
-	if (port == E1000_MEDIA_PORT_COPPER) {
-		/* reset page to 0 */
-		ret_val = phy->ops.write_reg(hw, E1000_M88E1112_PAGE_ADDR, 0);
-		if (ret_val)
-			return ret_val;
-		igb_check_for_link_82575(hw);
 	} else {
-		igb_check_for_link_82575(hw);
-		/* reset page to 0 */
-		ret_val = phy->ops.write_reg(hw, E1000_M88E1112_PAGE_ADDR, 0);
-		if (ret_val)
-			return ret_val;
+		ret_val = igb_check_for_link_82575(hw);
 	}
 
-	return 0;
+	return E1000_SUCCESS;
 }
 
 /**
@@ -231,7 +230,6 @@ static s32 igb_init_phy_params_82575(struct e1000_hw *hw)
 	/* Verify phy id and set remaining function pointers */
 	switch (phy->id) {
 	case M88E1543_E_PHY_ID:
-	case M88E1512_E_PHY_ID:
 	case I347AT4_E_PHY_ID:
 	case M88E1112_E_PHY_ID:
 	case M88E1111_I_PHY_ID:
@@ -244,7 +242,7 @@ static s32 igb_init_phy_params_82575(struct e1000_hw *hw)
 		else
 			phy->ops.get_cable_length = igb_get_cable_length_m88;
 		phy->ops.force_speed_duplex = igb_phy_force_speed_duplex_m88;
-		/* Check if this PHY is configured for media swap. */
+		/* Check if this PHY is confgured for media swap. */
 		if (phy->id == M88E1112_E_PHY_ID) {
 			u16 data;
 
@@ -266,11 +264,6 @@ static s32 igb_init_phy_params_82575(struct e1000_hw *hw)
 			    data == E1000_M88E1112_AUTO_COPPER_BASEX)
 				hw->mac.ops.check_for_link =
 						igb_check_for_link_media_swap;
-		}
-		if (phy->id == M88E1512_E_PHY_ID) {
-			ret_val = igb_initialize_M88E1512_phy(hw);
-			if (ret_val)
-				goto out;
 		}
 		break;
 	case IGP03E1000_E_PHY_ID:
@@ -536,7 +529,7 @@ out:
 static s32 igb_get_invariants_82575(struct e1000_hw *hw)
 {
 	struct e1000_mac_info *mac = &hw->mac;
-	struct e1000_dev_spec_82575 *dev_spec = &hw->dev_spec._82575;
+	struct e1000_dev_spec_82575 * dev_spec = &hw->dev_spec._82575;
 	s32 ret_val;
 	u32 ctrl_ext = 0;
 	u32 link_mode = 0;
@@ -593,6 +586,7 @@ static s32 igb_get_invariants_82575(struct e1000_hw *hw)
 		break;
 	default:
 		return -E1000_ERR_MAC_INIT;
+		break;
 	}
 
 	/* Set media type */
@@ -850,6 +844,7 @@ static s32 igb_get_phy_id_82575(struct e1000_hw *hw)
 		default:
 			ret_val = -E1000_ERR_PHY;
 			goto out;
+			break;
 		}
 		ret_val = igb_get_phy_id(hw);
 		goto out;
@@ -903,7 +898,6 @@ out:
  **/
 static s32 igb_phy_hw_reset_sgmii_82575(struct e1000_hw *hw)
 {
-	struct e1000_phy_info *phy = &hw->phy;
 	s32 ret_val;
 
 	/* This isn't a true "hard" reset, but is the only reset
@@ -920,11 +914,7 @@ static s32 igb_phy_hw_reset_sgmii_82575(struct e1000_hw *hw)
 		goto out;
 
 	ret_val = igb_phy_sw_reset(hw);
-	if (ret_val)
-		goto out;
 
-	if (phy->id == M88E1512_E_PHY_ID)
-		ret_val = igb_initialize_M88E1512_phy(hw);
 out:
 	return ret_val;
 }
@@ -1021,6 +1011,7 @@ out:
 static s32 igb_set_d0_lplu_state_82580(struct e1000_hw *hw, bool active)
 {
 	struct e1000_phy_info *phy = &hw->phy;
+	s32 ret_val = 0;
 	u16 data;
 
 	data = rd32(E1000_82580_PHY_POWER_MGMT);
@@ -1044,7 +1035,7 @@ static s32 igb_set_d0_lplu_state_82580(struct e1000_hw *hw, bool active)
 			data &= ~E1000_82580_PM_SPD; }
 
 	wr32(E1000_82580_PHY_POWER_MGMT, data);
-	return 0;
+	return ret_val;
 }
 
 /**
@@ -1064,6 +1055,7 @@ static s32 igb_set_d0_lplu_state_82580(struct e1000_hw *hw, bool active)
 static s32 igb_set_d3_lplu_state_82580(struct e1000_hw *hw, bool active)
 {
 	struct e1000_phy_info *phy = &hw->phy;
+	s32 ret_val = 0;
 	u16 data;
 
 	data = rd32(E1000_82580_PHY_POWER_MGMT);
@@ -1088,7 +1080,7 @@ static s32 igb_set_d3_lplu_state_82580(struct e1000_hw *hw, bool active)
 	}
 
 	wr32(E1000_82580_PHY_POWER_MGMT, data);
-	return 0;
+	return ret_val;
 }
 
 /**
@@ -1144,7 +1136,7 @@ static s32 igb_acquire_swfw_sync_82575(struct e1000_hw *hw, u16 mask)
 	u32 swmask = mask;
 	u32 fwmask = mask << 16;
 	s32 ret_val = 0;
-	s32 i = 0, timeout = 200;
+	s32 i = 0, timeout = 200; /* FIXME: find real value to use here */
 
 	while (i < timeout) {
 		if (igb_get_hw_semaphore(hw)) {
@@ -1191,8 +1183,8 @@ static void igb_release_swfw_sync_82575(struct e1000_hw *hw, u16 mask)
 {
 	u32 swfw_sync;
 
-	while (igb_get_hw_semaphore(hw) != 0)
-		; /* Empty */
+	while (igb_get_hw_semaphore(hw) != 0);
+	/* Empty */
 
 	swfw_sync = rd32(E1000_SW_FW_SYNC);
 	swfw_sync &= ~mask;
@@ -1214,6 +1206,7 @@ static void igb_release_swfw_sync_82575(struct e1000_hw *hw, u16 mask)
 static s32 igb_get_cfg_done_82575(struct e1000_hw *hw)
 {
 	s32 timeout = PHY_CFG_TIMEOUT;
+	s32 ret_val = 0;
 	u32 mask = E1000_NVM_CFG_DONE_PORT_0;
 
 	if (hw->bus.func == 1)
@@ -1226,7 +1219,7 @@ static s32 igb_get_cfg_done_82575(struct e1000_hw *hw)
 	while (timeout) {
 		if (rd32(E1000_EEMNGCTL) & mask)
 			break;
-		usleep_range(1000, 2000);
+		msleep(1);
 		timeout--;
 	}
 	if (!timeout)
@@ -1237,7 +1230,7 @@ static s32 igb_get_cfg_done_82575(struct e1000_hw *hw)
 	    (hw->phy.type == e1000_phy_igp_3))
 		igb_phy_init_script_igp3(hw);
 
-	return 0;
+	return ret_val;
 }
 
 /**
@@ -1279,7 +1272,7 @@ static s32 igb_check_for_link_82575(struct e1000_hw *hw)
 
 	if (hw->phy.media_type != e1000_media_type_copper) {
 		ret_val = igb_get_pcs_speed_and_duplex_82575(hw, &speed,
-							     &duplex);
+		                                             &duplex);
 		/* Use this flag to determine if link needs to be checked or
 		 * not.  If  we have link clear the flag so that we do not
 		 * continue to check for link.
@@ -1326,7 +1319,7 @@ void igb_power_up_serdes_link_82575(struct e1000_hw *hw)
 
 	/* flush the write to verify completion */
 	wrfl();
-	usleep_range(1000, 2000);
+	msleep(1);
 }
 
 /**
@@ -1421,7 +1414,7 @@ void igb_shutdown_serdes_link_82575(struct e1000_hw *hw)
 
 		/* flush the write to verify completion */
 		wrfl();
-		usleep_range(1000, 2000);
+		msleep(1);
 	}
 }
 
@@ -1446,8 +1439,9 @@ static s32 igb_reset_hw_82575(struct e1000_hw *hw)
 
 	/* set the completion timeout for interface */
 	ret_val = igb_set_pcie_completion_timeout(hw);
-	if (ret_val)
+	if (ret_val) {
 		hw_dbg("PCI-E Set completion timeout has failed.\n");
+	}
 
 	hw_dbg("Masking off all interrupts\n");
 	wr32(E1000_IMC, 0xffffffff);
@@ -1456,7 +1450,7 @@ static s32 igb_reset_hw_82575(struct e1000_hw *hw)
 	wr32(E1000_TCTL, E1000_TCTL_PSP);
 	wrfl();
 
-	usleep_range(10000, 20000);
+	msleep(10);
 
 	ctrl = rd32(E1000_CTRL);
 
@@ -1598,7 +1592,6 @@ static s32 igb_setup_copper_link_82575(struct e1000_hw *hw)
 		case I347AT4_E_PHY_ID:
 		case M88E1112_E_PHY_ID:
 		case M88E1543_E_PHY_ID:
-		case M88E1512_E_PHY_ID:
 		case I210_I_PHY_ID:
 			ret_val = igb_copper_link_setup_m88_gen2(hw);
 			break;
@@ -1639,7 +1632,7 @@ static s32 igb_setup_serdes_link_82575(struct e1000_hw *hw)
 {
 	u32 ctrl_ext, ctrl_reg, reg, anadv_reg;
 	bool pcs_autoneg;
-	s32 ret_val = 0;
+	s32 ret_val = E1000_SUCCESS;
 	u16 data;
 
 	if ((hw->phy.media_type != e1000_media_type_internal_serdes) &&
@@ -1693,7 +1686,7 @@ static s32 igb_setup_serdes_link_82575(struct e1000_hw *hw)
 		    hw->mac.type == e1000_82576) {
 			ret_val = hw->nvm.ops.read(hw, NVM_COMPAT, 1, &data);
 			if (ret_val) {
-				hw_dbg(KERN_DEBUG "NVM Read Error\n\n");
+				printk(KERN_DEBUG "NVM Read Error\n\n");
 				return ret_val;
 			}
 
@@ -1706,7 +1699,7 @@ static s32 igb_setup_serdes_link_82575(struct e1000_hw *hw)
 		 * link either autoneg or be forced to 1000/Full
 		 */
 		ctrl_reg |= E1000_CTRL_SPD_1000 | E1000_CTRL_FRCSPD |
-				E1000_CTRL_FD | E1000_CTRL_FRCDPX;
+		            E1000_CTRL_FD | E1000_CTRL_FRCDPX;
 
 		/* set speed of 1000/Full if speed/duplex is forced */
 		reg |= E1000_PCS_LCTL_FSV_1000 | E1000_PCS_LCTL_FDV_FULL;
@@ -1920,8 +1913,8 @@ static void igb_clear_hw_cntrs_82575(struct e1000_hw *hw)
  *  igb_rx_fifo_flush_82575 - Clean rx fifo after RX enable
  *  @hw: pointer to the HW structure
  *
- *  After rx enable if manageability is enabled then there is likely some
- *  bad data at the start of the fifo and possibly in the DMA fifo. This
+ *  After rx enable if managability is enabled then there is likely some
+ *  bad data at the start of the fifo and possibly in the DMA fifo.  This
  *  function clears the fifos and flushes any packets that came in as rx was
  *  being enabled.
  **/
@@ -1929,11 +1922,6 @@ void igb_rx_fifo_flush_82575(struct e1000_hw *hw)
 {
 	u32 rctl, rlpml, rxdctl[4], rfctl, temp_rctl, rx_enabled;
 	int i, ms_wait;
-
-	/* disable IPv6 options as per hardware errata */
-	rfctl = rd32(E1000_RFCTL);
-	rfctl |= E1000_RFCTL_IPV6_EX_DIS;
-	wr32(E1000_RFCTL, rfctl);
 
 	if (hw->mac.type != e1000_82575 ||
 	    !(rd32(E1000_MANC) & E1000_MANC_RCV_TCO_EN))
@@ -1947,7 +1935,7 @@ void igb_rx_fifo_flush_82575(struct e1000_hw *hw)
 	}
 	/* Poll all queues to verify they have shut down */
 	for (ms_wait = 0; ms_wait < 10; ms_wait++) {
-		usleep_range(1000, 2000);
+		msleep(1);
 		rx_enabled = 0;
 		for (i = 0; i < 4; i++)
 			rx_enabled |= rd32(E1000_RXDCTL(i));
@@ -1962,6 +1950,7 @@ void igb_rx_fifo_flush_82575(struct e1000_hw *hw)
 	 * incoming packets are rejected.  Set enable and wait 2ms so that
 	 * any packet that was coming in as RCTL.EN was set is flushed
 	 */
+	rfctl = rd32(E1000_RFCTL);
 	wr32(E1000_RFCTL, rfctl & ~E1000_RFCTL_LEF);
 
 	rlpml = rd32(E1000_RLPML);
@@ -1974,7 +1963,7 @@ void igb_rx_fifo_flush_82575(struct e1000_hw *hw)
 	wr32(E1000_RCTL, temp_rctl);
 	wr32(E1000_RCTL, temp_rctl | E1000_RCTL_EN);
 	wrfl();
-	usleep_range(2000, 3000);
+	msleep(2);
 
 	/* Enable RX queues that were previously enabled and restore our
 	 * previous state
@@ -2026,14 +2015,14 @@ static s32 igb_set_pcie_completion_timeout(struct e1000_hw *hw)
 	 * 16ms to 55ms
 	 */
 	ret_val = igb_read_pcie_cap_reg(hw, PCIE_DEVICE_CONTROL2,
-					&pcie_devctl2);
+	                                &pcie_devctl2);
 	if (ret_val)
 		goto out;
 
 	pcie_devctl2 |= PCIE_DEVICE_CONTROL2_16ms;
 
 	ret_val = igb_write_pcie_cap_reg(hw, PCIE_DEVICE_CONTROL2,
-					 &pcie_devctl2);
+	                                 &pcie_devctl2);
 out:
 	/* disable completion timeout resend */
 	gcr &= ~E1000_GCR_CMPL_TMOUT_RESEND;
@@ -2262,7 +2251,7 @@ static s32 igb_reset_hw_82580(struct e1000_hw *hw)
 	wr32(E1000_TCTL, E1000_TCTL_PSP);
 	wrfl();
 
-	usleep_range(10000, 11000);
+	msleep(10);
 
 	/* Determine whether or not a global dev reset is requested */
 	if (global_device_reset &&
@@ -2280,7 +2269,7 @@ static s32 igb_reset_hw_82580(struct e1000_hw *hw)
 
 	/* Add delay to insure DEV_RST has time to complete */
 	if (global_device_reset)
-		usleep_range(5000, 6000);
+		msleep(5);
 
 	ret_val = igb_get_auto_rd_done(hw);
 	if (ret_val) {
@@ -2326,7 +2315,7 @@ u16 igb_rxpbs_adjust_82580(u32 data)
 {
 	u16 ret_val = 0;
 
-	if (data < ARRAY_SIZE(e1000_82580_rxpbs_table))
+	if (data < E1000_82580_RXPBS_TABLE_SIZE)
 		ret_val = e1000_82580_rxpbs_table[data];
 
 	return ret_val;
@@ -2457,7 +2446,8 @@ static s32 igb_update_nvm_checksum_82580(struct e1000_hw *hw)
 
 	ret_val = hw->nvm.ops.read(hw, NVM_COMPATIBILITY_REG_3, 1, &nvm_data);
 	if (ret_val) {
-		hw_dbg("NVM Read Error while updating checksum compatibility bit.\n");
+		hw_dbg("NVM Read Error while updating checksum"
+			" compatibility bit.\n");
 		goto out;
 	}
 
@@ -2467,7 +2457,8 @@ static s32 igb_update_nvm_checksum_82580(struct e1000_hw *hw)
 		ret_val = hw->nvm.ops.write(hw, NVM_COMPATIBILITY_REG_3, 1,
 					&nvm_data);
 		if (ret_val) {
-			hw_dbg("NVM Write Error while updating checksum compatibility bit.\n");
+			hw_dbg("NVM Write Error while updating checksum"
+				" compatibility bit.\n");
 			goto out;
 		}
 	}
@@ -2544,7 +2535,7 @@ out:
 static s32 __igb_access_emi_reg(struct e1000_hw *hw, u16 address,
 				  u16 *data, bool read)
 {
-	s32 ret_val = 0;
+	s32 ret_val = E1000_SUCCESS;
 
 	ret_val = hw->phy.ops.write_reg(hw, E1000_EMIADD, address);
 	if (ret_val)
@@ -2572,14 +2563,13 @@ s32 igb_read_emi_reg(struct e1000_hw *hw, u16 addr, u16 *data)
 /**
  *  igb_set_eee_i350 - Enable/disable EEE support
  *  @hw: pointer to the HW structure
- *  @adv1G: boolean flag enabling 1G EEE advertisement
- *  @adv100m: boolean flag enabling 100M EEE advertisement
  *
  *  Enable/disable EEE based on setting in dev_spec structure.
  *
  **/
-s32 igb_set_eee_i350(struct e1000_hw *hw, bool adv1G, bool adv100M)
+s32 igb_set_eee_i350(struct e1000_hw *hw)
 {
+	s32 ret_val = 0;
 	u32 ipcnfg, eeer;
 
 	if ((hw->mac.type < e1000_i350) ||
@@ -2592,16 +2582,7 @@ s32 igb_set_eee_i350(struct e1000_hw *hw, bool adv1G, bool adv100M)
 	if (!(hw->dev_spec._82575.eee_disable)) {
 		u32 eee_su = rd32(E1000_EEE_SU);
 
-		if (adv100M)
-			ipcnfg |= E1000_IPCNFG_EEE_100M_AN;
-		else
-			ipcnfg &= ~E1000_IPCNFG_EEE_100M_AN;
-
-		if (adv1G)
-			ipcnfg |= E1000_IPCNFG_EEE_1G_AN;
-		else
-			ipcnfg &= ~E1000_IPCNFG_EEE_1G_AN;
-
+		ipcnfg |= (E1000_IPCNFG_EEE_1G_AN | E1000_IPCNFG_EEE_100M_AN);
 		eeer |= (E1000_EEER_TX_LPI_EN | E1000_EEER_RX_LPI_EN |
 			E1000_EEER_LPI_FC);
 
@@ -2622,27 +2603,24 @@ s32 igb_set_eee_i350(struct e1000_hw *hw, bool adv1G, bool adv100M)
 	rd32(E1000_EEER);
 out:
 
-	return 0;
+	return ret_val;
 }
 
 /**
  *  igb_set_eee_i354 - Enable/disable EEE support
  *  @hw: pointer to the HW structure
- *  @adv1G: boolean flag enabling 1G EEE advertisement
- *  @adv100m: boolean flag enabling 100M EEE advertisement
  *
  *  Enable/disable EEE legacy mode based on setting in dev_spec structure.
  *
  **/
-s32 igb_set_eee_i354(struct e1000_hw *hw, bool adv1G, bool adv100M)
+s32 igb_set_eee_i354(struct e1000_hw *hw)
 {
 	struct e1000_phy_info *phy = &hw->phy;
 	s32 ret_val = 0;
 	u16 phy_data;
 
 	if ((hw->phy.media_type != e1000_media_type_copper) ||
-	    ((phy->id != M88E1543_E_PHY_ID) &&
-	     (phy->id != M88E1512_E_PHY_ID)))
+	    (phy->id != M88E1543_E_PHY_ID))
 		goto out;
 
 	if (!hw->dev_spec._82575.eee_disable) {
@@ -2674,16 +2652,8 @@ s32 igb_set_eee_i354(struct e1000_hw *hw, bool adv1G, bool adv100M)
 		if (ret_val)
 			goto out;
 
-		if (adv100M)
-			phy_data |= E1000_EEE_ADV_100_SUPPORTED;
-		else
-			phy_data &= ~E1000_EEE_ADV_100_SUPPORTED;
-
-		if (adv1G)
-			phy_data |= E1000_EEE_ADV_1000_SUPPORTED;
-		else
-			phy_data &= ~E1000_EEE_ADV_1000_SUPPORTED;
-
+		phy_data |= E1000_EEE_ADV_100_SUPPORTED |
+			    E1000_EEE_ADV_1000_SUPPORTED;
 		ret_val = igb_write_xmdio_reg(hw, E1000_EEE_ADV_ADDR_I354,
 						E1000_EEE_ADV_DEV_I354,
 						phy_data);
@@ -2722,8 +2692,7 @@ s32 igb_get_eee_status_i354(struct e1000_hw *hw, bool *status)
 
 	/* Check if EEE is supported on this device. */
 	if ((hw->phy.media_type != e1000_media_type_copper) ||
-	    ((phy->id != M88E1543_E_PHY_ID) &&
-	     (phy->id != M88E1512_E_PHY_ID)))
+	    (phy->id != M88E1543_E_PHY_ID))
 		goto out;
 
 	ret_val = igb_read_xmdio_reg(hw, E1000_PCS_STATUS_ADDR_I354,
@@ -2752,15 +2721,15 @@ static const u8 e1000_emc_therm_limit[4] = {
 	E1000_EMC_DIODE3_THERM_LIMIT
 };
 
-#ifdef CONFIG_IGB_HWMON
 /**
  *  igb_get_thermal_sensor_data_generic - Gathers thermal sensor data
  *  @hw: pointer to hardware structure
  *
  *  Updates the temperatures in mac.thermal_sensor_data
  **/
-static s32 igb_get_thermal_sensor_data_generic(struct e1000_hw *hw)
+s32 igb_get_thermal_sensor_data_generic(struct e1000_hw *hw)
 {
+	s32 status = E1000_SUCCESS;
 	u16 ets_offset;
 	u16 ets_cfg;
 	u16 ets_sensor;
@@ -2778,7 +2747,7 @@ static s32 igb_get_thermal_sensor_data_generic(struct e1000_hw *hw)
 	/* Return the internal sensor only if ETS is unsupported */
 	hw->nvm.ops.read(hw, NVM_ETS_CFG, 1, &ets_offset);
 	if ((ets_offset == 0x0000) || (ets_offset == 0xFFFF))
-		return 0;
+		return status;
 
 	hw->nvm.ops.read(hw, ets_offset, 1, &ets_cfg);
 	if (((ets_cfg & NVM_ETS_TYPE_MASK) >> NVM_ETS_TYPE_SHIFT)
@@ -2802,7 +2771,7 @@ static s32 igb_get_thermal_sensor_data_generic(struct e1000_hw *hw)
 					E1000_I2C_THERMAL_SENSOR_ADDR,
 					&data->sensor[i].temp);
 	}
-	return 0;
+	return status;
 }
 
 /**
@@ -2812,8 +2781,9 @@ static s32 igb_get_thermal_sensor_data_generic(struct e1000_hw *hw)
  *  Sets the thermal sensor thresholds according to the NVM map
  *  and save off the threshold and location values into mac.thermal_sensor_data
  **/
-static s32 igb_init_thermal_sensor_thresh_generic(struct e1000_hw *hw)
+s32 igb_init_thermal_sensor_thresh_generic(struct e1000_hw *hw)
 {
+	s32 status = E1000_SUCCESS;
 	u16 ets_offset;
 	u16 ets_cfg;
 	u16 ets_sensor;
@@ -2839,7 +2809,7 @@ static s32 igb_init_thermal_sensor_thresh_generic(struct e1000_hw *hw)
 	/* Return the internal sensor only if ETS is unsupported */
 	hw->nvm.ops.read(hw, NVM_ETS_CFG, 1, &ets_offset);
 	if ((ets_offset == 0x0000) || (ets_offset == 0xFFFF))
-		return 0;
+		return status;
 
 	hw->nvm.ops.read(hw, ets_offset, 1, &ets_cfg);
 	if (((ets_cfg & NVM_ETS_TYPE_MASK) >> NVM_ETS_TYPE_SHIFT)
@@ -2870,10 +2840,9 @@ static s32 igb_init_thermal_sensor_thresh_generic(struct e1000_hw *hw)
 							low_thresh_delta;
 		}
 	}
-	return 0;
+	return status;
 }
 
-#endif
 static struct e1000_mac_operations e1000_mac_ops_82575 = {
 	.init_hw              = igb_init_hw_82575,
 	.check_for_link       = igb_check_for_link_82575,

@@ -15,7 +15,6 @@
 #include <linux/module.h>
 #include <linux/platform_device.h>
 #include <linux/dmaengine.h>
-#include <linux/dma/pxa-dma.h>
 
 #include <sound/core.h>
 #include <sound/pcm.h>
@@ -44,11 +43,7 @@ static struct snd_ac97_bus_ops pxa2xx_ac97_ops = {
 	.reset	= pxa2xx_ac97_reset,
 };
 
-static struct pxad_param pxa2xx_ac97_pcm_out_req = {
-	.prio = PXAD_PRIO_LOWEST,
-	.drcmr = 12,
-};
-
+static unsigned long pxa2xx_ac97_pcm_out_req = 12;
 static struct snd_dmaengine_dai_dma_data pxa2xx_ac97_pcm_out = {
 	.addr		= __PREG(PCDR),
 	.addr_width	= DMA_SLAVE_BUSWIDTH_4_BYTES,
@@ -56,11 +51,7 @@ static struct snd_dmaengine_dai_dma_data pxa2xx_ac97_pcm_out = {
 	.filter_data	= &pxa2xx_ac97_pcm_out_req,
 };
 
-static struct pxad_param pxa2xx_ac97_pcm_in_req = {
-	.prio = PXAD_PRIO_LOWEST,
-	.drcmr = 11,
-};
-
+static unsigned long pxa2xx_ac97_pcm_in_req = 11;
 static struct snd_dmaengine_dai_dma_data pxa2xx_ac97_pcm_in = {
 	.addr		= __PREG(PCDR),
 	.addr_width	= DMA_SLAVE_BUSWIDTH_4_BYTES,
@@ -188,11 +179,12 @@ static int pxa2xx_ac97_probe(struct platform_device *dev)
 		goto err_dev;
 	}
 
-	ret = snd_card_new(&dev->dev, SNDRV_DEFAULT_IDX1, SNDRV_DEFAULT_STR1,
-			   THIS_MODULE, 0, &card);
+	ret = snd_card_create(SNDRV_DEFAULT_IDX1, SNDRV_DEFAULT_STR1,
+			      THIS_MODULE, 0, &card);
 	if (ret < 0)
 		goto err;
 
+	card->dev = &dev->dev;
 	strlcpy(card->driver, dev->dev.driver->name, sizeof(card->driver));
 
 	ret = pxa2xx_pcm_new(card, &pxa2xx_ac97_pcm_client, &pxa2xx_ac97_pcm);
@@ -218,6 +210,7 @@ static int pxa2xx_ac97_probe(struct platform_device *dev)
 
 	if (pdata && pdata->codec_pdata[0])
 		snd_ac97_dev_add_pdata(ac97_bus->codec[0], pdata->codec_pdata[0]);
+	snd_card_set_dev(card, &dev->dev);
 	ret = snd_card_register(card);
 	if (ret == 0) {
 		platform_set_drvdata(dev, card);
@@ -250,6 +243,7 @@ static struct platform_driver pxa2xx_ac97_driver = {
 	.remove		= pxa2xx_ac97_remove,
 	.driver		= {
 		.name	= "pxa2xx-ac97",
+		.owner	= THIS_MODULE,
 #ifdef CONFIG_PM_SLEEP
 		.pm	= &pxa2xx_ac97_pm_ops,
 #endif

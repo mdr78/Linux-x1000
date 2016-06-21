@@ -134,6 +134,7 @@ enum {
 	ATA_ALL_DEVICES		= (1 << ATA_MAX_DEVICES) - 1,
 
 	ATA_SHT_EMULATED	= 1,
+	ATA_SHT_CMD_PER_LUN	= 1,
 	ATA_SHT_THIS_ID		= -1,
 	ATA_SHT_USE_CLUSTERING	= 1,
 
@@ -190,8 +191,7 @@ enum {
 	ATA_DEV_PMP_UNSUP	= 6,	/* SATA port multiplier (unsupported) */
 	ATA_DEV_SEMB		= 7,	/* SEMB */
 	ATA_DEV_SEMB_UNSUP	= 8,	/* SEMB (unsupported) */
-	ATA_DEV_ZAC		= 9,	/* ZAC device */
-	ATA_DEV_NONE		= 10,	/* no device */
+	ATA_DEV_NONE		= 9,	/* no device */
 
 	/* struct ata_link flags */
 	ATA_LFLAG_NO_HRST	= (1 << 1), /* avoid hardreset */
@@ -204,13 +204,11 @@ enum {
 	ATA_LFLAG_SW_ACTIVITY	= (1 << 7), /* keep activity stats */
 	ATA_LFLAG_NO_LPM	= (1 << 8), /* disable LPM on this link */
 	ATA_LFLAG_RST_ONCE	= (1 << 9), /* limit recovery to one reset */
-	ATA_LFLAG_CHANGED	= (1 << 10), /* LPM state changed on this link */
 
 	/* struct ata_port flags */
 	ATA_FLAG_SLAVE_POSS	= (1 << 0), /* host supports slave dev */
 					    /* (doesn't imply presence) */
 	ATA_FLAG_SATA		= (1 << 1),
-	ATA_FLAG_NO_LOG_PAGE	= (1 << 5), /* do not issue log page read */
 	ATA_FLAG_NO_ATAPI	= (1 << 6), /* No ATAPI support */
 	ATA_FLAG_PIO_DMA	= (1 << 7), /* PIO cmds via DMA */
 	ATA_FLAG_PIO_LBA48	= (1 << 8), /* Host DMA engine is LBA28 only */
@@ -232,7 +230,6 @@ enum {
 	ATA_FLAG_SW_ACTIVITY	= (1 << 22), /* driver supports sw activity
 					      * led */
 	ATA_FLAG_NO_DIPM	= (1 << 23), /* host not happy with DIPM */
-	ATA_FLAG_SAS_HOST	= (1 << 24), /* SAS host */
 
 	/* bits 24:31 of ap->flags are reserved for LLD specific flags */
 
@@ -255,7 +252,6 @@ enum {
 
 	ATA_PFLAG_PIO32		= (1 << 20),  /* 32bit PIO */
 	ATA_PFLAG_PIO32CHANGE	= (1 << 21),  /* 32bit PIO can be turned on/off */
-	ATA_PFLAG_EXTERNAL	= (1 << 22),  /* eSATA/external port */
 
 	/* struct ata_queued_cmd flags */
 	ATA_QCFLAG_ACTIVE	= (1 << 0), /* cmd not yet ack'd to scsi lyer */
@@ -310,12 +306,6 @@ enum {
 	 * doing SRST.
 	 */
 	ATA_TMOUT_PMP_SRST_WAIT	= 5000,
-
-	/* When the LPM policy is set to ATA_LPM_MAX_POWER, there might
-	 * be a spurious PHY event, so ignore the first PHY event that
-	 * occurs within 10s after the policy change.
-	 */
-	ATA_TMOUT_SPURIOUS_PHY	= 10000,
 
 	/* ATA bus states */
 	BUS_UNKNOWN		= 0,
@@ -431,10 +421,6 @@ enum {
 	ATA_HORKAGE_NO_NCQ_TRIM	= (1 << 19),	/* don't use queued TRIM */
 	ATA_HORKAGE_NOLPM	= (1 << 20),	/* don't use LPM */
 	ATA_HORKAGE_WD_BROKEN_LPM = (1 << 21),	/* some WDs have broken LPM */
-	ATA_HORKAGE_ZERO_AFTER_TRIM = (1 << 22),/* guarantees zero after trim */
-	ATA_HORKAGE_NO_NCQ_LOG	= (1 << 23),	/* don't use NCQ for log read */
-	ATA_HORKAGE_NOTRIM	= (1 << 24),	/* don't use TRIM */
-	ATA_HORKAGE_MAX_SEC_1024 = (1 << 25),	/* Limit max sects to 1024 */
 
 	 /* DMA mask for user DMA control: User visible values; DO NOT
 	    renumber */
@@ -799,8 +785,6 @@ struct ata_link {
 	struct ata_eh_context	eh_context;
 
 	struct ata_device	device[ATA_MAX_DEVICES];
-
-	unsigned long		last_lpm_change; /* when last LPM change happened */
 };
 #define ATA_LINK_CLEAR_BEGIN		offsetof(struct ata_link, active_tag)
 #define ATA_LINK_CLEAR_END		offsetof(struct ata_link, device[0])
@@ -836,10 +820,10 @@ struct ata_port {
 	unsigned int		cbl;	/* cable type; ATA_CBL_xxx */
 
 	struct ata_queued_cmd	qcmd[ATA_MAX_QUEUE];
-	unsigned long		sas_tag_allocated; /* for sas tag allocation only */
+	unsigned long		qc_allocated;
 	unsigned int		qc_active;
 	int			nr_active_links; /* #links with active qcs */
-	unsigned int		sas_last_tag;	/* track next tag hw expects */
+	unsigned int		last_tag;	/* track next tag hw expects */
 
 	struct ata_link		link;		/* host default link */
 	struct ata_link		*slave_link;	/* see ata_slave_link_init() */
@@ -866,6 +850,7 @@ struct ata_port {
 	struct completion	park_req_pending;
 
 	pm_message_t		pm_mesg;
+	int			*pm_result;
 	enum ata_lpm_policy	target_lpm_policy;
 
 	struct timer_list	fastdrain_timer;
@@ -1157,14 +1142,16 @@ extern bool ata_link_offline(struct ata_link *link);
 #ifdef CONFIG_PM
 extern int ata_host_suspend(struct ata_host *host, pm_message_t mesg);
 extern void ata_host_resume(struct ata_host *host);
-extern void ata_sas_port_suspend(struct ata_port *ap);
-extern void ata_sas_port_resume(struct ata_port *ap);
+extern int ata_sas_port_async_suspend(struct ata_port *ap, int *async);
+extern int ata_sas_port_async_resume(struct ata_port *ap, int *async);
 #else
-static inline void ata_sas_port_suspend(struct ata_port *ap)
+static inline int ata_sas_port_async_suspend(struct ata_port *ap, int *async)
 {
+	return 0;
 }
-static inline void ata_sas_port_resume(struct ata_port *ap)
+static inline int ata_sas_port_async_resume(struct ata_port *ap, int *async)
 {
+	return 0;
 }
 #endif
 extern int ata_ratelimit(void);
@@ -1207,14 +1194,13 @@ extern void ata_scsi_unlock_native_capacity(struct scsi_device *sdev);
 extern int ata_scsi_slave_config(struct scsi_device *sdev);
 extern void ata_scsi_slave_destroy(struct scsi_device *sdev);
 extern int ata_scsi_change_queue_depth(struct scsi_device *sdev,
-				       int queue_depth);
+				       int queue_depth, int reason);
 extern int __ata_change_queue_depth(struct ata_port *ap, struct scsi_device *sdev,
-				    int queue_depth);
+				    int queue_depth, int reason);
 extern struct ata_device *ata_dev_pair(struct ata_device *adev);
 extern int ata_do_set_mode(struct ata_link *link, struct ata_device **r_failed_dev);
 extern void ata_scsi_port_error_handler(struct Scsi_Host *host, struct ata_port *ap);
 extern void ata_scsi_cmd_error_handler(struct Scsi_Host *host, struct ata_port *ap, struct list_head *eh_q);
-extern bool sata_lpm_ignore_phy_events(struct ata_link *link);
 
 extern int ata_cable_40wire(struct ata_port *ap);
 extern int ata_cable_80wire(struct ata_port *ap);
@@ -1354,20 +1340,14 @@ extern const struct ata_port_operations ata_base_port_ops;
 extern const struct ata_port_operations sata_port_ops;
 extern struct device_attribute *ata_common_sdev_attrs[];
 
-/*
- * All sht initializers (BASE, PIO, BMDMA, NCQ) must be instantiated
- * by the edge drivers.  Because the 'module' field of sht must be the
- * edge driver's module reference, otherwise the driver can be unloaded
- * even if the scsi_device is being accessed.
- */
 #define ATA_BASE_SHT(drv_name)					\
 	.module			= THIS_MODULE,			\
 	.name			= drv_name,			\
 	.ioctl			= ata_scsi_ioctl,		\
 	.queuecommand		= ata_scsi_queuecmd,		\
 	.can_queue		= ATA_DEF_QUEUE,		\
-	.tag_alloc_policy	= BLK_TAG_ALLOC_RR,		\
 	.this_id		= ATA_SHT_THIS_ID,		\
+	.cmd_per_lun		= ATA_SHT_CMD_PER_LUN,		\
 	.emulated		= ATA_SHT_EMULATED,		\
 	.use_clustering		= ATA_SHT_USE_CLUSTERING,	\
 	.proc_name		= drv_name,			\
@@ -1427,14 +1407,14 @@ static inline int sata_srst_pmp(struct ata_link *link)
  * printk helpers
  */
 __printf(3, 4)
-void ata_port_printk(const struct ata_port *ap, const char *level,
-		     const char *fmt, ...);
-__printf(3, 4)
-void ata_link_printk(const struct ata_link *link, const char *level,
-		     const char *fmt, ...);
-__printf(3, 4)
-void ata_dev_printk(const struct ata_device *dev, const char *level,
+int ata_port_printk(const struct ata_port *ap, const char *level,
 		    const char *fmt, ...);
+__printf(3, 4)
+int ata_link_printk(const struct ata_link *link, const char *level,
+		    const char *fmt, ...);
+__printf(3, 4)
+int ata_dev_printk(const struct ata_device *dev, const char *level,
+		   const char *fmt, ...);
 
 #define ata_port_err(ap, fmt, ...)				\
 	ata_port_printk(ap, KERN_ERR, fmt, ##__VA_ARGS__)
@@ -1514,8 +1494,7 @@ static inline unsigned int ata_tag_internal(unsigned int tag)
 static inline unsigned int ata_class_enabled(unsigned int class)
 {
 	return class == ATA_DEV_ATA || class == ATA_DEV_ATAPI ||
-		class == ATA_DEV_PMP || class == ATA_DEV_SEMB ||
-		class == ATA_DEV_ZAC;
+		class == ATA_DEV_PMP || class == ATA_DEV_SEMB;
 }
 
 static inline unsigned int ata_class_disabled(unsigned int class)

@@ -80,7 +80,7 @@ static void p80211req_mibset_mibget(wlandevice_t *wlandev,
 /*----------------------------------------------------------------
 * p80211req_dorequest
 *
-* Handles an MLME request/confirm message.
+* Handles an MLME reqest/confirm message.
 *
 * Arguments:
 *	wlandev		WLAN device struct
@@ -95,6 +95,7 @@ static void p80211req_mibset_mibget(wlandevice_t *wlandev,
 ----------------------------------------------------------------*/
 int p80211req_dorequest(wlandevice_t *wlandev, u8 *msgbuf)
 {
+	int result = 0;
 	struct p80211msg *msg = (struct p80211msg *) msgbuf;
 
 	/* Check to make sure the MSD is running */
@@ -108,9 +109,9 @@ int p80211req_dorequest(wlandevice_t *wlandev, u8 *msgbuf)
 	/* Check Permissions */
 	if (!capable(CAP_NET_ADMIN) &&
 	(msg->msgcode != DIDmsg_dot11req_mibget)) {
-		netdev_err(wlandev->netdev,
-			   "%s: only dot11req_mibget allowed for non-root.\n",
-			   wlandev->name);
+		printk(KERN_ERR
+		       "%s: only dot11req_mibget allowed for non-root.\n",
+		       wlandev->name);
 		return -EPERM;
 	}
 
@@ -128,7 +129,7 @@ int p80211req_dorequest(wlandevice_t *wlandev, u8 *msgbuf)
 		wlandev->mlmerequest(wlandev, msg);
 
 	clear_bit(1, &(wlandev->request_pending));
-	return 0;	/* if result==0, msg->status still may contain an err */
+	return result;	/* if result==0, msg->status still may contain an err */
 }
 
 /*----------------------------------------------------------------

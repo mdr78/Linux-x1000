@@ -371,25 +371,16 @@
 #define __NR_finit_module		(__NR_Linux + 348)
 #define __NR_sched_setattr		(__NR_Linux + 349)
 #define __NR_sched_getattr		(__NR_Linux + 350)
-#define __NR_renameat2			(__NR_Linux + 351)
-#define __NR_seccomp			(__NR_Linux + 352)
-#define __NR_getrandom			(__NR_Linux + 353)
-#define __NR_memfd_create		(__NR_Linux + 354)
-#define __NR_bpf			(__NR_Linux + 355)
-#define __NR_execveat			(__NR_Linux + 356)
-#define __NR_userfaultfd		(__NR_Linux + 357)
-#define __NR_membarrier			(__NR_Linux + 358)
-#define __NR_mlock2			(__NR_Linux + 359)
 
 /*
  * Offset of the last Linux o32 flavoured syscall
  */
-#define __NR_Linux_syscalls		359
+#define __NR_Linux_syscalls		350
 
 #endif /* _MIPS_SIM == _MIPS_SIM_ABI32 */
 
 #define __NR_O32_Linux			4000
-#define __NR_O32_Linux_syscalls		359
+#define __NR_O32_Linux_syscalls		350
 
 #if _MIPS_SIM == _MIPS_SIM_ABI64
 
@@ -708,25 +699,16 @@
 #define __NR_getdents64			(__NR_Linux + 308)
 #define __NR_sched_setattr		(__NR_Linux + 309)
 #define __NR_sched_getattr		(__NR_Linux + 310)
-#define __NR_renameat2			(__NR_Linux + 311)
-#define __NR_seccomp			(__NR_Linux + 312)
-#define __NR_getrandom			(__NR_Linux + 313)
-#define __NR_memfd_create		(__NR_Linux + 314)
-#define __NR_bpf			(__NR_Linux + 315)
-#define __NR_execveat			(__NR_Linux + 316)
-#define __NR_userfaultfd		(__NR_Linux + 317)
-#define __NR_membarrier			(__NR_Linux + 318)
-#define __NR_mlock2			(__NR_Linux + 319)
 
 /*
  * Offset of the last Linux 64-bit flavoured syscall
  */
-#define __NR_Linux_syscalls		319
+#define __NR_Linux_syscalls		310
 
 #endif /* _MIPS_SIM == _MIPS_SIM_ABI64 */
 
 #define __NR_64_Linux			5000
-#define __NR_64_Linux_syscalls		319
+#define __NR_64_Linux_syscalls		310
 
 #if _MIPS_SIM == _MIPS_SIM_NABI32
 
@@ -1049,24 +1031,15 @@
 #define __NR_finit_module		(__NR_Linux + 312)
 #define __NR_sched_setattr		(__NR_Linux + 313)
 #define __NR_sched_getattr		(__NR_Linux + 314)
-#define __NR_renameat2			(__NR_Linux + 315)
-#define __NR_seccomp			(__NR_Linux + 316)
-#define __NR_getrandom			(__NR_Linux + 317)
-#define __NR_memfd_create		(__NR_Linux + 318)
-#define __NR_bpf			(__NR_Linux + 319)
-#define __NR_execveat			(__NR_Linux + 320)
-#define __NR_userfaultfd		(__NR_Linux + 321)
-#define __NR_membarrier			(__NR_Linux + 322)
-#define __NR_mlock2			(__NR_Linux + 323)
 
 /*
  * Offset of the last N32 flavoured syscall
  */
-#define __NR_Linux_syscalls		323
+#define __NR_Linux_syscalls		314
 
 #endif /* _MIPS_SIM == _MIPS_SIM_NABI32 */
 
 #define __NR_N32_Linux			6000
-#define __NR_N32_Linux_syscalls		323
+#define __NR_N32_Linux_syscalls		314
 
 #endif /* _UAPI_ASM_UNISTD_H */

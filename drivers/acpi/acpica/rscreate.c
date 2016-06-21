@@ -5,7 +5,7 @@
  ******************************************************************************/
 
 /*
- * Copyright (C) 2000 - 2015, Intel Corp.
+ * Copyright (C) 2000 - 2013, Intel Corp.
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -72,8 +72,6 @@ acpi_buffer_to_resource(u8 *aml_buffer,
 	void *resource;
 	void *current_resource_ptr;
 
-	ACPI_FUNCTION_TRACE(acpi_buffer_to_resource);
-
 	/*
 	 * Note: we allow AE_AML_NO_RESOURCE_END_TAG, since an end tag
 	 * is not required here.
@@ -87,7 +85,7 @@ acpi_buffer_to_resource(u8 *aml_buffer,
 		status = AE_OK;
 	}
 	if (ACPI_FAILURE(status)) {
-		return_ACPI_STATUS(status);
+		return (status);
 	}
 
 	/* Allocate a buffer for the converted resource */
@@ -95,7 +93,7 @@ acpi_buffer_to_resource(u8 *aml_buffer,
 	resource = ACPI_ALLOCATE_ZEROED(list_size_needed);
 	current_resource_ptr = resource;
 	if (!resource) {
-		return_ACPI_STATUS(AE_NO_MEMORY);
+		return (AE_NO_MEMORY);
 	}
 
 	/* Perform the AML-to-Resource conversion */
@@ -112,10 +110,8 @@ acpi_buffer_to_resource(u8 *aml_buffer,
 		*resource_ptr = resource;
 	}
 
-	return_ACPI_STATUS(status);
+	return (status);
 }
-
-ACPI_EXPORT_SYMBOL(acpi_buffer_to_resource)
 
 /*******************************************************************************
  *
@@ -134,9 +130,10 @@ ACPI_EXPORT_SYMBOL(acpi_buffer_to_resource)
  *              of device resources.
  *
  ******************************************************************************/
+
 acpi_status
 acpi_rs_create_resource_list(union acpi_operand_object *aml_buffer,
-			     struct acpi_buffer *output_buffer)
+			     struct acpi_buffer * output_buffer)
 {
 
 	acpi_status status;
@@ -276,7 +273,7 @@ acpi_rs_create_pci_routing_table(union acpi_operand_object *package_object,
 		 */
 		user_prt->length = (sizeof(struct acpi_pci_routing_table) - 4);
 
-		/* Each subpackage must be of length 4 */
+		/* Each sub-package must be of length 4 */
 
 		if ((*top_object_list)->package.count != 4) {
 			ACPI_ERROR((AE_INFO,
@@ -286,7 +283,7 @@ acpi_rs_create_pci_routing_table(union acpi_operand_object *package_object,
 		}
 
 		/*
-		 * Dereference the subpackage.
+		 * Dereference the sub-package.
 		 * The sub_object_list will now point to an array of the four IRQ
 		 * elements: [Address, Pin, Source, source_index]
 		 */
@@ -295,7 +292,7 @@ acpi_rs_create_pci_routing_table(union acpi_operand_object *package_object,
 		/* 1) First subobject: Dereference the PRT.Address */
 
 		obj_desc = sub_object_list[0];
-		if (!obj_desc || obj_desc->common.type != ACPI_TYPE_INTEGER) {
+		if (obj_desc->common.type != ACPI_TYPE_INTEGER) {
 			ACPI_ERROR((AE_INFO,
 				    "(PRT[%u].Address) Need Integer, found %s",
 				    index,
@@ -308,7 +305,7 @@ acpi_rs_create_pci_routing_table(union acpi_operand_object *package_object,
 		/* 2) Second subobject: Dereference the PRT.Pin */
 
 		obj_desc = sub_object_list[1];
-		if (!obj_desc || obj_desc->common.type != ACPI_TYPE_INTEGER) {
+		if (obj_desc->common.type != ACPI_TYPE_INTEGER) {
 			ACPI_ERROR((AE_INFO,
 				    "(PRT[%u].Pin) Need Integer, found %s",
 				    index,
@@ -348,19 +345,18 @@ acpi_rs_create_pci_routing_table(union acpi_operand_object *package_object,
 				status =
 				    acpi_ns_handle_to_pathname((acpi_handle)
 							       node,
-							       &path_buffer,
-							       FALSE);
+							       &path_buffer);
 
 				/* +1 to include null terminator */
 
 				user_prt->length +=
-				    (u32)strlen(user_prt->source) + 1;
+				    (u32) ACPI_STRLEN(user_prt->source) + 1;
 				break;
 
 			case ACPI_TYPE_STRING:
 
-				strcpy(user_prt->source,
-				       obj_desc->string.pointer);
+				ACPI_STRCPY(user_prt->source,
+					    obj_desc->string.pointer);
 
 				/*
 				 * Add to the Length field the length of the string
@@ -398,7 +394,7 @@ acpi_rs_create_pci_routing_table(union acpi_operand_object *package_object,
 		/* 4) Fourth subobject: Dereference the PRT.source_index */
 
 		obj_desc = sub_object_list[3];
-		if (!obj_desc || obj_desc->common.type != ACPI_TYPE_INTEGER) {
+		if (obj_desc->common.type != ACPI_TYPE_INTEGER) {
 			ACPI_ERROR((AE_INFO,
 				    "(PRT[%u].SourceIndex) Need Integer, found %s",
 				    index,

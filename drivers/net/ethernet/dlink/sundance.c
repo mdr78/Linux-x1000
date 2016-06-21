@@ -199,7 +199,7 @@ IVc. Errata
 #define USE_IO_OPS 1
 #endif
 
-static const struct pci_device_id sundance_pci_tbl[] = {
+static DEFINE_PCI_DEVICE_TABLE(sundance_pci_tbl) = {
 	{ 0x1186, 0x1002, 0x1186, 0x1002, 0, 0, 0 },
 	{ 0x1186, 0x1002, 0x1186, 0x1003, 0, 0, 1 },
 	{ 0x1186, 0x1002, 0x1186, 0x1012, 0, 0, 2 },
@@ -1137,7 +1137,7 @@ start_tx (struct sk_buff *skb, struct net_device *dev)
 	return NETDEV_TX_OK;
 
 drop_frame:
-	dev_kfree_skb_any(skb);
+	dev_kfree_skb(skb);
 	np->tx_skbuff[entry] = NULL;
 	dev->stats.tx_dropped++;
 	return NETDEV_TX_OK;

@@ -8,11 +8,17 @@
   * based on linux/drivers/acron/char/pcf8583.c
   * Copyright (C) 2000 Russell King
   *
-  * Driver for max1363 and similar chips.
-  *
   * This program is free software; you can redistribute it and/or modify
   * it under the terms of the GNU General Public License version 2 as
   * published by the Free Software Foundation.
+  *
+  * max1363.c
+  *
+  * Partial support for max1363 and similar chips.
+  *
+  * Not currently implemented.
+  *
+  * - Control of internal reference.
   */
 
 #include <linux/interrupt.h>
@@ -1007,6 +1013,7 @@ static struct attribute *max1363_event_attributes[] = {
 
 static struct attribute_group max1363_event_attribute_group = {
 	.attrs = max1363_event_attributes,
+	.name = "events",
 };
 
 static int max1363_update_scan_mode(struct iio_dev *indio_dev,
@@ -1246,7 +1253,7 @@ static const struct max1363_chip_info max1363_chip_info_tbl[] = {
 	},
 	[max11604] = {
 		.bits = 8,
-		.int_vref_mv = 4096,
+		.int_vref_mv = 4098,
 		.mode_list = max1238_mode_list,
 		.num_modes = ARRAY_SIZE(max1238_mode_list),
 		.default_mode = s0to11,
@@ -1306,7 +1313,7 @@ static const struct max1363_chip_info max1363_chip_info_tbl[] = {
 	},
 	[max11610] = {
 		.bits = 10,
-		.int_vref_mv = 4096,
+		.int_vref_mv = 4098,
 		.mode_list = max1238_mode_list,
 		.num_modes = ARRAY_SIZE(max1238_mode_list),
 		.default_mode = s0to11,
@@ -1366,7 +1373,7 @@ static const struct max1363_chip_info max1363_chip_info_tbl[] = {
 	},
 	[max11616] = {
 		.bits = 12,
-		.int_vref_mv = 4096,
+		.int_vref_mv = 4098,
 		.mode_list = max1238_mode_list,
 		.num_modes = ARRAY_SIZE(max1238_mode_list),
 		.default_mode = s0to11,

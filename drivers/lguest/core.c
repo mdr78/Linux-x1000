@@ -42,6 +42,7 @@ DEFINE_MUTEX(lguest_lock);
 static __init int map_switcher(void)
 {
 	int i, err;
+	struct page **pagep;
 
 	/*
 	 * Map the Switcher in to high memory.
@@ -109,9 +110,11 @@ static __init int map_switcher(void)
 	 * This code actually sets up the pages we've allocated to appear at
 	 * switcher_addr.  map_vm_area() takes the vma we allocated above, the
 	 * kind of pages we're mapping (kernel pages), and a pointer to our
-	 * array of struct pages.
+	 * array of struct pages.  It increments that pointer, but we don't
+	 * care.
 	 */
-	err = map_vm_area(switcher_vma, PAGE_KERNEL_EXEC, lg_switcher_pages);
+	pagep = lg_switcher_pages;
+	err = map_vm_area(switcher_vma, PAGE_KERNEL_EXEC, &pagep);
 	if (err) {
 		printk("lguest: map_vm_area failed: %i\n", err);
 		goto free_vma;
@@ -173,7 +176,7 @@ static void unmap_switcher(void)
 bool lguest_address_ok(const struct lguest *lg,
 		       unsigned long addr, unsigned long len)
 {
-	return addr+len <= lg->pfn_limit * PAGE_SIZE && (addr+len >= addr);
+	return (addr+len) / PAGE_SIZE < lg->pfn_limit && (addr+len >= addr);
 }
 
 /*
@@ -208,14 +211,6 @@ void __lgwrite(struct lg_cpu *cpu, unsigned long addr, const void *b,
  */
 int run_guest(struct lg_cpu *cpu, unsigned long __user *user)
 {
-	/* If the launcher asked for a register with LHREQ_GETREG */
-	if (cpu->reg_read) {
-		if (put_user(*cpu->reg_read, user))
-			return -EFAULT;
-		cpu->reg_read = NULL;
-		return sizeof(*cpu->reg_read);
-	}
-
 	/* We stop running once the Guest is dead. */
 	while (!cpu->lg->dead) {
 		unsigned int irq;
@@ -225,12 +220,21 @@ int run_guest(struct lg_cpu *cpu, unsigned long __user *user)
 		if (cpu->hcall)
 			do_hypercalls(cpu);
 
-		/* Do we have to tell the Launcher about a trap? */
-		if (cpu->pending.trap) {
-			if (copy_to_user(user, &cpu->pending,
-					 sizeof(cpu->pending)))
-				return -EFAULT;
-			return sizeof(cpu->pending);
+		/*
+		 * It's possible the Guest did a NOTIFY hypercall to the
+		 * Launcher.
+		 */
+		if (cpu->pending_notify) {
+			/*
+			 * Does it just needs to write to a registered
+			 * eventfd (ie. the appropriate virtqueue thread)?
+			 */
+			if (!send_notify_to_eventfd(cpu)) {
+				/* OK, we tell the main Launcher. */
+				if (put_user(cpu->pending_notify, user))
+					return -EFAULT;
+				return sizeof(cpu->pending_notify);
+			}
 		}
 
 		/*

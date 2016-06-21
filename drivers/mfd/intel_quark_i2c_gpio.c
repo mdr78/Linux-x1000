@@ -31,10 +31,6 @@
 #define MFD_I2C_BAR		0
 #define MFD_GPIO_BAR		1
 
-/* ACPI _ADR value to match the child node */
-#define MFD_ACPI_MATCH_GPIO	0ULL
-#define MFD_ACPI_MATCH_I2C	1ULL
-
 /* The base GPIO number under GPIOLIB framework */
 #define INTEL_QUARK_MFD_GPIO_BASE	8
 
@@ -74,7 +70,6 @@ static const struct i2c_mode_info platform_i2c_mode_info[] = {
 		.name = "GalileoGen2",
 		.i2c_scl_freq = 400000,
 	},
-	{}
 };
 
 static struct resource intel_quark_i2c_res[] = {
@@ -86,35 +81,25 @@ static struct resource intel_quark_i2c_res[] = {
 	},
 };
 
-static struct mfd_cell_acpi_match intel_quark_acpi_match_i2c = {
-	.adr = MFD_ACPI_MATCH_I2C,
-};
-
 static struct resource intel_quark_gpio_res[] = {
 	[INTEL_QUARK_IORES_MEM] = {
 		.flags = IORESOURCE_MEM,
 	},
 };
 
-static struct mfd_cell_acpi_match intel_quark_acpi_match_gpio = {
-	.adr = MFD_ACPI_MATCH_GPIO,
-};
-
 static struct mfd_cell intel_quark_mfd_cells[] = {
-	{
-		.id = MFD_GPIO_BAR,
-		.name = "gpio-dwapb",
-		.acpi_match = &intel_quark_acpi_match_gpio,
-		.num_resources = ARRAY_SIZE(intel_quark_gpio_res),
-		.resources = intel_quark_gpio_res,
-		.ignore_resource_conflicts = true,
-	},
 	{
 		.id = MFD_I2C_BAR,
 		.name = "i2c_designware",
-		.acpi_match = &intel_quark_acpi_match_i2c,
 		.num_resources = ARRAY_SIZE(intel_quark_i2c_res),
 		.resources = intel_quark_i2c_res,
+		.ignore_resource_conflicts = true,
+	},
+	{
+		.id = MFD_GPIO_BAR,
+		.name = "gpio-dwapb",
+		.num_resources = ARRAY_SIZE(intel_quark_gpio_res),
+		.resources = intel_quark_gpio_res,
 		.ignore_resource_conflicts = true,
 	},
 };
@@ -168,10 +153,10 @@ static void intel_quark_unregister_i2c_clk(struct pci_dev *pdev)
 static int intel_quark_i2c_setup(struct pci_dev *pdev, struct mfd_cell *cell)
 {
 	const char *board_name = dmi_get_system_info(DMI_BOARD_NAME);
-	const struct i2c_mode_info *info;
 	struct dw_i2c_platform_data *pdata;
 	struct resource *res = (struct resource *)cell->resources;
 	struct device *dev = &pdev->dev;
+	unsigned int i;
 
 	res[INTEL_QUARK_IORES_MEM].start =
 		pci_resource_start(pdev, MFD_I2C_BAR);
@@ -185,17 +170,13 @@ static int intel_quark_i2c_setup(struct pci_dev *pdev, struct mfd_cell *cell)
 	if (!pdata)
 		return -ENOMEM;
 
-	/* Normal mode by default */
-	pdata->i2c_scl_freq = 100000;
+	/* Fast mode by default */
+	pdata->i2c_scl_freq = 400000;
 
-	if (board_name) {
-		for (info = platform_i2c_mode_info; info->name; info++) {
-			if (!strcmp(board_name, info->name)) {
-				pdata->i2c_scl_freq = info->i2c_scl_freq;
-				break;
-			}
-		}
-	}
+	for (i = 0; i < ARRAY_SIZE(platform_i2c_mode_info); i++)
+		if (!strcmp(board_name, platform_i2c_mode_info[i].name))
+			pdata->i2c_scl_freq
+				= platform_i2c_mode_info[i].i2c_scl_freq;
 
 	cell->platform_data = pdata;
 	cell->pdata_size = sizeof(*pdata);
@@ -262,11 +243,12 @@ static int intel_quark_mfd_probe(struct pci_dev *pdev,
 
 	dev_set_drvdata(&pdev->dev, quark_mfd);
 
-	ret = intel_quark_i2c_setup(pdev, &intel_quark_mfd_cells[1]);
+	ret = intel_quark_i2c_setup(pdev, &intel_quark_mfd_cells[MFD_I2C_BAR]);
 	if (ret)
 		return ret;
 
-	ret = intel_quark_gpio_setup(pdev, &intel_quark_mfd_cells[0]);
+	ret = intel_quark_gpio_setup(pdev,
+				     &intel_quark_mfd_cells[MFD_GPIO_BAR]);
 	if (ret)
 		return ret;
 

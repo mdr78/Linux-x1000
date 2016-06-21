@@ -933,9 +933,9 @@ static const struct cs_extent_def si_SECT_CONTEXT_defs[] =
     {si_SECT_CONTEXT_def_5, 0x0000a2a1, 1 },
     {si_SECT_CONTEXT_def_6, 0x0000a2a3, 1 },
     {si_SECT_CONTEXT_def_7, 0x0000a2a5, 233 },
-    { NULL, 0, 0 }
+    { 0, 0, 0 }
 };
 static const struct cs_section_def si_cs_data[] = {
     { si_SECT_CONTEXT_defs, SECT_CONTEXT },
-    { NULL, SECT_NONE }
+    { 0, SECT_NONE }
 };

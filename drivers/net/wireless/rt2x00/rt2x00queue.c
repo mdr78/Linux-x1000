@@ -85,7 +85,7 @@ struct sk_buff *rt2x00queue_alloc_rxskb(struct queue_entry *entry, gfp_t gfp)
 	memset(skbdesc, 0, sizeof(*skbdesc));
 	skbdesc->entry = entry;
 
-	if (rt2x00_has_cap_flag(rt2x00dev, REQUIRE_DMA)) {
+	if (test_bit(REQUIRE_DMA, &rt2x00dev->cap_flags)) {
 		dma_addr_t skb_dma;
 
 		skb_dma = dma_map_single(rt2x00dev->dev, skb->data, skb->len,
@@ -198,7 +198,7 @@ static void rt2x00queue_create_tx_descriptor_seq(struct rt2x00_dev *rt2x00dev,
 
 	__set_bit(ENTRY_TXD_GENERATE_SEQ, &txdesc->flags);
 
-	if (!rt2x00_has_cap_flag(rt2x00dev, REQUIRE_SW_SEQNO)) {
+	if (!test_bit(REQUIRE_SW_SEQNO, &rt2x00dev->cap_flags)) {
 		/*
 		 * rt2800 has a H/W (or F/W) bug, device incorrectly increase
 		 * seqno on retransmited data (non-QOS) frames. To workaround
@@ -484,7 +484,7 @@ static void rt2x00queue_create_tx_descriptor(struct rt2x00_dev *rt2x00dev,
 	rt2x00crypto_create_tx_descriptor(rt2x00dev, skb, txdesc);
 	rt2x00queue_create_tx_descriptor_seq(rt2x00dev, skb, txdesc);
 
-	if (rt2x00_has_cap_flag(rt2x00dev, REQUIRE_HT_TX_DESC))
+	if (test_bit(REQUIRE_HT_TX_DESC, &rt2x00dev->cap_flags))
 		rt2x00queue_create_tx_descriptor_ht(rt2x00dev, skb, txdesc,
 						   sta, hwrate);
 	else
@@ -526,7 +526,7 @@ static int rt2x00queue_write_tx_data(struct queue_entry *entry,
 	/*
 	 * Map the skb to DMA.
 	 */
-	if (rt2x00_has_cap_flag(rt2x00dev, REQUIRE_DMA) &&
+	if (test_bit(REQUIRE_DMA, &rt2x00dev->cap_flags) &&
 	    rt2x00queue_map_txskb(entry))
 		return -ENOMEM;
 
@@ -646,7 +646,7 @@ int rt2x00queue_write_tx_frame(struct data_queue *queue, struct sk_buff *skb,
 	 */
 	if (test_bit(ENTRY_TXD_ENCRYPT, &txdesc.flags) &&
 	    !test_bit(ENTRY_TXD_ENCRYPT_IV, &txdesc.flags)) {
-		if (rt2x00_has_cap_flag(queue->rt2x00dev, REQUIRE_COPY_IV))
+		if (test_bit(REQUIRE_COPY_IV, &queue->rt2x00dev->cap_flags))
 			rt2x00crypto_tx_copy_iv(skb, &txdesc);
 		else
 			rt2x00crypto_tx_remove_iv(skb, &txdesc);
@@ -660,9 +660,9 @@ int rt2x00queue_write_tx_frame(struct data_queue *queue, struct sk_buff *skb,
 	 * PCI and USB devices, while header alignment only is valid
 	 * for PCI devices.
 	 */
-	if (rt2x00_has_cap_flag(queue->rt2x00dev, REQUIRE_L2PAD))
+	if (test_bit(REQUIRE_L2PAD, &queue->rt2x00dev->cap_flags))
 		rt2x00queue_insert_l2pad(skb, txdesc.header_length);
-	else if (rt2x00_has_cap_flag(queue->rt2x00dev, REQUIRE_DMA))
+	else if (test_bit(REQUIRE_DMA, &queue->rt2x00dev->cap_flags))
 		rt2x00queue_align_frame(skb);
 
 	/*
@@ -728,6 +728,8 @@ int rt2x00queue_clear_beacon(struct rt2x00_dev *rt2x00dev,
 	if (unlikely(!intf->beacon))
 		return -ENOBUFS;
 
+	mutex_lock(&intf->beacon_skb_mutex);
+
 	/*
 	 * Clean up the beacon skb.
 	 */
@@ -740,11 +742,13 @@ int rt2x00queue_clear_beacon(struct rt2x00_dev *rt2x00dev,
 	if (rt2x00dev->ops->lib->clear_beacon)
 		rt2x00dev->ops->lib->clear_beacon(intf->beacon);
 
+	mutex_unlock(&intf->beacon_skb_mutex);
+
 	return 0;
 }
 
-int rt2x00queue_update_beacon(struct rt2x00_dev *rt2x00dev,
-			      struct ieee80211_vif *vif)
+int rt2x00queue_update_beacon_locked(struct rt2x00_dev *rt2x00dev,
+				     struct ieee80211_vif *vif)
 {
 	struct rt2x00_intf *intf = vif_to_intf(vif);
 	struct skb_frame_desc *skbdesc;
@@ -783,6 +787,19 @@ int rt2x00queue_update_beacon(struct rt2x00_dev *rt2x00dev,
 
 	return 0;
 
+}
+
+int rt2x00queue_update_beacon(struct rt2x00_dev *rt2x00dev,
+			      struct ieee80211_vif *vif)
+{
+	struct rt2x00_intf *intf = vif_to_intf(vif);
+	int ret;
+
+	mutex_lock(&intf->beacon_skb_mutex);
+	ret = rt2x00queue_update_beacon_locked(rt2x00dev, vif);
+	mutex_unlock(&intf->beacon_skb_mutex);
+
+	return ret;
 }
 
 bool rt2x00queue_for_each_entry(struct data_queue *queue,
@@ -1178,7 +1195,7 @@ int rt2x00queue_initialize(struct rt2x00_dev *rt2x00dev)
 	if (status)
 		goto exit;
 
-	if (rt2x00_has_cap_flag(rt2x00dev, REQUIRE_ATIM_QUEUE)) {
+	if (test_bit(REQUIRE_ATIM_QUEUE, &rt2x00dev->cap_flags)) {
 		status = rt2x00queue_alloc_entries(rt2x00dev->atim);
 		if (status)
 			goto exit;
@@ -1234,7 +1251,7 @@ int rt2x00queue_allocate(struct rt2x00_dev *rt2x00dev)
 	struct data_queue *queue;
 	enum data_queue_qid qid;
 	unsigned int req_atim =
-	    rt2x00_has_cap_flag(rt2x00dev, REQUIRE_ATIM_QUEUE);
+	    !!test_bit(REQUIRE_ATIM_QUEUE, &rt2x00dev->cap_flags);
 
 	/*
 	 * We need the following queues:

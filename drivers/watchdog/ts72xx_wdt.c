@@ -61,7 +61,7 @@ struct ts72xx_wdt {
 	struct platform_device *pdev;
 };
 
-static struct platform_device *ts72xx_wdt_pdev;
+struct platform_device *ts72xx_wdt_pdev;
 
 /*
  * TS-72xx Watchdog supports following timeouts (value written
@@ -394,8 +394,10 @@ static int ts72xx_wdt_probe(struct platform_device *pdev)
 	int error = 0;
 
 	wdt = devm_kzalloc(&pdev->dev, sizeof(struct ts72xx_wdt), GFP_KERNEL);
-	if (!wdt)
+	if (!wdt) {
+		dev_err(&pdev->dev, "failed to allocate memory\n");
 		return -ENOMEM;
+	}
 
 	r1 = platform_get_resource(pdev, IORESOURCE_MEM, 0);
 	wdt->control_reg = devm_ioremap_resource(&pdev->dev, r1);
@@ -428,8 +430,11 @@ static int ts72xx_wdt_probe(struct platform_device *pdev)
 
 static int ts72xx_wdt_remove(struct platform_device *pdev)
 {
-	misc_deregister(&ts72xx_wdt_miscdev);
-	return 0;
+	int error;
+
+	error = misc_deregister(&ts72xx_wdt_miscdev);
+
+	return error;
 }
 
 static struct platform_driver ts72xx_wdt_driver = {
@@ -437,6 +442,7 @@ static struct platform_driver ts72xx_wdt_driver = {
 	.remove		= ts72xx_wdt_remove,
 	.driver		= {
 		.name	= "ts72xx-wdt",
+		.owner	= THIS_MODULE,
 	},
 };
 

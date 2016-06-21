@@ -41,7 +41,7 @@
 
 struct atm_flow_data {
 	struct Qdisc		*q;	/* FIFO, TBF, etc. */
-	struct tcf_proto __rcu	*filter_list;
+	struct tcf_proto	*filter_list;
 	struct atm_vcc		*vcc;	/* VCC; NULL if VCC is closed */
 	void			(*old_pop)(struct atm_vcc *vcc,
 					   struct sk_buff *skb); /* chaining */
@@ -273,7 +273,7 @@ static int atm_tc_change(struct Qdisc *sch, u32 classid, u32 parent,
 		error = -ENOBUFS;
 		goto err_out;
 	}
-	RCU_INIT_POINTER(flow->filter_list, NULL);
+	flow->filter_list = NULL;
 	flow->q = qdisc_create_dflt(sch->dev_queue, &pfifo_qdisc_ops, classid);
 	if (!flow->q)
 		flow->q = &noop_qdisc;
@@ -311,7 +311,7 @@ static int atm_tc_delete(struct Qdisc *sch, unsigned long arg)
 	pr_debug("atm_tc_delete(sch %p,[qdisc %p],flow %p)\n", sch, p, flow);
 	if (list_empty(&flow->list))
 		return -EINVAL;
-	if (rcu_access_pointer(flow->filter_list) || flow == &p->link)
+	if (flow->filter_list || flow == &p->link)
 		return -EBUSY;
 	/*
 	 * Reference count must be 2: one for "keepalive" (set at class
@@ -345,8 +345,7 @@ static void atm_tc_walk(struct Qdisc *sch, struct qdisc_walker *walker)
 	}
 }
 
-static struct tcf_proto __rcu **atm_tc_find_tcf(struct Qdisc *sch,
-						unsigned long cl)
+static struct tcf_proto **atm_tc_find_tcf(struct Qdisc *sch, unsigned long cl)
 {
 	struct atm_qdisc_data *p = qdisc_priv(sch);
 	struct atm_flow_data *flow = (struct atm_flow_data *)cl;
@@ -370,12 +369,11 @@ static int atm_tc_enqueue(struct sk_buff *skb, struct Qdisc *sch)
 	flow = NULL;
 	if (TC_H_MAJ(skb->priority) != sch->handle ||
 	    !(flow = (struct atm_flow_data *)atm_tc_get(sch, skb->priority))) {
-		struct tcf_proto *fl;
-
 		list_for_each_entry(flow, &p->flows, list) {
-			fl = rcu_dereference_bh(flow->filter_list);
-			if (fl) {
-				result = tc_classify(skb, fl, &res, true);
+			if (flow->filter_list) {
+				result = tc_classify_compat(skb,
+							    flow->filter_list,
+							    &res);
 				if (result < 0)
 					continue;
 				flow = (struct atm_flow_data *)res.class;
@@ -417,7 +415,7 @@ done:
 	if (ret != NET_XMIT_SUCCESS) {
 drop: __maybe_unused
 		if (net_xmit_drop_count(ret)) {
-			qdisc_qstats_drop(sch);
+			sch->qstats.drops++;
 			if (flow)
 				flow->qstats.drops++;
 		}
@@ -546,7 +544,7 @@ static int atm_tc_init(struct Qdisc *sch, struct nlattr *opt)
 	if (!p->link.q)
 		p->link.q = &noop_qdisc;
 	pr_debug("atm_tc_init: link (%p) qdisc %p\n", &p->link, p->link.q);
-	RCU_INIT_POINTER(p->link.filter_list, NULL);
+	p->link.filter_list = NULL;
 	p->link.vcc = NULL;
 	p->link.sock = NULL;
 	p->link.classid = sch->handle;
@@ -625,7 +623,8 @@ static int atm_tc_dump_class(struct Qdisc *sch, unsigned long cl,
 		if (nla_put_u32(skb, TCA_ATM_EXCESS, 0))
 			goto nla_put_failure;
 	}
-	return nla_nest_end(skb, nest);
+	nla_nest_end(skb, nest);
+	return skb->len;
 
 nla_put_failure:
 	nla_nest_cancel(skb, nest);
@@ -637,8 +636,10 @@ atm_tc_dump_class_stats(struct Qdisc *sch, unsigned long arg,
 {
 	struct atm_flow_data *flow = (struct atm_flow_data *)arg;
 
-	if (gnet_stats_copy_basic(d, NULL, &flow->bstats) < 0 ||
-	    gnet_stats_copy_queue(d, NULL, &flow->qstats, flow->q->q.qlen) < 0)
+	flow->qstats.qlen = flow->q->q.qlen;
+
+	if (gnet_stats_copy_basic(d, &flow->bstats) < 0 ||
+	    gnet_stats_copy_queue(d, &flow->qstats) < 0)
 		return -1;
 
 	return 0;

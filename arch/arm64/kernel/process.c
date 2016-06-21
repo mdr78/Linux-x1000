@@ -20,8 +20,6 @@
 
 #include <stdarg.h>
 
-#include <linux/compat.h>
-#include <linux/efi.h>
 #include <linux/export.h>
 #include <linux/sched.h>
 #include <linux/kernel.h>
@@ -35,6 +33,7 @@
 #include <linux/kallsyms.h>
 #include <linux/init.h>
 #include <linux/cpu.h>
+#include <linux/cpuidle.h>
 #include <linux/elfcore.h>
 #include <linux/pm.h>
 #include <linux/tick.h>
@@ -44,7 +43,6 @@
 #include <linux/hw_breakpoint.h>
 #include <linux/personality.h>
 #include <linux/notifier.h>
-#include <trace/events/power.h>
 
 #include <asm/compat.h>
 #include <asm/cacheflush.h>
@@ -53,11 +51,30 @@
 #include <asm/processor.h>
 #include <asm/stacktrace.h>
 
-#ifdef CONFIG_CC_STACKPROTECTOR
-#include <linux/stackprotector.h>
-unsigned long __stack_chk_guard __read_mostly;
-EXPORT_SYMBOL(__stack_chk_guard);
-#endif
+static void setup_restart(void)
+{
+	/*
+	 * Tell the mm system that we are going to reboot -
+	 * we may need it to insert some 1:1 mappings so that
+	 * soft boot works.
+	 */
+	setup_mm_for_reboot();
+
+	/* Clean and invalidate caches */
+	flush_cache_all();
+
+	/* Turn D-cache off */
+	cpu_cache_off();
+
+	/* Push out any further dirty data, and ensure cache is empty */
+	flush_cache_all();
+}
+
+void soft_restart(unsigned long addr)
+{
+	setup_restart();
+	cpu_reset(addr);
+}
 
 /*
  * Function pointers to optional machine specific functions
@@ -66,6 +83,7 @@ void (*pm_power_off)(void);
 EXPORT_SYMBOL_GPL(pm_power_off);
 
 void (*arm_pm_restart)(enum reboot_mode reboot_mode, const char *cmd);
+EXPORT_SYMBOL_GPL(arm_pm_restart);
 
 /*
  * This is our default idle handler.
@@ -76,10 +94,10 @@ void arch_cpu_idle(void)
 	 * This should do all the clock switching and wait for interrupt
 	 * tricks
 	 */
-	trace_cpu_idle_rcuidle(1, smp_processor_id());
-	cpu_do_idle();
-	local_irq_enable();
-	trace_cpu_idle_rcuidle(PWR_EVENT_EXIT, smp_processor_id());
+	if (cpuidle_idle_call()) {
+		cpu_do_idle();
+		local_irq_enable();
+	}
 }
 
 #ifdef CONFIG_HOTPLUG_CPU
@@ -89,73 +107,36 @@ void arch_cpu_idle_dead(void)
 }
 #endif
 
-/*
- * Called by kexec, immediately prior to machine_kexec().
- *
- * This must completely disable all secondary CPUs; simply causing those CPUs
- * to execute e.g. a RAM-based pin loop is not sufficient. This allows the
- * kexec'd kernel to use any and all RAM as it sees fit, without having to
- * avoid any code or data used by any SW CPU pin loop. The CPU hotplug
- * functionality embodied in disable_nonboot_cpus() to achieve this.
- */
 void machine_shutdown(void)
 {
-	disable_nonboot_cpus();
+#ifdef CONFIG_SMP
+	smp_send_stop();
+#endif
 }
 
-/*
- * Halting simply requires that the secondary CPUs stop performing any
- * activity (executing tasks, handling interrupts). smp_send_stop()
- * achieves this.
- */
 void machine_halt(void)
 {
-	local_irq_disable();
-	smp_send_stop();
+	machine_shutdown();
 	while (1);
 }
 
-/*
- * Power-off simply requires that the secondary CPUs stop performing any
- * activity (executing tasks, handling interrupts). smp_send_stop()
- * achieves this. When the system power is turned off, it will take all CPUs
- * with it.
- */
 void machine_power_off(void)
 {
-	local_irq_disable();
-	smp_send_stop();
+	machine_shutdown();
 	if (pm_power_off)
 		pm_power_off();
 }
 
-/*
- * Restart requires that the secondary CPUs stop performing any activity
- * while the primary CPU resets the system. Systems with multiple CPUs must
- * provide a HW restart implementation, to ensure that all CPUs reset at once.
- * This is required so that any code running after reset on the primary CPU
- * doesn't have to co-ordinate with other CPUs to ensure they aren't still
- * executing pre-reset code, and using RAM that the primary CPU's code wishes
- * to use. Implementing such co-ordination would be essentially impossible.
- */
 void machine_restart(char *cmd)
 {
+	machine_shutdown();
+
 	/* Disable interrupts first */
 	local_irq_disable();
-	smp_send_stop();
-
-	/*
-	 * UpdateCapsule() depends on the system being reset via
-	 * ResetSystem().
-	 */
-	if (efi_enabled(EFI_RUNTIME_SERVICES))
-		efi_reboot(reboot_mode, NULL);
 
 	/* Now call the architecture specific reboot code. */
 	if (arm_pm_restart)
 		arm_pm_restart(reboot_mode, cmd);
-	else
-		do_kernel_restart(cmd);
 
 	/*
 	 * Whoops - the architecture was unable to reboot.
@@ -236,8 +217,7 @@ void release_thread(struct task_struct *dead_task)
 
 int arch_dup_task_struct(struct task_struct *dst, struct task_struct *src)
 {
-	if (current->mm)
-		fpsimd_preserve_current_state();
+	fpsimd_save_state(&current->thread.fpsimd_state);
 	*dst = *src;
 	return 0;
 }
@@ -248,35 +228,35 @@ int copy_thread(unsigned long clone_flags, unsigned long stack_start,
 		unsigned long stk_sz, struct task_struct *p)
 {
 	struct pt_regs *childregs = task_pt_regs(p);
+	unsigned long tls = p->thread.tp_value;
 
 	memset(&p->thread.cpu_context, 0, sizeof(struct cpu_context));
 
 	if (likely(!(p->flags & PF_KTHREAD))) {
 		*childregs = *current_pt_regs();
 		childregs->regs[0] = 0;
-
-		/*
-		 * Read the current TLS pointer from tpidr_el0 as it may be
-		 * out-of-sync with the saved value.
-		 */
-		asm("mrs %0, tpidr_el0" : "=r" (*task_user_tls(p)));
-
-		if (stack_start) {
-			if (is_compat_thread(task_thread_info(p)))
+		if (is_compat_thread(task_thread_info(p))) {
+			if (stack_start)
 				childregs->compat_sp = stack_start;
-			/* 16-byte aligned stack mandatory on AArch64 */
-			else if (stack_start & 15)
-				return -EINVAL;
-			else
+		} else {
+			/*
+			 * Read the current TLS pointer from tpidr_el0 as it may be
+			 * out-of-sync with the saved value.
+			 */
+			asm("mrs %0, tpidr_el0" : "=r" (tls));
+			if (stack_start) {
+				/* 16-byte aligned stack mandatory on AArch64 */
+				if (stack_start & 15)
+					return -EINVAL;
 				childregs->sp = stack_start;
+			}
 		}
-
 		/*
 		 * If a TLS pointer was passed to clone (4th argument), use it
 		 * for the new thread.
 		 */
 		if (clone_flags & CLONE_SETTLS)
-			p->thread.tp_value = childregs->regs[3];
+			tls = childregs->regs[3];
 	} else {
 		memset(childregs, 0, sizeof(struct pt_regs));
 		childregs->pstate = PSR_MODE_EL1h;
@@ -285,6 +265,7 @@ int copy_thread(unsigned long clone_flags, unsigned long stack_start,
 	}
 	p->thread.cpu_context.pc = (unsigned long)ret_from_fork;
 	p->thread.cpu_context.sp = (unsigned long)childregs;
+	p->thread.tp_value = tls;
 
 	ptrace_hw_copy_thread(p);
 
@@ -295,12 +276,18 @@ static void tls_thread_switch(struct task_struct *next)
 {
 	unsigned long tpidr, tpidrro;
 
-	asm("mrs %0, tpidr_el0" : "=r" (tpidr));
-	*task_user_tls(current) = tpidr;
+	if (!is_compat_task()) {
+		asm("mrs %0, tpidr_el0" : "=r" (tpidr));
+		current->thread.tp_value = tpidr;
+	}
 
-	tpidr = *task_user_tls(next);
-	tpidrro = is_compat_thread(task_thread_info(next)) ?
-		  next->thread.tp_value : 0;
+	if (is_compat_thread(task_thread_info(next))) {
+		tpidr = 0;
+		tpidrro = next->thread.tp_value;
+	} else {
+		tpidr = next->thread.tp_value;
+		tpidrro = 0;
+	}
 
 	asm(
 	"	msr	tpidr_el0, %0\n"
@@ -325,7 +312,7 @@ struct task_struct *__switch_to(struct task_struct *prev,
 	 * Complete any pending TLB or cache maintenance on this CPU in case
 	 * the thread migrates to a different CPU.
 	 */
-	dsb(ish);
+	dsb();
 
 	/* the actual thread switch */
 	last = cpu_switch_to(prev, next);
@@ -372,4 +359,9 @@ static unsigned long randomize_base(unsigned long base)
 unsigned long arch_randomize_brk(struct mm_struct *mm)
 {
 	return randomize_base(mm->brk);
+}
+
+unsigned long randomize_et_dyn(unsigned long base)
+{
+	return randomize_base(base);
 }

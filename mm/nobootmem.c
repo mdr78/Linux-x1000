@@ -37,20 +37,11 @@ static void * __init __alloc_memory_core_early(int nid, u64 size, u64 align,
 {
 	void *ptr;
 	u64 addr;
-	ulong flags = choose_memblock_flags();
 
 	if (limit > memblock.current_limit)
 		limit = memblock.current_limit;
 
-again:
-	addr = memblock_find_in_range_node(size, align, goal, limit, nid,
-					   flags);
-	if (!addr && (flags & MEMBLOCK_MIRROR)) {
-		flags &= ~MEMBLOCK_MIRROR;
-		pr_warn("Could not allocate %pap bytes of mirrored memory\n",
-			&size);
-		goto again;
-	}
+	addr = memblock_find_in_range_node(size, align, goal, limit, nid);
 	if (!addr)
 		return NULL;
 
@@ -86,7 +77,7 @@ void __init free_bootmem_late(unsigned long addr, unsigned long size)
 	end = PFN_DOWN(addr + size);
 
 	for (; cursor < end; cursor++) {
-		__free_pages_bootmem(pfn_to_page(cursor), cursor, 0);
+		__free_pages_bootmem(pfn_to_page(cursor), 0);
 		totalram_pages++;
 	}
 }
@@ -101,7 +92,7 @@ static void __init __free_pages_memory(unsigned long start, unsigned long end)
 		while (start + (1UL << order) > end)
 			order--;
 
-		__free_pages_bootmem(pfn_to_page(start), start, order);
+		__free_pages_bootmem(pfn_to_page(start), order);
 
 		start += (1UL << order);
 	}
@@ -128,13 +119,7 @@ static unsigned long __init free_low_memory_core_early(void)
 	phys_addr_t start, end;
 	u64 i;
 
-	memblock_clear_hotplug(0, -1);
-
-	for_each_reserved_mem_region(i, &start, &end)
-		reserve_bootmem_region(start, end);
-
-	for_each_free_mem_range(i, NUMA_NO_NODE, MEMBLOCK_NONE, &start, &end,
-				NULL)
+	for_each_free_mem_range(i, NUMA_NO_NODE, &start, &end, NULL)
 		count += __free_memory_core(start, end);
 
 #ifdef CONFIG_ARCH_DISCARD_MEMBLOCK
@@ -158,10 +143,12 @@ static unsigned long __init free_low_memory_core_early(void)
 
 static int reset_managed_pages_done __initdata;
 
-void reset_node_managed_pages(pg_data_t *pgdat)
+static inline void __init reset_node_managed_pages(pg_data_t *pgdat)
 {
 	struct zone *z;
 
+	if (reset_managed_pages_done)
+		return;
 	for (z = pgdat->node_zones; z < pgdat->node_zones + MAX_NR_ZONES; z++)
 		z->managed_pages = 0;
 }
@@ -170,12 +157,8 @@ void __init reset_all_zones_managed_pages(void)
 {
 	struct pglist_data *pgdat;
 
-	if (reset_managed_pages_done)
-		return;
-
 	for_each_online_pgdat(pgdat)
 		reset_node_managed_pages(pgdat);
-
 	reset_managed_pages_done = 1;
 }
 
@@ -214,6 +197,7 @@ unsigned long __init free_all_bootmem(void)
 void __init free_bootmem_node(pg_data_t *pgdat, unsigned long physaddr,
 			      unsigned long size)
 {
+	kmemleak_free_part(__va(physaddr), size);
 	memblock_free(physaddr, size);
 }
 
@@ -228,6 +212,7 @@ void __init free_bootmem_node(pg_data_t *pgdat, unsigned long physaddr,
  */
 void __init free_bootmem(unsigned long addr, unsigned long size)
 {
+	kmemleak_free_part(__va(addr), size);
 	memblock_free(addr, size);
 }
 
@@ -349,7 +334,7 @@ void * __init __alloc_bootmem_node_nopanic(pg_data_t *pgdat, unsigned long size,
 	return ___alloc_bootmem_node_nopanic(pgdat, size, align, goal, 0);
 }
 
-static void * __init ___alloc_bootmem_node(pg_data_t *pgdat, unsigned long size,
+void * __init ___alloc_bootmem_node(pg_data_t *pgdat, unsigned long size,
 				    unsigned long align, unsigned long goal,
 				    unsigned long limit)
 {

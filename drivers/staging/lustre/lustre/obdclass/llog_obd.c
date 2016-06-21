@@ -36,16 +36,17 @@
 
 #define DEBUG_SUBSYSTEM S_LOG
 
-#include "../include/obd_class.h"
-#include "../include/lustre_log.h"
+
+#include <obd_class.h>
+#include <lustre_log.h>
 #include "llog_internal.h"
 
 /* helper functions for calling the llog obd methods */
-static struct llog_ctxt *llog_new_ctxt(struct obd_device *obd)
+static struct llog_ctxt* llog_new_ctxt(struct obd_device *obd)
 {
 	struct llog_ctxt *ctxt;
 
-	ctxt = kzalloc(sizeof(*ctxt), GFP_NOFS);
+	OBD_ALLOC_PTR(ctxt);
 	if (!ctxt)
 		return NULL;
 
@@ -65,7 +66,7 @@ static void llog_ctxt_destroy(struct llog_ctxt *ctxt)
 		class_import_put(ctxt->loc_imp);
 		ctxt->loc_imp = NULL;
 	}
-	kfree(ctxt);
+	OBD_FREE_PTR(ctxt);
 }
 
 int __llog_ctxt_put(const struct lu_env *env, struct llog_ctxt *ctxt)
@@ -210,6 +211,88 @@ int llog_setup(const struct lu_env *env, struct obd_device *obd,
 	return rc;
 }
 EXPORT_SYMBOL(llog_setup);
+
+int llog_sync(struct llog_ctxt *ctxt, struct obd_export *exp, int flags)
+{
+	int rc = 0;
+
+	if (!ctxt)
+		return 0;
+
+	if (CTXTP(ctxt, sync))
+		rc = CTXTP(ctxt, sync)(ctxt, exp, flags);
+
+	return rc;
+}
+EXPORT_SYMBOL(llog_sync);
+
+int llog_obd_add(const struct lu_env *env, struct llog_ctxt *ctxt,
+		 struct llog_rec_hdr *rec, struct lov_stripe_md *lsm,
+		 struct llog_cookie *logcookies, int numcookies)
+{
+	int raised, rc;
+
+	if (!ctxt) {
+		CERROR("No ctxt\n");
+		return -ENODEV;
+	}
+
+	if (ctxt->loc_flags & LLOG_CTXT_FLAG_UNINITIALIZED)
+		return -ENXIO;
+
+	CTXT_CHECK_OP(ctxt, obd_add, -EOPNOTSUPP);
+	raised = cfs_cap_raised(CFS_CAP_SYS_RESOURCE);
+	if (!raised)
+		cfs_cap_raise(CFS_CAP_SYS_RESOURCE);
+	rc = CTXTP(ctxt, obd_add)(env, ctxt, rec, lsm, logcookies,
+				  numcookies);
+	if (!raised)
+		cfs_cap_lower(CFS_CAP_SYS_RESOURCE);
+	return rc;
+}
+EXPORT_SYMBOL(llog_obd_add);
+
+int llog_cancel(const struct lu_env *env, struct llog_ctxt *ctxt,
+		struct lov_stripe_md *lsm, int count,
+		struct llog_cookie *cookies, int flags)
+{
+	int rc;
+
+	if (!ctxt) {
+		CERROR("No ctxt\n");
+		return -ENODEV;
+	}
+
+	CTXT_CHECK_OP(ctxt, cancel, -EOPNOTSUPP);
+	rc = CTXTP(ctxt, cancel)(env, ctxt, lsm, count, cookies, flags);
+	return rc;
+}
+EXPORT_SYMBOL(llog_cancel);
+
+int obd_llog_init(struct obd_device *obd, struct obd_llog_group *olg,
+		  struct obd_device *disk_obd, int *index)
+{
+	int rc;
+
+	OBD_CHECK_DT_OP(obd, llog_init, 0);
+	OBD_COUNTER_INCREMENT(obd, llog_init);
+
+	rc = OBP(obd, llog_init)(obd, olg, disk_obd, index);
+	return rc;
+}
+EXPORT_SYMBOL(obd_llog_init);
+
+int obd_llog_finish(struct obd_device *obd, int count)
+{
+	int rc;
+
+	OBD_CHECK_DT_OP(obd, llog_finish, 0);
+	OBD_COUNTER_INCREMENT(obd, llog_finish);
+
+	rc = OBP(obd, llog_finish)(obd, count);
+	return rc;
+}
+EXPORT_SYMBOL(obd_llog_finish);
 
 /* context key constructor/destructor: llog_key_init, llog_key_fini */
 LU_KEY_INIT_FINI(llog, struct llog_thread_info);

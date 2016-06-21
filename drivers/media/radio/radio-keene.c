@@ -265,7 +265,7 @@ static int keene_s_ctrl(struct v4l2_ctrl *ctrl)
 		return keene_cmd_set(radio);
 
 	case V4L2_CID_AUDIO_COMPRESSION_GAIN:
-		radio->tx = db2tx[(ctrl->val - (s32)ctrl->minimum) / (s32)ctrl->step];
+		radio->tx = db2tx[(ctrl->val - ctrl->minimum) / ctrl->step];
 		return keene_cmd_set(radio);
 	}
 	return -EINVAL;
@@ -380,6 +380,7 @@ static int usb_keene_probe(struct usb_interface *intf,
 	usb_set_intfdata(intf, &radio->v4l2_dev);
 
 	video_set_drvdata(&radio->vdev, radio);
+	set_bit(V4L2_FL_USE_FH_PRIO, &radio->vdev.flags);
 
 	/* at least 11ms is needed in order to settle hardware */
 	msleep(20);
@@ -415,5 +416,22 @@ static struct usb_driver usb_keene_driver = {
 	.reset_resume		= usb_keene_resume,
 };
 
-module_usb_driver(usb_keene_driver);
+static int __init keene_init(void)
+{
+	int retval = usb_register(&usb_keene_driver);
+
+	if (retval)
+		pr_err(KBUILD_MODNAME
+			": usb_register failed. Error number %d\n", retval);
+
+	return retval;
+}
+
+static void __exit keene_exit(void)
+{
+	usb_deregister(&usb_keene_driver);
+}
+
+module_init(keene_init);
+module_exit(keene_exit);
 

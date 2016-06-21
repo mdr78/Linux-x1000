@@ -1,5 +1,6 @@
 #include "misc.h"
 
+#ifdef CONFIG_RANDOMIZE_BASE
 #include <asm/msr.h>
 #include <asm/archrandom.h>
 #include <asm/e820.h>
@@ -82,7 +83,7 @@ static unsigned long get_random_long(void)
 
 	if (has_cpuflag(X86_FEATURE_TSC)) {
 		debug_putstr(" RDTSC");
-		raw = rdtsc();
+		rdtscll(raw);
 
 		random ^= raw;
 		use_i8254 = false;
@@ -194,7 +195,7 @@ static bool mem_avoid_overlap(struct mem_vector *img)
 	while (ptr) {
 		struct mem_vector avoid;
 
-		avoid.start = (unsigned long)ptr;
+		avoid.start = (u64)ptr;
 		avoid.size = sizeof(*ptr) + ptr->len;
 
 		if (mem_overlaps(img, &avoid))
@@ -295,8 +296,7 @@ static unsigned long find_random_addr(unsigned long minimum,
 	return slots_fetch_random();
 }
 
-unsigned char *choose_kernel_location(struct boot_params *boot_params,
-				      unsigned char *input,
+unsigned char *choose_kernel_location(unsigned char *input,
 				      unsigned long input_size,
 				      unsigned char *output,
 				      unsigned long output_size)
@@ -304,19 +304,10 @@ unsigned char *choose_kernel_location(struct boot_params *boot_params,
 	unsigned long choice = (unsigned long)output;
 	unsigned long random;
 
-#ifdef CONFIG_HIBERNATION
-	if (!cmdline_find_option_bool("kaslr")) {
-		debug_putstr("KASLR disabled by default...\n");
-		goto out;
-	}
-#else
 	if (cmdline_find_option_bool("nokaslr")) {
-		debug_putstr("KASLR disabled by cmdline...\n");
+		debug_putstr("KASLR disabled...\n");
 		goto out;
 	}
-#endif
-
-	boot_params->hdr.loadflags |= KASLR_FLAG;
 
 	/* Record the various known unsafe memory ranges. */
 	mem_avoid_init((unsigned long)input, input_size,
@@ -337,3 +328,5 @@ unsigned char *choose_kernel_location(struct boot_params *boot_params,
 out:
 	return (unsigned char *)choice;
 }
+
+#endif /* CONFIG_RANDOMIZE_BASE */

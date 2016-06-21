@@ -101,11 +101,12 @@
 struct tbf_sched_data {
 /* Parameters */
 	u32		limit;		/* Maximal length of backlog: bytes */
-	u32		max_size;
 	s64		buffer;		/* Token bucket depth/rate: MUST BE >= MTU/B */
 	s64		mtu;
+	u32		max_size;
 	struct psched_ratecfg rate;
 	struct psched_ratecfg peak;
+	bool peak_present;
 
 /* Variables */
 	s64	tokens;			/* Current number of B tokens */
@@ -175,7 +176,7 @@ static int tbf_segment(struct sk_buff *skb, struct Qdisc *sch)
 		ret = qdisc_enqueue(segs, q->qdisc);
 		if (ret != NET_XMIT_SUCCESS) {
 			if (net_xmit_drop_count(ret))
-				qdisc_qstats_drop(sch);
+				sch->qstats.drops++;
 		} else {
 			nb++;
 		}
@@ -201,7 +202,7 @@ static int tbf_enqueue(struct sk_buff *skb, struct Qdisc *sch)
 	ret = qdisc_enqueue(skb, q->qdisc);
 	if (ret != NET_XMIT_SUCCESS) {
 		if (net_xmit_drop_count(ret))
-			qdisc_qstats_drop(sch);
+			sch->qstats.drops++;
 		return ret;
 	}
 
@@ -216,14 +217,9 @@ static unsigned int tbf_drop(struct Qdisc *sch)
 
 	if (q->qdisc->ops->drop && (len = q->qdisc->ops->drop(q->qdisc)) != 0) {
 		sch->q.qlen--;
-		qdisc_qstats_drop(sch);
+		sch->qstats.drops++;
 	}
 	return len;
-}
-
-static bool tbf_peak_present(const struct tbf_sched_data *q)
-{
-	return q->peak.rate_bytes_ps;
 }
 
 static struct sk_buff *tbf_dequeue(struct Qdisc *sch)
@@ -239,10 +235,10 @@ static struct sk_buff *tbf_dequeue(struct Qdisc *sch)
 		s64 ptoks = 0;
 		unsigned int len = qdisc_pkt_len(skb);
 
-		now = ktime_get_ns();
+		now = ktime_to_ns(ktime_get());
 		toks = min_t(s64, now - q->t_c, q->buffer);
 
-		if (tbf_peak_present(q)) {
+		if (q->peak_present) {
 			ptoks = toks + q->ptokens;
 			if (ptoks > q->mtu)
 				ptoks = q->mtu;
@@ -268,8 +264,7 @@ static struct sk_buff *tbf_dequeue(struct Qdisc *sch)
 		}
 
 		qdisc_watchdog_schedule_ns(&q->watchdog,
-					   now + max_t(long, -toks, -ptoks),
-					   true);
+					   now + max_t(long, -toks, -ptoks));
 
 		/* Maybe we have a shorter packet in the queue,
 		   which can be sent now. It sounds cool,
@@ -282,7 +277,7 @@ static struct sk_buff *tbf_dequeue(struct Qdisc *sch)
 		   (cf. CSZ, HPFQ, HFSC)
 		 */
 
-		qdisc_qstats_overlimit(sch);
+		sch->qstats.overlimits++;
 	}
 	return NULL;
 }
@@ -293,7 +288,7 @@ static void tbf_reset(struct Qdisc *sch)
 
 	qdisc_reset(q->qdisc);
 	sch->q.qlen = 0;
-	q->t_c = ktime_get_ns();
+	q->t_c = ktime_to_ns(ktime_get());
 	q->tokens = q->buffer;
 	q->ptokens = q->mtu;
 	qdisc_watchdog_cancel(&q->watchdog);
@@ -371,8 +366,6 @@ static int tbf_change(struct Qdisc *sch, struct nlattr *opt)
 		} else {
 			max_size = min_t(u64, max_size, psched_ns_t2l(&peak, mtu));
 		}
-	} else {
-		memset(&peak, 0, sizeof(peak));
 	}
 
 	if (max_size < psched_mtu(qdisc_dev(sch)))
@@ -417,7 +410,12 @@ static int tbf_change(struct Qdisc *sch, struct nlattr *opt)
 	q->ptokens = q->mtu;
 
 	memcpy(&q->rate, &rate, sizeof(struct psched_ratecfg));
-	memcpy(&q->peak, &peak, sizeof(struct psched_ratecfg));
+	if (qopt->peakrate.rate) {
+		memcpy(&q->peak, &peak, sizeof(struct psched_ratecfg));
+		q->peak_present = true;
+	} else {
+		q->peak_present = false;
+	}
 
 	sch_tree_unlock(sch);
 	err = 0;
@@ -432,7 +430,7 @@ static int tbf_init(struct Qdisc *sch, struct nlattr *opt)
 	if (opt == NULL)
 		return -EINVAL;
 
-	q->t_c = ktime_get_ns();
+	q->t_c = ktime_to_ns(ktime_get());
 	qdisc_watchdog_init(&q->watchdog, sch);
 	q->qdisc = &noop_qdisc;
 
@@ -460,7 +458,7 @@ static int tbf_dump(struct Qdisc *sch, struct sk_buff *skb)
 
 	opt.limit = q->limit;
 	psched_ratecfg_getrate(&opt.rate, &q->rate);
-	if (tbf_peak_present(q))
+	if (q->peak_present)
 		psched_ratecfg_getrate(&opt.peakrate, &q->peak);
 	else
 		memset(&opt.peakrate, 0, sizeof(opt.peakrate));
@@ -471,12 +469,13 @@ static int tbf_dump(struct Qdisc *sch, struct sk_buff *skb)
 	if (q->rate.rate_bytes_ps >= (1ULL << 32) &&
 	    nla_put_u64(skb, TCA_TBF_RATE64, q->rate.rate_bytes_ps))
 		goto nla_put_failure;
-	if (tbf_peak_present(q) &&
+	if (q->peak_present &&
 	    q->peak.rate_bytes_ps >= (1ULL << 32) &&
 	    nla_put_u64(skb, TCA_TBF_PRATE64, q->peak.rate_bytes_ps))
 		goto nla_put_failure;
 
-	return nla_nest_end(skb, nest);
+	nla_nest_end(skb, nest);
+	return skb->len;
 
 nla_put_failure:
 	nla_nest_cancel(skb, nest);

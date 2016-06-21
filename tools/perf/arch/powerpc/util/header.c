@@ -5,7 +5,9 @@
 #include <string.h>
 
 #include "../../util/header.h"
-#include "../../util/util.h"
+
+#define __stringify_1(x)        #x
+#define __stringify(x)          __stringify_1(x)
 
 #define mfspr(rn)       ({unsigned long rval; \
 			 asm volatile("mfspr %0," __stringify(rn) \

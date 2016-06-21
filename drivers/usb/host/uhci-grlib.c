@@ -17,7 +17,6 @@
  * (C) Copyright 2004-2007 Alan Stern, stern@rowland.harvard.edu
  */
 
-#include <linux/device.h>
 #include <linux/of_irq.h>
 #include <linux/of_address.h>
 #include <linux/of_platform.h>
@@ -114,17 +113,24 @@ static int uhci_hcd_grlib_probe(struct platform_device *op)
 	hcd->rsrc_start = res.start;
 	hcd->rsrc_len = resource_size(&res);
 
+	if (!request_mem_region(hcd->rsrc_start, hcd->rsrc_len, hcd_name)) {
+		printk(KERN_ERR "%s: request_mem_region failed\n", __FILE__);
+		rv = -EBUSY;
+		goto err_rmr;
+	}
+
 	irq = irq_of_parse_and_map(dn, 0);
 	if (irq == NO_IRQ) {
 		printk(KERN_ERR "%s: irq_of_parse_and_map failed\n", __FILE__);
 		rv = -EBUSY;
-		goto err_usb;
+		goto err_irq;
 	}
 
-	hcd->regs = devm_ioremap_resource(&op->dev, &res);
-	if (IS_ERR(hcd->regs)) {
-		rv = PTR_ERR(hcd->regs);
-		goto err_irq;
+	hcd->regs = ioremap(hcd->rsrc_start, hcd->rsrc_len);
+	if (!hcd->regs) {
+		printk(KERN_ERR "%s: ioremap failed\n", __FILE__);
+		rv = -ENOMEM;
+		goto err_ioremap;
 	}
 
 	uhci = hcd_to_uhci(hcd);
@@ -133,14 +139,18 @@ static int uhci_hcd_grlib_probe(struct platform_device *op)
 
 	rv = usb_add_hcd(hcd, irq, 0);
 	if (rv)
-		goto err_irq;
+		goto err_uhci;
 
 	device_wakeup_enable(hcd->self.controller);
 	return 0;
 
-err_irq:
+err_uhci:
+	iounmap(hcd->regs);
+err_ioremap:
 	irq_dispose_mapping(irq);
-err_usb:
+err_irq:
+	release_mem_region(hcd->rsrc_start, hcd->rsrc_len);
+err_rmr:
 	usb_put_hcd(hcd);
 
 	return rv;
@@ -154,7 +164,10 @@ static int uhci_hcd_grlib_remove(struct platform_device *op)
 
 	usb_remove_hcd(hcd);
 
+	iounmap(hcd->regs);
 	irq_dispose_mapping(hcd->irq);
+	release_mem_region(hcd->rsrc_start, hcd->rsrc_len);
+
 	usb_put_hcd(hcd);
 
 	return 0;
@@ -188,6 +201,7 @@ static struct platform_driver uhci_grlib_driver = {
 	.shutdown	= uhci_hcd_grlib_shutdown,
 	.driver = {
 		.name = "grlib-uhci",
+		.owner = THIS_MODULE,
 		.of_match_table = uhci_hcd_grlib_of_match,
 	},
 };

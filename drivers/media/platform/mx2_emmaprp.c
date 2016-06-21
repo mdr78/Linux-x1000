@@ -27,7 +27,7 @@
 #include <media/v4l2-device.h>
 #include <media/v4l2-ioctl.h>
 #include <media/videobuf2-dma-contig.h>
-#include <linux/sizes.h>
+#include <asm/sizes.h>
 
 #define EMMAPRP_MODULE_NAME "mem2mem-emmaprp"
 
@@ -207,8 +207,10 @@ struct emmaprp_dev {
 	struct mutex		dev_mutex;
 	spinlock_t		irqlock;
 
+	int			irq_emma;
 	void __iomem		*base_emma;
 	struct clk		*clk_emma_ahb, *clk_emma_ipg;
+	struct resource		*res_emma;
 
 	struct v4l2_m2m_dev	*m2m_dev;
 	struct vb2_alloc_ctx	*alloc_ctx;
@@ -351,7 +353,7 @@ static irqreturn_t emmaprp_irq(int irq_emma, void *data)
 {
 	struct emmaprp_dev *pcdev = data;
 	struct emmaprp_ctx *curr_ctx;
-	struct vb2_v4l2_buffer *src_vb, *dst_vb;
+	struct vb2_buffer *src_vb, *dst_vb;
 	unsigned long flags;
 	u32 irqst;
 
@@ -375,13 +377,8 @@ static irqreturn_t emmaprp_irq(int irq_emma, void *data)
 			src_vb = v4l2_m2m_src_buf_remove(curr_ctx->m2m_ctx);
 			dst_vb = v4l2_m2m_dst_buf_remove(curr_ctx->m2m_ctx);
 
-			dst_vb->timestamp = src_vb->timestamp;
-			dst_vb->flags &=
-				~V4L2_BUF_FLAG_TSTAMP_SRC_MASK;
-			dst_vb->flags |=
-				src_vb->flags
-				& V4L2_BUF_FLAG_TSTAMP_SRC_MASK;
-			dst_vb->timecode = src_vb->timecode;
+			src_vb->v4l2_buf.timestamp = dst_vb->v4l2_buf.timestamp;
+			src_vb->v4l2_buf.timecode = dst_vb->v4l2_buf.timecode;
 
 			spin_lock_irqsave(&pcdev->irqlock, flags);
 			v4l2_m2m_buf_done(src_vb, VB2_BUF_STATE_DONE);
@@ -402,8 +399,13 @@ static int vidioc_querycap(struct file *file, void *priv,
 {
 	strncpy(cap->driver, MEM2MEM_NAME, sizeof(cap->driver) - 1);
 	strncpy(cap->card, MEM2MEM_NAME, sizeof(cap->card) - 1);
-	cap->device_caps = V4L2_CAP_VIDEO_M2M | V4L2_CAP_STREAMING;
-	cap->capabilities = cap->device_caps | V4L2_CAP_DEVICE_CAPS;
+	/*
+	 * This is only a mem-to-mem video device. The capture and output
+	 * device capability flags are left only for backward compatibility
+	 * and are scheduled for removal.
+	 */
+	cap->capabilities = V4L2_CAP_VIDEO_CAPTURE | V4L2_CAP_VIDEO_OUTPUT |
+			    V4L2_CAP_VIDEO_M2M | V4L2_CAP_STREAMING;
 	return 0;
 }
 
@@ -689,7 +691,7 @@ static const struct v4l2_ioctl_ops emmaprp_ioctl_ops = {
  * Queue operations
  */
 static int emmaprp_queue_setup(struct vb2_queue *vq,
-				const void *parg,
+				const struct v4l2_format *fmt,
 				unsigned int *nbuffers, unsigned int *nplanes,
 				unsigned int sizes[], void *alloc_ctxs[])
 {
@@ -742,9 +744,8 @@ static int emmaprp_buf_prepare(struct vb2_buffer *vb)
 
 static void emmaprp_buf_queue(struct vb2_buffer *vb)
 {
-	struct vb2_v4l2_buffer *vbuf = to_vb2_v4l2_buffer(vb);
 	struct emmaprp_ctx *ctx = vb2_get_drv_priv(vb->vb2_queue);
-	v4l2_m2m_buf_queue(ctx->m2m_ctx, vbuf);
+	v4l2_m2m_buf_queue(ctx->m2m_ctx, vb);
 }
 
 static struct vb2_ops emmaprp_qops = {
@@ -765,7 +766,7 @@ static int queue_init(void *priv, struct vb2_queue *src_vq,
 	src_vq->buf_struct_size = sizeof(struct v4l2_m2m_buffer);
 	src_vq->ops = &emmaprp_qops;
 	src_vq->mem_ops = &vb2_dma_contig_memops;
-	src_vq->timestamp_flags = V4L2_BUF_FLAG_TIMESTAMP_COPY;
+	src_vq->timestamp_type = V4L2_BUF_FLAG_TIMESTAMP_COPY;
 
 	ret = vb2_queue_init(src_vq);
 	if (ret)
@@ -777,7 +778,7 @@ static int queue_init(void *priv, struct vb2_queue *src_vq,
 	dst_vq->buf_struct_size = sizeof(struct v4l2_m2m_buffer);
 	dst_vq->ops = &emmaprp_qops;
 	dst_vq->mem_ops = &vb2_dma_contig_memops;
-	dst_vq->timestamp_flags = V4L2_BUF_FLAG_TIMESTAMP_COPY;
+	dst_vq->timestamp_type = V4L2_BUF_FLAG_TIMESTAMP_COPY;
 
 	return vb2_queue_init(dst_vq);
 }
@@ -895,8 +896,9 @@ static int emmaprp_probe(struct platform_device *pdev)
 {
 	struct emmaprp_dev *pcdev;
 	struct video_device *vfd;
-	struct resource *res;
-	int irq, ret;
+	struct resource *res_emma;
+	int irq_emma;
+	int ret;
 
 	pcdev = devm_kzalloc(&pdev->dev, sizeof(*pcdev), GFP_KERNEL);
 	if (!pcdev)
@@ -913,10 +915,12 @@ static int emmaprp_probe(struct platform_device *pdev)
 	if (IS_ERR(pcdev->clk_emma_ahb))
 		return PTR_ERR(pcdev->clk_emma_ahb);
 
-	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
-	pcdev->base_emma = devm_ioremap_resource(&pdev->dev, res);
-	if (IS_ERR(pcdev->base_emma))
-		return PTR_ERR(pcdev->base_emma);
+	irq_emma = platform_get_irq(pdev, 0);
+	res_emma = platform_get_resource(pdev, IORESOURCE_MEM, 0);
+	if (irq_emma < 0 || res_emma == NULL) {
+		dev_err(&pdev->dev, "Missing platform resources data\n");
+		return -ENODEV;
+	}
 
 	ret = v4l2_device_register(&pdev->dev, &pcdev->v4l2_dev);
 	if (ret)
@@ -943,11 +947,20 @@ static int emmaprp_probe(struct platform_device *pdev)
 
 	platform_set_drvdata(pdev, pcdev);
 
-	irq = platform_get_irq(pdev, 0);
-	ret = devm_request_irq(&pdev->dev, irq, emmaprp_irq, 0,
-			       dev_name(&pdev->dev), pcdev);
-	if (ret)
+	pcdev->base_emma = devm_ioremap_resource(&pdev->dev, res_emma);
+	if (IS_ERR(pcdev->base_emma)) {
+		ret = PTR_ERR(pcdev->base_emma);
 		goto rel_vdev;
+	}
+
+	pcdev->irq_emma = irq_emma;
+	pcdev->res_emma = res_emma;
+
+	if (devm_request_irq(&pdev->dev, pcdev->irq_emma, emmaprp_irq,
+			     0, MEM2MEM_NAME, pcdev) < 0) {
+		ret = -ENODEV;
+		goto rel_vdev;
+	}
 
 	pcdev->alloc_ctx = vb2_dma_contig_init_ctx(&pdev->dev);
 	if (IS_ERR(pcdev->alloc_ctx)) {
@@ -981,8 +994,6 @@ rel_vdev:
 unreg_dev:
 	v4l2_device_unregister(&pcdev->v4l2_dev);
 
-	mutex_destroy(&pcdev->dev_mutex);
-
 	return ret;
 }
 
@@ -996,7 +1007,6 @@ static int emmaprp_remove(struct platform_device *pdev)
 	v4l2_m2m_release(pcdev->m2m_dev);
 	vb2_dma_contig_cleanup_ctx(pcdev->alloc_ctx);
 	v4l2_device_unregister(&pcdev->v4l2_dev);
-	mutex_destroy(&pcdev->dev_mutex);
 
 	return 0;
 }
@@ -1006,6 +1016,7 @@ static struct platform_driver emmaprp_pdrv = {
 	.remove		= emmaprp_remove,
 	.driver		= {
 		.name	= MEM2MEM_NAME,
+		.owner	= THIS_MODULE,
 	},
 };
 module_platform_driver(emmaprp_pdrv);

@@ -40,6 +40,7 @@
 #include <linux/interrupt.h>
 #include <linux/notifier.h>
 #include <linux/stat.h>
+#include <linux/netfilter.h>
 #include <linux/module.h>
 #include <linux/lapb.h>
 #include <linux/init.h>
@@ -324,8 +325,8 @@ static int lapbeth_new_device(struct net_device *dev)
 
 	ASSERT_RTNL();
 
-	ndev = alloc_netdev(sizeof(*lapbeth), "lapb%d", NET_NAME_UNKNOWN,
-			    lapbeth_setup);
+	ndev = alloc_netdev(sizeof(*lapbeth), "lapb%d", 
+			   lapbeth_setup);
 	if (!ndev)
 		goto out;
 

@@ -21,7 +21,9 @@
 
 #include <asm/processor.h>
 #include <asm/byteorder.h>
-#include <asm/barrier.h>
+
+#define smp_mb__before_clear_bit()	smp_mb()
+#define smp_mb__after_clear_bit()	smp_mb()
 
 #include <asm-generic/bitops/non-atomic.h>
 

@@ -1,7 +1,7 @@
 /*
  * Generic GPIO beeper driver
  *
- * Copyright (C) 2013-2014 Alexander Shiyan <shc_work@mail.ru>
+ * Copyright (C) 2013 Alexander Shiyan <shc_work@mail.ru>
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -11,8 +11,7 @@
 
 #include <linux/input.h>
 #include <linux/module.h>
-#include <linux/gpio/consumer.h>
-#include <linux/of.h>
+#include <linux/of_gpio.h>
 #include <linux/workqueue.h>
 #include <linux/platform_device.h>
 
@@ -20,13 +19,14 @@
 
 struct gpio_beeper {
 	struct work_struct	work;
-	struct gpio_desc	*desc;
+	int			gpio;
+	bool			active_low;
 	bool			beeping;
 };
 
 static void gpio_beeper_toggle(struct gpio_beeper *beep, bool on)
 {
-	gpiod_set_value_cansleep(beep->desc, on);
+	gpio_set_value_cansleep(beep->gpio, on ^ beep->active_low);
 }
 
 static void gpio_beeper_work(struct work_struct *work)
@@ -65,15 +65,18 @@ static void gpio_beeper_close(struct input_dev *input)
 static int gpio_beeper_probe(struct platform_device *pdev)
 {
 	struct gpio_beeper *beep;
+	enum of_gpio_flags flags;
 	struct input_dev *input;
+	unsigned long gflags;
+	int err;
 
 	beep = devm_kzalloc(&pdev->dev, sizeof(*beep), GFP_KERNEL);
 	if (!beep)
 		return -ENOMEM;
 
-	beep->desc = devm_gpiod_get(&pdev->dev, NULL, GPIOD_OUT_LOW);
-	if (IS_ERR(beep->desc))
-		return PTR_ERR(beep->desc);
+	beep->gpio = of_get_gpio_flags(pdev->dev.of_node, 0, &flags);
+	if (!gpio_is_valid(beep->gpio))
+		return beep->gpio;
 
 	input = devm_input_allocate_device(&pdev->dev);
 	if (!input)
@@ -91,23 +94,29 @@ static int gpio_beeper_probe(struct platform_device *pdev)
 
 	input_set_capability(input, EV_SND, SND_BELL);
 
+	beep->active_low = flags & OF_GPIO_ACTIVE_LOW;
+	gflags = beep->active_low ? GPIOF_OUT_INIT_HIGH : GPIOF_OUT_INIT_LOW;
+
+	err = devm_gpio_request_one(&pdev->dev, beep->gpio, gflags, pdev->name);
+	if (err)
+		return err;
+
 	input_set_drvdata(input, beep);
 
 	return input_register_device(input);
 }
 
-#ifdef CONFIG_OF
-static const struct of_device_id gpio_beeper_of_match[] = {
+static struct of_device_id gpio_beeper_of_match[] = {
 	{ .compatible = BEEPER_MODNAME, },
 	{ }
 };
 MODULE_DEVICE_TABLE(of, gpio_beeper_of_match);
-#endif
 
 static struct platform_driver gpio_beeper_platform_driver = {
 	.driver	= {
 		.name		= BEEPER_MODNAME,
-		.of_match_table	= of_match_ptr(gpio_beeper_of_match),
+		.owner		= THIS_MODULE,
+		.of_match_table	= gpio_beeper_of_match,
 	},
 	.probe	= gpio_beeper_probe,
 };

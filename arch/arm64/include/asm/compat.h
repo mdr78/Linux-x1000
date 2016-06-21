@@ -23,6 +23,7 @@
  */
 #include <linux/types.h>
 #include <linux/sched.h>
+#include <linux/ptrace.h>
 
 #define COMPAT_USER_HZ		100
 #ifdef __AARCH64EB__
@@ -160,6 +161,7 @@ typedef struct compat_siginfo {
 	int si_code;
 
 	union {
+		/* The padding is the same size as AArch64. */
 		int _pad[128/sizeof(int) - 3];
 
 		/* kill() */
@@ -203,13 +205,6 @@ typedef struct compat_siginfo {
 			compat_long_t _band;	/* POLL_IN, POLL_OUT, POLL_MSG */
 			int _fd;
 		} _sigpoll;
-
-		/* SIGSYS */
-		struct {
-			compat_uptr_t _call_addr; /* calling user insn */
-			int _syscall;	/* triggering system call number */
-			compat_uint_t _arch;	/* AUDIT_ARCH_* of syscall */
-		} _sigsys;
 	} _sifields;
 } compat_siginfo_t;
 
@@ -233,7 +228,7 @@ static inline compat_uptr_t ptr_to_compat(void __user *uptr)
 	return (u32)(unsigned long)uptr;
 }
 
-#define compat_user_stack_pointer() (user_stack_pointer(task_pt_regs(current)))
+#define compat_user_stack_pointer() (current_pt_regs()->compat_sp)
 
 static inline void __user *arch_compat_alloc_user_space(long len)
 {
@@ -309,6 +304,11 @@ static inline int is_compat_thread(struct thread_info *thread)
 }
 
 #else /* !CONFIG_COMPAT */
+
+static inline int is_compat_task(void)
+{
+	return 0;
+}
 
 static inline int is_compat_thread(struct thread_info *thread)
 {

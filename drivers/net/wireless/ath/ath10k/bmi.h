@@ -82,16 +82,6 @@ enum bmi_cmd_id {
 
 #define BMI_NVRAM_SEG_NAME_SZ 16
 
-#define BMI_PARAM_GET_EEPROM_BOARD_ID 0x10
-
-#define ATH10K_BMI_BOARD_ID_FROM_OTP_MASK   0x7c00
-#define ATH10K_BMI_BOARD_ID_FROM_OTP_LSB    10
-
-#define ATH10K_BMI_CHIP_ID_FROM_OTP_MASK    0x18000
-#define ATH10K_BMI_CHIP_ID_FROM_OTP_LSB     15
-
-#define ATH10K_BMI_BOARD_ID_STATUS_MASK 0xff
-
 struct bmi_cmd {
 	__le32 id; /* enum bmi_cmd_id */
 	union {
@@ -187,8 +177,9 @@ struct bmi_target_info {
 	u32 type;
 };
 
+
 /* in msec */
-#define BMI_COMMUNICATION_TIMEOUT_HZ (2 * HZ)
+#define BMI_COMMUNICATION_TIMEOUT_HZ (1*HZ)
 
 #define BMI_CE_NUM_TO_TARG 0
 #define BMI_CE_NUM_TO_HOST 1
@@ -210,8 +201,7 @@ int ath10k_bmi_write_memory(struct ath10k *ar, u32 address,
 									\
 		addr = host_interest_item_address(HI_ITEM(item));	\
 		ret = ath10k_bmi_read_memory(ar, addr, (u8 *)&tmp, 4); \
-		if (!ret)						\
-			*val = __le32_to_cpu(tmp);			\
+		*val = __le32_to_cpu(tmp);				\
 		ret;							\
 	 })
 
@@ -227,7 +217,7 @@ int ath10k_bmi_write_memory(struct ath10k *ar, u32 address,
 		ret;							\
 	})
 
-int ath10k_bmi_execute(struct ath10k *ar, u32 address, u32 param, u32 *result);
+int ath10k_bmi_execute(struct ath10k *ar, u32 address, u32 *param);
 int ath10k_bmi_lz_stream_start(struct ath10k *ar, u32 address);
 int ath10k_bmi_lz_data(struct ath10k *ar, const void *buffer, u32 length);
 int ath10k_bmi_fast_download(struct ath10k *ar, u32 address,

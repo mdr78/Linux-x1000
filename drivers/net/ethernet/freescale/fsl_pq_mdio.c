@@ -28,9 +28,7 @@
 #include <linux/of_device.h>
 
 #include <asm/io.h>
-#if IS_ENABLED(CONFIG_UCC_GETH)
 #include <asm/ucc.h>	/* for ucc_set_qe_mux_mii_mng() */
-#endif
 
 #include "gianfar.h"
 
@@ -104,22 +102,19 @@ static int fsl_pq_mdio_write(struct mii_bus *bus, int mii_id, int regnum,
 {
 	struct fsl_pq_mdio_priv *priv = bus->priv;
 	struct fsl_pq_mii __iomem *regs = priv->regs;
-	unsigned int timeout;
+	u32 status;
 
 	/* Set the PHY address and the register address we want to write */
-	iowrite32be((mii_id << 8) | regnum, &regs->miimadd);
+	out_be32(&regs->miimadd, (mii_id << 8) | regnum);
 
 	/* Write out the value we want */
-	iowrite32be(value, &regs->miimcon);
+	out_be32(&regs->miimcon, value);
 
 	/* Wait for the transaction to finish */
-	timeout = MII_TIMEOUT;
-	while ((ioread32be(&regs->miimind) & MIIMIND_BUSY) && timeout) {
-		cpu_relax();
-		timeout--;
-	}
+	status = spin_event_timeout(!(in_be32(&regs->miimind) &	MIIMIND_BUSY),
+				    MII_TIMEOUT, 0);
 
-	return timeout ? 0 : -ETIMEDOUT;
+	return status ? 0 : -ETIMEDOUT;
 }
 
 /*
@@ -136,29 +131,25 @@ static int fsl_pq_mdio_read(struct mii_bus *bus, int mii_id, int regnum)
 {
 	struct fsl_pq_mdio_priv *priv = bus->priv;
 	struct fsl_pq_mii __iomem *regs = priv->regs;
-	unsigned int timeout;
+	u32 status;
 	u16 value;
 
 	/* Set the PHY address and the register address we want to read */
-	iowrite32be((mii_id << 8) | regnum, &regs->miimadd);
+	out_be32(&regs->miimadd, (mii_id << 8) | regnum);
 
 	/* Clear miimcom, and then initiate a read */
-	iowrite32be(0, &regs->miimcom);
-	iowrite32be(MII_READ_COMMAND, &regs->miimcom);
+	out_be32(&regs->miimcom, 0);
+	out_be32(&regs->miimcom, MII_READ_COMMAND);
 
 	/* Wait for the transaction to finish, normally less than 100us */
-	timeout = MII_TIMEOUT;
-	while ((ioread32be(&regs->miimind) &
-	       (MIIMIND_NOTVALID | MIIMIND_BUSY)) && timeout) {
-		cpu_relax();
-		timeout--;
-	}
-
-	if (!timeout)
+	status = spin_event_timeout(!(in_be32(&regs->miimind) &
+				    (MIIMIND_NOTVALID | MIIMIND_BUSY)),
+				    MII_TIMEOUT, 0);
+	if (!status)
 		return -ETIMEDOUT;
 
 	/* Grab the value of the register from miimstat */
-	value = ioread32be(&regs->miimstat);
+	value = in_be32(&regs->miimstat);
 
 	dev_dbg(&bus->dev, "read %04x from address %x/%x\n", value, mii_id, regnum);
 	return value;
@@ -169,26 +160,23 @@ static int fsl_pq_mdio_reset(struct mii_bus *bus)
 {
 	struct fsl_pq_mdio_priv *priv = bus->priv;
 	struct fsl_pq_mii __iomem *regs = priv->regs;
-	unsigned int timeout;
+	u32 status;
 
 	mutex_lock(&bus->mdio_lock);
 
 	/* Reset the management interface */
-	iowrite32be(MIIMCFG_RESET, &regs->miimcfg);
+	out_be32(&regs->miimcfg, MIIMCFG_RESET);
 
 	/* Setup the MII Mgmt clock speed */
-	iowrite32be(MIIMCFG_INIT_VALUE, &regs->miimcfg);
+	out_be32(&regs->miimcfg, MIIMCFG_INIT_VALUE);
 
 	/* Wait until the bus is free */
-	timeout = MII_TIMEOUT;
-	while ((ioread32be(&regs->miimind) & MIIMIND_BUSY) && timeout) {
-		cpu_relax();
-		timeout--;
-	}
+	status = spin_event_timeout(!(in_be32(&regs->miimind) &	MIIMIND_BUSY),
+				    MII_TIMEOUT, 0);
 
 	mutex_unlock(&bus->mdio_lock);
 
-	if (!timeout) {
+	if (!status) {
 		dev_err(&bus->dev, "timeout waiting for MII bus\n");
 		return -EBUSY;
 	}
@@ -198,26 +186,15 @@ static int fsl_pq_mdio_reset(struct mii_bus *bus)
 
 #if defined(CONFIG_GIANFAR) || defined(CONFIG_GIANFAR_MODULE)
 /*
- * Return the TBIPA address, starting from the address
- * of the mapped GFAR MDIO registers (struct gfar)
  * This is mildly evil, but so is our hardware for doing this.
  * Also, we have to cast back to struct gfar because of
  * definition weirdness done in gianfar.h.
  */
-static uint32_t __iomem *get_gfar_tbipa_from_mdio(void __iomem *p)
+static uint32_t __iomem *get_gfar_tbipa(void __iomem *p)
 {
 	struct gfar __iomem *enet_regs = p;
 
 	return &enet_regs->tbipa;
-}
-
-/*
- * Return the TBIPA address, starting from the address
- * of the mapped GFAR MII registers (gfar_mii_regs[] within struct gfar)
- */
-static uint32_t __iomem *get_gfar_tbipa_from_mii(void __iomem *p)
-{
-	return get_gfar_tbipa_from_mdio(container_of(p, struct gfar, gfar_mii_regs));
 }
 
 /*
@@ -231,12 +208,11 @@ static uint32_t __iomem *get_etsec_tbipa(void __iomem *p)
 
 #if defined(CONFIG_UCC_GETH) || defined(CONFIG_UCC_GETH_MODULE)
 /*
- * Return the TBIPAR address for a QE MDIO node, starting from the address
- * of the mapped MII registers (struct fsl_pq_mii)
+ * Return the TBIPAR address for a QE MDIO node
  */
 static uint32_t __iomem *get_ucc_tbipa(void __iomem *p)
 {
-	struct fsl_pq_mdio __iomem *mdio = container_of(p, struct fsl_pq_mdio, mii);
+	struct fsl_pq_mdio __iomem *mdio = p;
 
 	return &mdio->utbipar;
 }
@@ -306,20 +282,20 @@ static void ucc_configure(phys_addr_t start, phys_addr_t end)
 
 #endif
 
-static const struct of_device_id fsl_pq_mdio_match[] = {
+static struct of_device_id fsl_pq_mdio_match[] = {
 #if defined(CONFIG_GIANFAR) || defined(CONFIG_GIANFAR_MODULE)
 	{
 		.compatible = "fsl,gianfar-tbi",
 		.data = &(struct fsl_pq_mdio_data) {
 			.mii_offset = 0,
-			.get_tbipa = get_gfar_tbipa_from_mii,
+			.get_tbipa = get_gfar_tbipa,
 		},
 	},
 	{
 		.compatible = "fsl,gianfar-mdio",
 		.data = &(struct fsl_pq_mdio_data) {
 			.mii_offset = 0,
-			.get_tbipa = get_gfar_tbipa_from_mii,
+			.get_tbipa = get_gfar_tbipa,
 		},
 	},
 	{
@@ -327,7 +303,7 @@ static const struct of_device_id fsl_pq_mdio_match[] = {
 		.compatible = "gianfar",
 		.data = &(struct fsl_pq_mdio_data) {
 			.mii_offset = offsetof(struct fsl_pq_mdio, mii),
-			.get_tbipa = get_gfar_tbipa_from_mdio,
+			.get_tbipa = get_gfar_tbipa,
 		},
 	},
 	{
@@ -457,17 +433,7 @@ static int fsl_pq_mdio_probe(struct platform_device *pdev)
 
 			tbipa = data->get_tbipa(priv->map);
 
-			/*
-			 * Add consistency check to make sure TBI is contained
-			 * within the mapped range (not because we would get a
-			 * segfault, rather to catch bugs in computing TBI
-			 * address). Print error message but continue anyway.
-			 */
-			if ((void *)tbipa > priv->map + resource_size(&res) - 4)
-				dev_err(&pdev->dev, "invalid register map (should be at least 0x%04zx to contain TBI address)\n",
-					((void *)tbipa - priv->map) + 4);
-
-			iowrite32be(be32_to_cpup(prop), tbipa);
+			out_be32(tbipa, be32_to_cpup(prop));
 		}
 	}
 
@@ -510,6 +476,7 @@ static int fsl_pq_mdio_remove(struct platform_device *pdev)
 static struct platform_driver fsl_pq_mdio_driver = {
 	.driver = {
 		.name = "fsl-pq_mdio",
+		.owner = THIS_MODULE,
 		.of_match_table = fsl_pq_mdio_match,
 	},
 	.probe = fsl_pq_mdio_probe,

@@ -1,7 +1,7 @@
 /*******************************************************************************
  *
  * Intel Ethernet Controller XL710 Family Linux Virtual Function Driver
- * Copyright(c) 2013 - 2014 Intel Corporation.
+ * Copyright(c) 2013 Intel Corporation.
  *
  * This program is free software; you can redistribute it and/or modify it
  * under the terms and conditions of the GNU General Public License,
@@ -11,9 +11,6 @@
  * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
  * FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for
  * more details.
- *
- * You should have received a copy of the GNU General Public License along
- * with this program.  If not, see <http://www.gnu.org/licenses/>.
  *
  * The full GNU General Public License is included in this distribution in
  * the file called "COPYING".
@@ -62,7 +59,6 @@ struct i40e_hmc_bp {
 struct i40e_hmc_pd_entry {
 	struct i40e_hmc_bp bp;
 	u32 sd_index;
-	bool rsrc_pg;
 	bool valid;
 };
 
@@ -127,8 +123,8 @@ struct i40e_hmc_info {
 		 I40E_PFHMC_SDDATALOW_PMSDBPCOUNT_SHIFT) |		\
 		((((type) == I40E_SD_TYPE_PAGED) ? 0 : 1) <<		\
 		I40E_PFHMC_SDDATALOW_PMSDTYPE_SHIFT) |			\
-		BIT(I40E_PFHMC_SDDATALOW_PMSDVALID_SHIFT);		\
-	val3 = (sd_index) | BIT_ULL(I40E_PFHMC_SDCMD_PMSDWR_SHIFT);	\
+		(1 << I40E_PFHMC_SDDATALOW_PMSDVALID_SHIFT);		\
+	val3 = (sd_index) | (1 << I40E_PFHMC_SDCMD_PMSDWR_SHIFT);	\
 	wr32((hw), I40E_PFHMC_SDDATAHIGH, val1);			\
 	wr32((hw), I40E_PFHMC_SDDATALOW, val2);				\
 	wr32((hw), I40E_PFHMC_SDCMD, val3);				\
@@ -147,7 +143,7 @@ struct i40e_hmc_info {
 		I40E_PFHMC_SDDATALOW_PMSDBPCOUNT_SHIFT) |		\
 		((((type) == I40E_SD_TYPE_PAGED) ? 0 : 1) <<		\
 		I40E_PFHMC_SDDATALOW_PMSDTYPE_SHIFT);			\
-	val3 = (sd_index) | BIT_ULL(I40E_PFHMC_SDCMD_PMSDWR_SHIFT);	\
+	val3 = (sd_index) | (1 << I40E_PFHMC_SDCMD_PMSDWR_SHIFT);	\
 	wr32((hw), I40E_PFHMC_SDDATAHIGH, 0);				\
 	wr32((hw), I40E_PFHMC_SDDATALOW, val2);				\
 	wr32((hw), I40E_PFHMC_SDCMD, val3);				\
@@ -163,6 +159,11 @@ struct i40e_hmc_info {
 	wr32((hw), I40E_PFHMC_PDINV,					\
 	    (((sd_idx) << I40E_PFHMC_PDINV_PMSDIDX_SHIFT) |		\
 	     ((pd_idx) << I40E_PFHMC_PDINV_PMPDIDX_SHIFT)))
+
+#define I40E_INVALIDATE_VF_HMC_PD(hw, sd_idx, pd_idx, hmc_fn_id)	   \
+	wr32((hw), I40E_GLHMC_VFPDINV((hmc_fn_id) - I40E_FIRST_VF_FPM_ID), \
+	     (((sd_idx) << I40E_PFHMC_PDINV_PMSDIDX_SHIFT) |		   \
+	      ((pd_idx) << I40E_PFHMC_PDINV_PMPDIDX_SHIFT)))
 
 /**
  * I40E_FIND_SD_INDEX_LIMIT - finds segment descriptor index limit
@@ -219,11 +220,10 @@ i40e_status i40e_add_sd_table_entry(struct i40e_hw *hw,
 
 i40e_status i40e_add_pd_table_entry(struct i40e_hw *hw,
 					      struct i40e_hmc_info *hmc_info,
-					      u32 pd_index,
-					      struct i40e_dma_mem *rsrc_pg);
+					      u32 pd_index);
 i40e_status i40e_remove_pd_bp(struct i40e_hw *hw,
 					struct i40e_hmc_info *hmc_info,
-					u32 idx);
+					u32 idx, bool is_pf);
 i40e_status i40e_prep_remove_sd_bp(struct i40e_hmc_info *hmc_info,
 					     u32 idx);
 i40e_status i40e_remove_sd_bp_new(struct i40e_hw *hw,

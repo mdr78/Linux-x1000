@@ -12,6 +12,7 @@
  */
 
 #include <linux/device.h>
+#include <linux/usb.h>
 #include <linux/hid.h>
 #include <linux/module.h>
 

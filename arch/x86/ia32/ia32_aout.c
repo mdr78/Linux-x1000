@@ -308,8 +308,11 @@ static int load_aout_binary(struct linux_binprm *bprm)
 		(current->mm->start_brk = N_BSSADDR(ex));
 
 	retval = setup_arg_pages(bprm, IA32_STACK_TOP, EXSTACK_DEFAULT);
-	if (retval < 0)
+	if (retval < 0) {
+		/* Someone check-me: is this error path enough? */
+		send_sig(SIGKILL, current, 0);
 		return retval;
+	}
 
 	install_exec_creds(bprm);
 
@@ -321,13 +324,17 @@ static int load_aout_binary(struct linux_binprm *bprm)
 
 		error = vm_brk(text_addr & PAGE_MASK, map_size);
 
-		if (error != (text_addr & PAGE_MASK))
+		if (error != (text_addr & PAGE_MASK)) {
+			send_sig(SIGKILL, current, 0);
 			return error;
+		}
 
 		error = read_code(bprm->file, text_addr, 32,
 				  ex.a_text + ex.a_data);
-		if ((signed long)error < 0)
+		if ((signed long)error < 0) {
+			send_sig(SIGKILL, current, 0);
 			return error;
+		}
 	} else {
 #ifdef WARN_OLD
 		static unsigned long error_time, error_time2;
@@ -342,8 +349,8 @@ static int load_aout_binary(struct linux_binprm *bprm)
 			    time_after(jiffies, error_time + 5*HZ)) {
 			printk(KERN_WARNING
 			       "fd_offset is not page aligned. Please convert "
-			       "program: %pD\n",
-			       bprm->file);
+			       "program: %s\n",
+			       bprm->file->f_path.dentry->d_name.name);
 			error_time = jiffies;
 		}
 #endif
@@ -361,16 +368,20 @@ static int load_aout_binary(struct linux_binprm *bprm)
 				MAP_EXECUTABLE | MAP_32BIT,
 				fd_offset);
 
-		if (error != N_TXTADDR(ex))
+		if (error != N_TXTADDR(ex)) {
+			send_sig(SIGKILL, current, 0);
 			return error;
+		}
 
 		error = vm_mmap(bprm->file, N_DATADDR(ex), ex.a_data,
 				PROT_READ | PROT_WRITE | PROT_EXEC,
 				MAP_FIXED | MAP_PRIVATE | MAP_DENYWRITE |
 				MAP_EXECUTABLE | MAP_32BIT,
 				fd_offset + ex.a_text);
-		if (error != N_DATADDR(ex))
+		if (error != N_DATADDR(ex)) {
+			send_sig(SIGKILL, current, 0);
 			return error;
+		}
 	}
 beyond_if:
 	set_binfmt(&aout_format);
@@ -429,8 +440,8 @@ static int load_aout_library(struct file *file)
 		if (time_after(jiffies, error_time + 5*HZ)) {
 			printk(KERN_WARNING
 			       "N_TXTOFF is not page aligned. Please convert "
-			       "library: %pD\n",
-			       file);
+			       "library: %s\n",
+			       file->f_path.dentry->d_name.name);
 			error_time = jiffies;
 		}
 #endif

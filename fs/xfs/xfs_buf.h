@@ -23,7 +23,6 @@
 #include <linux/spinlock.h>
 #include <linux/mm.h>
 #include <linux/fs.h>
-#include <linux/dax.h>
 #include <linux/buffer_head.h>
 #include <linux/uio.h>
 #include <linux/list_lru.h>
@@ -159,14 +158,12 @@ typedef struct xfs_buf {
 	struct list_head	b_lru;		/* lru list */
 	spinlock_t		b_lock;		/* internal state lock */
 	unsigned int		b_state;	/* internal state flags */
-	int			b_io_error;	/* internal IO error state */
 	wait_queue_head_t	b_waiters;	/* unpin waiters */
 	struct list_head	b_list;
 	struct xfs_perag	*b_pag;		/* contains rbtree root */
 	xfs_buftarg_t		*b_target;	/* buffer target (device) */
 	void			*b_addr;	/* virtual address of buffer */
-	struct work_struct	b_ioend_work;
-	struct workqueue_struct	*b_ioend_wq;	/* I/O completion wq */
+	struct work_struct	b_iodone_work;
 	xfs_buf_iodone_t	b_iodone;	/* I/O completion function */
 	struct completion	b_iowait;	/* queue for I/O waiters */
 	void			*b_fspriv;
@@ -181,7 +178,7 @@ typedef struct xfs_buf {
 	atomic_t		b_io_remaining;	/* #outstanding I/O requests */
 	unsigned int		b_page_count;	/* size of page array */
 	unsigned int		b_offset;	/* page offset in first page */
-	int			b_error;	/* error code on I/O */
+	unsigned short		b_error;	/* error code on I/O */
 	const struct xfs_buf_ops	*b_ops;
 
 #ifdef XFS_BUF_LOCK_TRACKING
@@ -271,9 +268,9 @@ int xfs_buf_associate_memory(struct xfs_buf *bp, void *mem, size_t length);
 
 struct xfs_buf *xfs_buf_get_uncached(struct xfs_buftarg *target, size_t numblks,
 				int flags);
-int xfs_buf_read_uncached(struct xfs_buftarg *target, xfs_daddr_t daddr,
-			  size_t numblks, int flags, struct xfs_buf **bpp,
-			  const struct xfs_buf_ops *ops);
+struct xfs_buf *xfs_buf_read_uncached(struct xfs_buftarg *target,
+				xfs_daddr_t daddr, size_t numblks, int flags,
+				const struct xfs_buf_ops *ops);
 void xfs_buf_hold(struct xfs_buf *bp);
 
 /* Releasing Buffers */
@@ -289,18 +286,25 @@ extern void xfs_buf_unlock(xfs_buf_t *);
 
 /* Buffer Read and Write Routines */
 extern int xfs_bwrite(struct xfs_buf *bp);
-extern void xfs_buf_ioend(struct xfs_buf *bp);
+extern void xfs_buf_ioend(xfs_buf_t *,	int);
 extern void xfs_buf_ioerror(xfs_buf_t *, int);
 extern void xfs_buf_ioerror_alert(struct xfs_buf *, const char *func);
-extern void xfs_buf_submit(struct xfs_buf *bp);
-extern int xfs_buf_submit_wait(struct xfs_buf *bp);
+extern void xfs_buf_iorequest(xfs_buf_t *);
+extern int xfs_buf_iowait(xfs_buf_t *);
 extern void xfs_buf_iomove(xfs_buf_t *, size_t, size_t, void *,
 				xfs_buf_rw_t);
 #define xfs_buf_zero(bp, off, len) \
 	    xfs_buf_iomove((bp), (off), (len), NULL, XBRW_ZERO)
 
+extern int xfs_bioerror_relse(struct xfs_buf *);
+
+static inline int xfs_buf_geterror(xfs_buf_t *bp)
+{
+	return bp ? bp->b_error : ENOMEM;
+}
+
 /* Buffer Utility Routines */
-extern void *xfs_buf_offset(struct xfs_buf *, size_t);
+extern xfs_caddr_t xfs_buf_offset(xfs_buf_t *, size_t);
 
 /* Delayed Write Buffer Routines */
 extern bool xfs_buf_delwri_queue(struct xfs_buf *, struct list_head *);
@@ -365,28 +369,14 @@ static inline void xfs_buf_relse(xfs_buf_t *bp)
 	xfs_buf_rele(bp);
 }
 
-static inline int
-xfs_buf_verify_cksum(struct xfs_buf *bp, unsigned long cksum_offset)
-{
-	return xfs_verify_cksum(bp->b_addr, BBTOB(bp->b_length),
-				cksum_offset);
-}
-
-static inline void
-xfs_buf_update_cksum(struct xfs_buf *bp, unsigned long cksum_offset)
-{
-	xfs_update_cksum(bp->b_addr, BBTOB(bp->b_length),
-			 cksum_offset);
-}
-
 /*
  *	Handling of buftargs.
  */
 extern xfs_buftarg_t *xfs_alloc_buftarg(struct xfs_mount *,
-			struct block_device *);
+			struct block_device *, int, const char *);
 extern void xfs_free_buftarg(struct xfs_mount *, struct xfs_buftarg *);
 extern void xfs_wait_buftarg(xfs_buftarg_t *);
-extern int xfs_setsize_buftarg(xfs_buftarg_t *, unsigned int);
+extern int xfs_setsize_buftarg(xfs_buftarg_t *, unsigned int, unsigned int);
 
 #define xfs_getsize_buftarg(buftarg)	block_size((buftarg)->bt_bdev)
 #define xfs_readonly_buftarg(buftarg)	bdev_read_only((buftarg)->bt_bdev)

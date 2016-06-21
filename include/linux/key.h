@@ -89,11 +89,6 @@ struct keyring_index_key {
 	size_t			desc_len;
 };
 
-union key_payload {
-	void __rcu		*rcu_data0;
-	void			*data[4];
-};
-
 /*****************************************************************************/
 /*
  * key reference with possession attribute handling
@@ -175,8 +170,6 @@ struct key {
 #define KEY_FLAG_INVALIDATED	7	/* set if key has been invalidated */
 #define KEY_FLAG_TRUSTED	8	/* set if key is trusted */
 #define KEY_FLAG_TRUSTED_ONLY	9	/* set if keyring only accepts links to trusted keys */
-#define KEY_FLAG_BUILTIN	10	/* set if key is builtin */
-#define KEY_FLAG_ROOT_CAN_INVAL	11	/* set if key can be invalidated by root without permission */
 
 	/* the key type and key description string
 	 * - the desc is used to match a key against search criteria
@@ -191,18 +184,28 @@ struct key {
 		};
 	};
 
+	/* type specific data
+	 * - this is used by the keyring type to index the name
+	 */
+	union {
+		struct list_head	link;
+		unsigned long		x[2];
+		void			*p[2];
+		int			reject_error;
+	} type_data;
+
 	/* key data
 	 * - this is used to hold the data actually used in cryptography or
 	 *   whatever
 	 */
 	union {
-		union key_payload payload;
-		struct {
-			/* Keyring bits */
-			struct list_head name_link;
-			struct assoc_array keys;
-		};
-		int reject_error;
+		union {
+			unsigned long		value;
+			void __rcu		*rcudata;
+			void			*data;
+			void			*data2[2];
+		} payload;
+		struct assoc_array keys;
 	};
 };
 
@@ -306,17 +309,6 @@ static inline key_serial_t key_serial(const struct key *key)
 
 extern void key_set_timeout(struct key *, unsigned);
 
-/*
- * The permissions required on a key that we're looking up.
- */
-#define	KEY_NEED_VIEW	0x01	/* Require permission to view attributes */
-#define	KEY_NEED_READ	0x02	/* Require permission to read content */
-#define	KEY_NEED_WRITE	0x04	/* Require permission to update / modify */
-#define	KEY_NEED_SEARCH	0x08	/* Require permission to search (keyring) or find (key) */
-#define	KEY_NEED_LINK	0x10	/* Require permission to link */
-#define	KEY_NEED_SETATTR 0x20	/* Require permission to change attributes */
-#define	KEY_NEED_ALL	0x3f	/* All the above permissions */
-
 /**
  * key_is_instantiated - Determine if a key has been positively instantiated
  * @key: The key to check.
@@ -331,16 +323,16 @@ static inline bool key_is_instantiated(const struct key *key)
 }
 
 #define rcu_dereference_key(KEY)					\
-	(rcu_dereference_protected((KEY)->payload.rcu_data0,		\
+	(rcu_dereference_protected((KEY)->payload.rcudata,		\
 				   rwsem_is_locked(&((struct key *)(KEY))->sem)))
 
 #define rcu_assign_keypointer(KEY, PAYLOAD)				\
 do {									\
-	rcu_assign_pointer((KEY)->payload.rcu_data0, (PAYLOAD));	\
+	rcu_assign_pointer((KEY)->payload.rcudata, (PAYLOAD));		\
 } while (0)
 
 #ifdef CONFIG_SYSCTL
-extern struct ctl_table key_sysctls[];
+extern ctl_table key_sysctls[];
 #endif
 /*
  * the userspace interface

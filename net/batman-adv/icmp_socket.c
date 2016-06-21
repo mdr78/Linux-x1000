@@ -1,4 +1,4 @@
-/* Copyright (C) 2007-2015 B.A.T.M.A.N. contributors:
+/* Copyright (C) 2007-2014 B.A.T.M.A.N. contributors:
  *
  * Marek Lindner
  *
@@ -15,39 +15,14 @@
  * along with this program; if not, see <http://www.gnu.org/licenses/>.
  */
 
-#include "icmp_socket.h"
 #include "main.h"
-
-#include <linux/atomic.h>
-#include <linux/compiler.h>
 #include <linux/debugfs.h>
-#include <linux/errno.h>
-#include <linux/etherdevice.h>
-#include <linux/export.h>
-#include <linux/fcntl.h>
-#include <linux/fs.h>
-#include <linux/if_ether.h>
-#include <linux/kernel.h>
-#include <linux/list.h>
-#include <linux/module.h>
-#include <linux/netdevice.h>
-#include <linux/pkt_sched.h>
-#include <linux/poll.h>
-#include <linux/printk.h>
-#include <linux/sched.h> /* for linux/wait.h */
-#include <linux/skbuff.h>
 #include <linux/slab.h>
-#include <linux/spinlock.h>
-#include <linux/stat.h>
-#include <linux/stddef.h>
-#include <linux/string.h>
-#include <linux/uaccess.h>
-#include <linux/wait.h>
-
-#include "hard-interface.h"
-#include "originator.h"
-#include "packet.h"
+#include "icmp_socket.h"
 #include "send.h"
+#include "hash.h"
+#include "originator.h"
+#include "hard-interface.h"
 
 static struct batadv_socket_client *batadv_socket_client_hash[256];
 
@@ -183,7 +158,6 @@ static ssize_t batadv_socket_write(struct file *file, const char __user *buff,
 	struct batadv_orig_node *orig_node = NULL;
 	struct batadv_neigh_node *neigh_node = NULL;
 	size_t packet_len = sizeof(struct batadv_icmp_packet);
-	u8 *addr;
 
 	if (len < sizeof(struct batadv_icmp_header)) {
 		batadv_dbg(BATADV_DBG_BATMAN, bat_priv,
@@ -253,10 +227,10 @@ static ssize_t batadv_socket_write(struct file *file, const char __user *buff,
 			goto dst_unreach;
 
 		icmp_packet_rr = (struct batadv_icmp_packet_rr *)icmp_header;
-		if (packet_len == sizeof(*icmp_packet_rr)) {
-			addr = neigh_node->if_incoming->net_dev->dev_addr;
-			ether_addr_copy(icmp_packet_rr->rr[0], addr);
-		}
+		if (packet_len == sizeof(*icmp_packet_rr))
+			memcpy(icmp_packet_rr->rr,
+			       neigh_node->if_incoming->net_dev->dev_addr,
+			       ETH_ALEN);
 
 		break;
 	default:
@@ -276,7 +250,7 @@ static ssize_t batadv_socket_write(struct file *file, const char __user *buff,
 		goto free_skb;
 	}
 
-	ether_addr_copy(icmp_header->orig, primary_if->net_dev->dev_addr);
+	memcpy(icmp_header->orig, primary_if->net_dev->dev_addr, ETH_ALEN);
 
 	batadv_send_skb_packet(skb, neigh_node->if_incoming, neigh_node->addr);
 	goto out;
@@ -337,8 +311,8 @@ err:
 }
 
 /**
- * batadv_socket_receive_packet - schedule an icmp packet to be sent to
- *  userspace on an icmp socket.
+ * batadv_socket_receive_packet - schedule an icmp packet to be sent to userspace
+ *  on an icmp socket.
  * @socket_client: the socket this packet belongs to
  * @icmph: pointer to the header of the icmp packet
  * @icmp_len: total length of the icmp packet

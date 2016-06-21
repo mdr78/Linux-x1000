@@ -10,8 +10,11 @@
 #include <linux/module.h>
 #include <linux/compat.h>
 #include <linux/mount.h>
-#include <linux/blkdev.h>
+#include <linux/time.h>
+#include <linux/buffer_head.h>
+#include <linux/writeback.h>
 #include <linux/backing-dev.h>
+#include <linux/blkdev.h>
 #include <linux/fsnotify.h>
 #include <linux/security.h>
 #include "fat.h"
@@ -167,8 +170,10 @@ int fat_file_fsync(struct file *filp, loff_t start, loff_t end, int datasync)
 
 const struct file_operations fat_file_operations = {
 	.llseek		= generic_file_llseek,
-	.read_iter	= generic_file_read_iter,
-	.write_iter	= generic_file_write_iter,
+	.read		= do_sync_read,
+	.write		= do_sync_write,
+	.aio_read	= generic_file_aio_read,
+	.aio_write	= generic_file_aio_write,
 	.mmap		= generic_file_mmap,
 	.release	= fat_file_release,
 	.unlocked_ioctl	= fat_generic_ioctl,
@@ -306,7 +311,7 @@ void fat_truncate_blocks(struct inode *inode, loff_t offset)
 
 int fat_getattr(struct vfsmount *mnt, struct dentry *dentry, struct kstat *stat)
 {
-	struct inode *inode = d_inode(dentry);
+	struct inode *inode = dentry->d_inode;
 	generic_fillattr(inode, stat);
 	stat->blksize = MSDOS_SB(inode->i_sb)->cluster_size;
 
@@ -378,7 +383,7 @@ static int fat_allow_set_time(struct msdos_sb_info *sbi, struct inode *inode)
 int fat_setattr(struct dentry *dentry, struct iattr *attr)
 {
 	struct msdos_sb_info *sbi = MSDOS_SB(dentry->d_sb);
-	struct inode *inode = d_inode(dentry);
+	struct inode *inode = dentry->d_inode;
 	unsigned int ia_valid;
 	int error;
 
@@ -438,9 +443,6 @@ int fat_setattr(struct dentry *dentry, struct iattr *attr)
 	}
 
 	if (attr->ia_valid & ATTR_SIZE) {
-		error = fat_block_truncate_page(inode, attr->ia_size);
-		if (error)
-			goto out;
 		down_write(&MSDOS_I(inode)->truncate_lock);
 		truncate_setsize(inode, attr->ia_size);
 		fat_truncate_blocks(inode, attr->ia_size);

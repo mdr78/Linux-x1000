@@ -14,11 +14,10 @@
 
 	chosen {
 		bootargs = "console=ttyS0,115200n8 earlyprintk";
-		stdout-path = &uart0;
 	};
 
 	ocp@f1000000 {
-		pinctrl: pin-controller@10000 {
+		pinctrl: pinctrl@10000 {
 			pmx_led_health_r: pmx-led-health-r {
 				marvell,pins = "mpp46";
 				marvell,function = "gpio";
@@ -37,6 +36,7 @@
 			};
 		};
 		serial@12000 {
+			clock-frequency = <200000000>;
 			status = "ok";
 		};
 
@@ -101,16 +101,12 @@
 	status = "okay";
 
 	ethphy0: ethernet-phy@0 {
-		/* Marvell 88E1121R */
-		compatible = "ethernet-phy-id0141.0cb0",
-		             "ethernet-phy-ieee802.3-c22";
+		compatible = "marvell,88e1121";
 		reg = <0>;
 	};
 
 	ethphy1: ethernet-phy@1 {
-		/* Marvell 88E1121R */
-		compatible = "ethernet-phy-id0141.0cb0",
-		             "ethernet-phy-ieee802.3-c22";
+		compatible = "marvell,88e1121";
 		reg = <1>;
 	};
 };
@@ -119,7 +115,6 @@
 	status = "okay";
 	ethernet0-port@0 {
 		phy-handle = <&ethphy0>;
-		phy-connection-type = "rgmii-id";
 	};
 };
 
@@ -127,6 +122,5 @@
 	status = "okay";
 	ethernet1-port@0 {
 		phy-handle = <&ethphy1>;
-		phy-connection-type = "rgmii-id";
 	};
 };

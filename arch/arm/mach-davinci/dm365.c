@@ -646,7 +646,6 @@ static struct davinci_spi_platform_data dm365_spi0_pdata = {
 	.version 	= SPI_VERSION_1,
 	.num_chipselect = 2,
 	.dma_event_q	= EVENTQ_3,
-	.prescaler_limit = 1,
 };
 
 static struct resource dm365_spi0_resources[] = {
@@ -853,7 +852,18 @@ static u8 dm365_default_priorities[DAVINCI_N_AINTC_IRQ] = {
 };
 
 /* Four Transfer Controllers on DM365 */
-static s8 dm365_queue_priority_mapping[][2] = {
+static s8
+dm365_queue_tc_mapping[][2] = {
+	/* {event queue no, TC no} */
+	{0, 0},
+	{1, 1},
+	{2, 2},
+	{3, 3},
+	{-1, -1},
+};
+
+static s8
+dm365_queue_priority_mapping[][2] = {
 	/* {event queue no, Priority} */
 	{0, 7},
 	{1, 7},
@@ -862,49 +872,59 @@ static s8 dm365_queue_priority_mapping[][2] = {
 	{-1, -1},
 };
 
-static struct edma_soc_info dm365_edma_pdata = {
+static struct edma_soc_info edma_cc0_info = {
+	.n_channel		= 64,
+	.n_region		= 4,
+	.n_slot			= 256,
+	.n_tc			= 4,
+	.n_cc			= 1,
+	.queue_tc_mapping	= dm365_queue_tc_mapping,
 	.queue_priority_mapping	= dm365_queue_priority_mapping,
 	.default_queue		= EVENTQ_3,
 };
 
+static struct edma_soc_info *dm365_edma_info[EDMA_MAX_CC] = {
+	&edma_cc0_info,
+};
+
 static struct resource edma_resources[] = {
 	{
-		.name	= "edma3_cc",
+		.name	= "edma_cc0",
 		.start	= 0x01c00000,
 		.end	= 0x01c00000 + SZ_64K - 1,
 		.flags	= IORESOURCE_MEM,
 	},
 	{
-		.name	= "edma3_tc0",
+		.name	= "edma_tc0",
 		.start	= 0x01c10000,
 		.end	= 0x01c10000 + SZ_1K - 1,
 		.flags	= IORESOURCE_MEM,
 	},
 	{
-		.name	= "edma3_tc1",
+		.name	= "edma_tc1",
 		.start	= 0x01c10400,
 		.end	= 0x01c10400 + SZ_1K - 1,
 		.flags	= IORESOURCE_MEM,
 	},
 	{
-		.name	= "edma3_tc2",
+		.name	= "edma_tc2",
 		.start	= 0x01c10800,
 		.end	= 0x01c10800 + SZ_1K - 1,
 		.flags	= IORESOURCE_MEM,
 	},
 	{
-		.name	= "edma3_tc3",
+		.name	= "edma_tc3",
 		.start	= 0x01c10c00,
 		.end	= 0x01c10c00 + SZ_1K - 1,
 		.flags	= IORESOURCE_MEM,
 	},
 	{
-		.name	= "edma3_ccint",
+		.name	= "edma0",
 		.start	= IRQ_CCINT0,
 		.flags	= IORESOURCE_IRQ,
 	},
 	{
-		.name	= "edma3_ccerrint",
+		.name	= "edma0_err",
 		.start	= IRQ_CCERRINT,
 		.flags	= IORESOURCE_IRQ,
 	},
@@ -914,7 +934,7 @@ static struct resource edma_resources[] = {
 static struct platform_device dm365_edma_device = {
 	.name			= "edma",
 	.id			= 0,
-	.dev.platform_data	= &dm365_edma_pdata,
+	.dev.platform_data	= dm365_edma_info,
 	.num_resources		= ARRAY_SIZE(edma_resources),
 	.resource		= edma_resources,
 };
@@ -1302,15 +1322,16 @@ static struct resource dm365_v4l2_disp_resources[] = {
 	},
 };
 
-static int dm365_vpbe_setup_pinmux(u32 if_type, int field)
+static int dm365_vpbe_setup_pinmux(enum v4l2_mbus_pixelcode if_type,
+			    int field)
 {
 	switch (if_type) {
-	case MEDIA_BUS_FMT_SGRBG8_1X8:
+	case V4L2_MBUS_FMT_SGRBG8_1X8:
 		davinci_cfg_reg(DM365_VOUT_FIELD_G81);
 		davinci_cfg_reg(DM365_VOUT_COUTL_EN);
 		davinci_cfg_reg(DM365_VOUT_COUTH_EN);
 		break;
-	case MEDIA_BUS_FMT_YUYV10_1X20:
+	case V4L2_MBUS_FMT_YUYV10_1X20:
 		if (field)
 			davinci_cfg_reg(DM365_VOUT_FIELD);
 		else
@@ -1415,8 +1436,6 @@ int __init dm365_init_video(struct vpfe_config *vpfe_cfg,
 
 static int __init dm365_init_devices(void)
 {
-	int ret = 0;
-
 	if (!cpu_is_davinci_dm365())
 		return 0;
 
@@ -1426,10 +1445,6 @@ static int __init dm365_init_devices(void)
 	platform_device_register(&dm365_mdio_device);
 	platform_device_register(&dm365_emac_device);
 
-	ret = davinci_init_wdt();
-	if (ret)
-		pr_warn("%s: watchdog init failed: %d\n", __func__, ret);
-
-	return ret;
+	return 0;
 }
 postcore_initcall(dm365_init_devices);

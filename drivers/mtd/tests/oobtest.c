@@ -34,11 +34,8 @@
 #include "mtd_test.h"
 
 static int dev = -EINVAL;
-static int bitflip_limit;
 module_param(dev, int, S_IRUGO);
 MODULE_PARM_DESC(dev, "MTD device number to use");
-module_param(bitflip_limit, int, S_IRUGO);
-MODULE_PARM_DESC(bitflip_limit, "Max. allowed bitflips per page");
 
 static struct mtd_info *mtd;
 static unsigned char *readbuf;
@@ -70,10 +67,10 @@ static int write_eraseblock(int ebnum)
 	int i;
 	struct mtd_oob_ops ops;
 	int err = 0;
-	loff_t addr = (loff_t)ebnum * mtd->erasesize;
+	loff_t addr = ebnum * mtd->erasesize;
 
-	prandom_bytes_state(&rnd_state, writebuf, use_len_max * pgcnt);
 	for (i = 0; i < pgcnt; ++i, addr += mtd->writesize) {
+		prandom_bytes_state(&rnd_state, writebuf, use_len);
 		ops.mode      = MTD_OPS_AUTO_OOB;
 		ops.len       = 0;
 		ops.retlen    = 0;
@@ -81,7 +78,7 @@ static int write_eraseblock(int ebnum)
 		ops.oobretlen = 0;
 		ops.ooboffs   = use_offset;
 		ops.datbuf    = NULL;
-		ops.oobbuf    = writebuf + (use_len_max * i) + use_offset;
+		ops.oobbuf    = writebuf;
 		err = mtd_write_oob(mtd, addr, &ops);
 		if (err || ops.oobretlen != use_len) {
 			pr_err("error: writeoob failed at %#llx\n",
@@ -112,66 +109,10 @@ static int write_whole_device(void)
 			return err;
 		if (i % 256 == 0)
 			pr_info("written up to eraseblock %u\n", i);
-
-		err = mtdtest_relax();
-		if (err)
-			return err;
+		cond_resched();
 	}
 	pr_info("written %u eraseblocks\n", i);
 	return 0;
-}
-
-/*
- * Display the address, offset and data bytes at comparison failure.
- * Return number of bitflips encountered.
- */
-static size_t memcmpshowoffset(loff_t addr, loff_t offset, const void *cs,
-			       const void *ct, size_t count)
-{
-	const unsigned char *su1, *su2;
-	int res;
-	size_t i = 0;
-	size_t bitflips = 0;
-
-	for (su1 = cs, su2 = ct; 0 < count; ++su1, ++su2, count--, i++) {
-		res = *su1 ^ *su2;
-		if (res) {
-			pr_info("error @addr[0x%lx:0x%lx] 0x%x -> 0x%x diff 0x%x\n",
-				(unsigned long)addr, (unsigned long)offset + i,
-				*su1, *su2, res);
-			bitflips += hweight8(res);
-		}
-	}
-
-	return bitflips;
-}
-
-#define memcmpshow(addr, cs, ct, count) memcmpshowoffset((addr), 0, (cs), (ct),\
-							 (count))
-
-/*
- * Compare with 0xff and show the address, offset and data bytes at
- * comparison failure. Return number of bitflips encountered.
- */
-static size_t memffshow(loff_t addr, loff_t offset, const void *cs,
-			size_t count)
-{
-	const unsigned char *su1;
-	int res;
-	size_t i = 0;
-	size_t bitflips = 0;
-
-	for (su1 = cs; 0 < count; ++su1, count--, i++) {
-		res = *su1 ^ 0xff;
-		if (res) {
-			pr_info("error @addr[0x%lx:0x%lx] 0x%x -> 0xff diff 0x%x\n",
-				(unsigned long)addr, (unsigned long)offset + i,
-				*su1, res);
-			bitflips += hweight8(res);
-		}
-	}
-
-	return bitflips;
 }
 
 static int verify_eraseblock(int ebnum)
@@ -179,11 +120,10 @@ static int verify_eraseblock(int ebnum)
 	int i;
 	struct mtd_oob_ops ops;
 	int err = 0;
-	loff_t addr = (loff_t)ebnum * mtd->erasesize;
-	size_t bitflips;
+	loff_t addr = ebnum * mtd->erasesize;
 
-	prandom_bytes_state(&rnd_state, writebuf, use_len_max * pgcnt);
 	for (i = 0; i < pgcnt; ++i, addr += mtd->writesize) {
+		prandom_bytes_state(&rnd_state, writebuf, use_len);
 		ops.mode      = MTD_OPS_AUTO_OOB;
 		ops.len       = 0;
 		ops.retlen    = 0;
@@ -199,11 +139,7 @@ static int verify_eraseblock(int ebnum)
 			errcnt += 1;
 			return err ? err : -1;
 		}
-
-		bitflips = memcmpshow(addr, readbuf,
-				      writebuf + (use_len_max * i) + use_offset,
-				      use_len);
-		if (bitflips > bitflip_limit) {
+		if (memcmp(readbuf, writebuf, use_len)) {
 			pr_err("error: verify failed at %#llx\n",
 			       (long long)addr);
 			errcnt += 1;
@@ -211,10 +147,7 @@ static int verify_eraseblock(int ebnum)
 				pr_err("error: too many errors\n");
 				return -1;
 			}
-		} else if (bitflips) {
-			pr_info("ignoring error as within bitflip_limit\n");
 		}
-
 		if (use_offset != 0 || use_len < mtd->ecclayout->oobavail) {
 			int k;
 
@@ -233,20 +166,7 @@ static int verify_eraseblock(int ebnum)
 				errcnt += 1;
 				return err ? err : -1;
 			}
-			bitflips = memcmpshowoffset(addr, use_offset,
-						    readbuf + use_offset,
-						    writebuf + (use_len_max * i) + use_offset,
-						    use_len);
-
-			/* verify pre-offset area for 0xff */
-			bitflips += memffshow(addr, 0, readbuf, use_offset);
-
-			/* verify post-(use_offset + use_len) area for 0xff */
-			k = use_offset + use_len;
-			bitflips += memffshow(addr, k, readbuf + k,
-					      mtd->ecclayout->oobavail - k);
-
-			if (bitflips > bitflip_limit) {
+			if (memcmp(readbuf + use_offset, writebuf, use_len)) {
 				pr_err("error: verify failed at %#llx\n",
 						(long long)addr);
 				errcnt += 1;
@@ -254,9 +174,32 @@ static int verify_eraseblock(int ebnum)
 					pr_err("error: too many errors\n");
 					return -1;
 				}
-			} else if (bitflips) {
-				pr_info("ignoring errors as within bitflip limit\n");
 			}
+			for (k = 0; k < use_offset; ++k)
+				if (readbuf[k] != 0xff) {
+					pr_err("error: verify 0xff "
+					       "failed at %#llx\n",
+					       (long long)addr);
+					errcnt += 1;
+					if (errcnt > 1000) {
+						pr_err("error: too "
+						       "many errors\n");
+						return -1;
+					}
+				}
+			for (k = use_offset + use_len;
+			     k < mtd->ecclayout->oobavail; ++k)
+				if (readbuf[k] != 0xff) {
+					pr_err("error: verify 0xff "
+					       "failed at %#llx\n",
+					       (long long)addr);
+					errcnt += 1;
+					if (errcnt > 1000) {
+						pr_err("error: too "
+						       "many errors\n");
+						return -1;
+					}
+				}
 		}
 		if (vary_offset)
 			do_vary_offset();
@@ -268,11 +211,8 @@ static int verify_eraseblock_in_one_go(int ebnum)
 {
 	struct mtd_oob_ops ops;
 	int err = 0;
-	loff_t addr = (loff_t)ebnum * mtd->erasesize;
+	loff_t addr = ebnum * mtd->erasesize;
 	size_t len = mtd->ecclayout->oobavail * pgcnt;
-	size_t oobavail = mtd->ecclayout->oobavail;
-	size_t bitflips;
-	int i;
 
 	prandom_bytes_state(&rnd_state, writebuf, len);
 	ops.mode      = MTD_OPS_AUTO_OOB;
@@ -283,8 +223,6 @@ static int verify_eraseblock_in_one_go(int ebnum)
 	ops.ooboffs   = 0;
 	ops.datbuf    = NULL;
 	ops.oobbuf    = readbuf;
-
-	/* read entire block's OOB at one go */
 	err = mtd_read_oob(mtd, addr, &ops);
 	if (err || ops.oobretlen != len) {
 		pr_err("error: readoob failed at %#llx\n",
@@ -292,21 +230,13 @@ static int verify_eraseblock_in_one_go(int ebnum)
 		errcnt += 1;
 		return err ? err : -1;
 	}
-
-	/* verify one page OOB at a time for bitflip per page limit check */
-	for (i = 0; i < pgcnt; ++i, addr += mtd->writesize) {
-		bitflips = memcmpshow(addr, readbuf + (i * oobavail),
-				      writebuf + (i * oobavail), oobavail);
-		if (bitflips > bitflip_limit) {
-			pr_err("error: verify failed at %#llx\n",
-			       (long long)addr);
-			errcnt += 1;
-			if (errcnt > 1000) {
-				pr_err("error: too many errors\n");
-				return -1;
-			}
-		} else if (bitflips) {
-			pr_info("ignoring error as within bitflip_limit\n");
+	if (memcmp(readbuf, writebuf, len)) {
+		pr_err("error: verify failed at %#llx\n",
+		       (long long)addr);
+		errcnt += 1;
+		if (errcnt > 1000) {
+			pr_err("error: too many errors\n");
+			return -1;
 		}
 	}
 
@@ -327,10 +257,7 @@ static int verify_all_eraseblocks(void)
 			return err;
 		if (i % 256 == 0)
 			pr_info("verified up to eraseblock %u\n", i);
-
-		err = mtdtest_relax();
-		if (err)
-			return err;
+		cond_resched();
 	}
 	pr_info("verified %u eraseblocks\n", i);
 	return 0;
@@ -441,10 +368,7 @@ static int __init mtd_oobtest_init(void)
 			goto out;
 		if (i % 256 == 0)
 			pr_info("verified up to eraseblock %u\n", i);
-
-		err = mtdtest_relax();
-		if (err)
-			goto out;
+		cond_resched();
 	}
 	pr_info("verified %u eraseblocks\n", i);
 
@@ -641,9 +565,9 @@ static int __init mtd_oobtest_init(void)
 		size_t sz = mtd->ecclayout->oobavail;
 		if (bbt[i] || bbt[i + 1])
 			continue;
-		addr = (loff_t)(i + 1) * mtd->erasesize - mtd->writesize;
-		prandom_bytes_state(&rnd_state, writebuf, sz * cnt);
+		addr = (i + 1) * mtd->erasesize - mtd->writesize;
 		for (pg = 0; pg < cnt; ++pg) {
+			prandom_bytes_state(&rnd_state, writebuf, sz);
 			ops.mode      = MTD_OPS_AUTO_OOB;
 			ops.len       = 0;
 			ops.retlen    = 0;
@@ -651,17 +575,13 @@ static int __init mtd_oobtest_init(void)
 			ops.oobretlen = 0;
 			ops.ooboffs   = 0;
 			ops.datbuf    = NULL;
-			ops.oobbuf    = writebuf + pg * sz;
+			ops.oobbuf    = writebuf;
 			err = mtd_write_oob(mtd, addr, &ops);
 			if (err)
 				goto out;
 			if (i % 256 == 0)
 				pr_info("written up to eraseblock %u\n", i);
-
-			err = mtdtest_relax();
-			if (err)
-				goto out;
-
+			cond_resched();
 			addr += mtd->writesize;
 		}
 	}
@@ -675,7 +595,7 @@ static int __init mtd_oobtest_init(void)
 			continue;
 		prandom_bytes_state(&rnd_state, writebuf,
 					mtd->ecclayout->oobavail * 2);
-		addr = (loff_t)(i + 1) * mtd->erasesize - mtd->writesize;
+		addr = (i + 1) * mtd->erasesize - mtd->writesize;
 		ops.mode      = MTD_OPS_AUTO_OOB;
 		ops.len       = 0;
 		ops.retlen    = 0;
@@ -687,8 +607,7 @@ static int __init mtd_oobtest_init(void)
 		err = mtd_read_oob(mtd, addr, &ops);
 		if (err)
 			goto out;
-		if (memcmpshow(addr, readbuf, writebuf,
-			       mtd->ecclayout->oobavail * 2)) {
+		if (memcmp(readbuf, writebuf, mtd->ecclayout->oobavail * 2)) {
 			pr_err("error: verify failed at %#llx\n",
 			       (long long)addr);
 			errcnt += 1;
@@ -699,10 +618,7 @@ static int __init mtd_oobtest_init(void)
 		}
 		if (i % 256 == 0)
 			pr_info("verified up to eraseblock %u\n", i);
-
-		err = mtdtest_relax();
-		if (err)
-			goto out;
+		cond_resched();
 	}
 	pr_info("verified %u eraseblocks\n", i);
 

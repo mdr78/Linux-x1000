@@ -64,46 +64,89 @@ static int drm_get_platform_dev(struct platform_device *platdev,
 	return 0;
 
 err_free:
-	drm_dev_unref(dev);
+	drm_dev_free(dev);
 	return ret;
 }
 
-int drm_platform_set_busid(struct drm_device *dev, struct drm_master *master)
+static int drm_platform_get_irq(struct drm_device *dev)
 {
-	int id;
+	return platform_get_irq(dev->platformdev, 0);
+}
 
-	id = dev->platformdev->id;
-	if (id < 0)
-		id = 0;
+static const char *drm_platform_get_name(struct drm_device *dev)
+{
+	return dev->platformdev->name;
+}
 
-	master->unique = kasprintf(GFP_KERNEL, "platform:%s:%02d",
-						dev->platformdev->name, id);
-	if (!master->unique)
+static int drm_platform_set_busid(struct drm_device *dev, struct drm_master *master)
+{
+	int len, ret, id;
+
+	master->unique_len = 13 + strlen(dev->platformdev->name);
+	master->unique_size = master->unique_len;
+	master->unique = kmalloc(master->unique_len + 1, GFP_KERNEL);
+
+	if (master->unique == NULL)
 		return -ENOMEM;
 
-	master->unique_len = strlen(master->unique);
+	id = dev->platformdev->id;
+
+	/* if only a single instance of the platform device, id will be
+	 * set to -1.. use 0 instead to avoid a funny looking bus-id:
+	 */
+	if (id == -1)
+		id = 0;
+
+	len = snprintf(master->unique, master->unique_len,
+			"platform:%s:%02d", dev->platformdev->name, id);
+
+	if (len > master->unique_len) {
+		DRM_ERROR("Unique buffer overflowed\n");
+		ret = -EINVAL;
+		goto err;
+	}
+
+	dev->devname =
+		kmalloc(strlen(dev->platformdev->name) +
+			master->unique_len + 2, GFP_KERNEL);
+
+	if (dev->devname == NULL) {
+		ret = -ENOMEM;
+		goto err;
+	}
+
+	sprintf(dev->devname, "%s@%s", dev->platformdev->name,
+		master->unique);
 	return 0;
+err:
+	return ret;
 }
-EXPORT_SYMBOL(drm_platform_set_busid);
+
+static struct drm_bus drm_platform_bus = {
+	.bus_type = DRIVER_BUS_PLATFORM,
+	.get_irq = drm_platform_get_irq,
+	.get_name = drm_platform_get_name,
+	.set_busid = drm_platform_set_busid,
+};
 
 /**
- * drm_platform_init - Register a platform device with the DRM subsystem
- * @driver: DRM device driver
- * @platform_device: platform device to register
+ * Platform device initialization. Called direct from modules.
  *
- * Registers the specified DRM device driver and platform device with the DRM
- * subsystem, initializing a drm_device structure and calling the driver's
- * .load() function.
+ * \return zero on success or a negative number on failure.
  *
- * NOTE: This function is deprecated, please use drm_dev_alloc() and
- * drm_dev_register() instead and remove your ->load() callback.
+ * Initializes a drm_device structures,registering the
+ * stubs
  *
- * Return: 0 on success or a negative error code on failure.
+ * Expands the \c DRIVER_PREINIT and \c DRIVER_POST_INIT macros before and
+ * after the initialization for driver customization.
  */
+
 int drm_platform_init(struct drm_driver *driver, struct platform_device *platform_device)
 {
 	DRM_DEBUG("\n");
 
+	driver->kdriver.platform_device = platform_device;
+	driver->bus = &drm_platform_bus;
 	return drm_get_platform_dev(platform_device, driver);
 }
 EXPORT_SYMBOL(drm_platform_init);

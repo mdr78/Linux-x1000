@@ -195,7 +195,9 @@ struct bucket {
 	atomic_t	pin;
 	uint16_t	prio;
 	uint8_t		gen;
+	uint8_t		disk_gen;
 	uint8_t		last_gc; /* Most out of date gen in the btree */
+	uint8_t		gc_gen;
 	uint16_t	gc_mark; /* Bitfield used by GC. See below for field */
 };
 
@@ -205,9 +207,9 @@ struct bucket {
  */
 
 BITMASK(GC_MARK,	 struct bucket, gc_mark, 0, 2);
-#define GC_MARK_RECLAIMABLE	1
-#define GC_MARK_DIRTY		2
-#define GC_MARK_METADATA	3
+#define GC_MARK_RECLAIMABLE	0
+#define GC_MARK_DIRTY		1
+#define GC_MARK_METADATA	2
 #define GC_SECTORS_USED_SIZE	13
 #define MAX_GC_SECTORS_USED	(~(~0ULL << GC_SECTORS_USED_SIZE))
 BITMASK(GC_SECTORS_USED, struct bucket, gc_mark, 2, GC_SECTORS_USED_SIZE);
@@ -243,6 +245,19 @@ struct keybuf {
 	DECLARE_ARRAY_ALLOCATOR(struct keybuf_key, freelist, KEYBUF_NR);
 };
 
+struct bio_split_pool {
+	struct bio_set		*bio_split;
+	mempool_t		*bio_split_hook;
+};
+
+struct bio_split_hook {
+	struct closure		cl;
+	struct bio_split_pool	*p;
+	struct bio		*bio;
+	bio_end_io_t		*bi_end_io;
+	void			*bi_private;
+};
+
 struct bcache_device {
 	struct closure		cl;
 
@@ -275,6 +290,8 @@ struct bcache_device {
 	int (*cache_miss)(struct btree *, struct search *,
 			  struct bio *, unsigned);
 	int (*ioctl) (struct bcache_device *, fmode_t, unsigned, unsigned long);
+
+	struct bio_split_pool	bio_split_hook;
 };
 
 struct io {
@@ -409,9 +426,14 @@ struct cache {
 	 * their new gen to disk. After prio_write() finishes writing the new
 	 * gens/prios, they'll be moved to the free list (and possibly discarded
 	 * in the process)
+	 *
+	 * unused: GC found nothing pointing into these buckets (possibly
+	 * because all the data they contained was overwritten), so we only
+	 * need to discard them before they can be moved to the free list.
 	 */
 	DECLARE_FIFO(long, free)[RESERVE_NR];
 	DECLARE_FIFO(long, free_inc);
+	DECLARE_FIFO(long, unused);
 
 	size_t			fifo_last_bucket;
 
@@ -419,6 +441,12 @@ struct cache {
 	struct bucket		*buckets;
 
 	DECLARE_HEAP(struct bucket *, heap);
+
+	/*
+	 * max(gen - disk_gen) for all buckets. When it gets too big we have to
+	 * call prio_write() to keep gens from wrapping.
+	 */
+	uint8_t			need_save_prio;
 
 	/*
 	 * If nonzero, we know we aren't going to find any buckets to invalidate
@@ -439,6 +467,8 @@ struct cache {
 	atomic_long_t		meta_sectors_written;
 	atomic_long_t		btree_sectors_written;
 	atomic_long_t		sectors_written;
+
+	struct bio_split_pool	bio_split_hook;
 };
 
 struct gc_stat {
@@ -460,13 +490,9 @@ struct gc_stat {
  * CACHE_SET_STOPPING always gets set first when we're closing down a cache set;
  * we'll continue to run normally for awhile with CACHE_SET_STOPPING set (i.e.
  * flushing dirty data).
- *
- * CACHE_SET_RUNNING means all cache devices have been registered and journal
- * replay is complete.
  */
 #define CACHE_SET_UNREGISTERING		0
 #define	CACHE_SET_STOPPING		1
-#define	CACHE_SET_RUNNING		2
 
 struct cache_set {
 	struct closure		cl;
@@ -536,16 +562,19 @@ struct cache_set {
 	struct list_head	btree_cache_freed;
 
 	/* Number of elements in btree_cache + btree_cache_freeable lists */
-	unsigned		btree_cache_used;
+	unsigned		bucket_cache_used;
 
 	/*
 	 * If we need to allocate memory for a new btree node and that
 	 * allocation fails, we can cannibalize another node in the btree cache
-	 * to satisfy the allocation - lock to guarantee only one thread does
-	 * this at a time:
+	 * to satisfy the allocation. However, only one thread can be doing this
+	 * at a time, for obvious reasons - try_harder and try_wait are
+	 * basically a lock for this that we can wait on asynchronously. The
+	 * btree_root() macro releases the lock when it returns.
 	 */
-	wait_queue_head_t	btree_cache_wait;
-	struct task_struct	*btree_cache_alloc_lock;
+	struct task_struct	*try_harder;
+	wait_queue_head_t	try_wait;
+	uint64_t		try_harder_start;
 
 	/*
 	 * When we free a btree node, we increment the gen of the bucket the
@@ -574,7 +603,7 @@ struct cache_set {
 	uint16_t		min_prio;
 
 	/*
-	 * max(gen - last_gc) for all buckets. When it gets too big we have to gc
+	 * max(gen - gc_gen) for all buckets. When it gets too big we have to gc
 	 * to keep gens from wrapping around.
 	 */
 	uint8_t			need_gc;
@@ -598,8 +627,6 @@ struct cache_set {
 	struct keybuf		moving_gc_keys;
 	/* Number of moving GC bios in flight */
 	struct semaphore	moving_in_flight;
-
-	struct workqueue_struct	*moving_gc_wq;
 
 	struct btree		*root;
 
@@ -640,6 +667,7 @@ struct cache_set {
 	struct time_stats	btree_gc_time;
 	struct time_stats	btree_split_time;
 	struct time_stats	btree_read_time;
+	struct time_stats	try_harder_time;
 
 	atomic_long_t		cache_read_races;
 	atomic_long_t		writeback_keys_done;
@@ -815,13 +843,16 @@ static inline bool cached_dev_get(struct cached_dev *dc)
 		return false;
 
 	/* Paired with the mb in cached_dev_attach */
-	smp_mb__after_atomic();
+	smp_mb__after_atomic_inc();
 	return true;
 }
 
 /*
  * bucket_gc_gen() returns the difference between the bucket's current gen and
  * the oldest gen of any pointer into that bucket in the btree (last_gc).
+ *
+ * bucket_disk_gen() returns the difference between the current gen and the gen
+ * on disk; they're both used to make sure gens don't wrap around.
  */
 
 static inline uint8_t bucket_gc_gen(struct bucket *b)
@@ -829,7 +860,13 @@ static inline uint8_t bucket_gc_gen(struct bucket *b)
 	return b->gen - b->last_gc;
 }
 
+static inline uint8_t bucket_disk_gen(struct bucket *b)
+{
+	return b->gen - b->disk_gen;
+}
+
 #define BUCKET_GC_GEN_MAX	96U
+#define BUCKET_DISK_GEN_MAX	64U
 
 #define kobj_attribute_write(n, fn)					\
 	static struct kobj_attribute ksysfs_##n = __ATTR(n, S_IWUSR, NULL, fn)
@@ -856,19 +893,17 @@ void bch_bbio_endio(struct cache_set *, struct bio *, int, const char *);
 void bch_bbio_free(struct bio *, struct cache_set *);
 struct bio *bch_bbio_alloc(struct cache_set *);
 
+void bch_generic_make_request(struct bio *, struct bio_split_pool *);
 void __bch_submit_bbio(struct bio *, struct cache_set *);
 void bch_submit_bbio(struct bio *, struct cache_set *, struct bkey *, unsigned);
 
 uint8_t bch_inc_gen(struct cache *, struct bucket *);
 void bch_rescale_priorities(struct cache_set *, int);
-
-bool bch_can_invalidate_bucket(struct cache *, struct bucket *);
-void __bch_invalidate_one_bucket(struct cache *, struct bucket *);
-
-void __bch_bucket_free(struct cache *, struct bucket *);
-void bch_bucket_free(struct cache_set *, struct bkey *);
+bool bch_bucket_add_unused(struct cache *, struct bucket *);
 
 long bch_bucket_alloc(struct cache *, unsigned, bool);
+void bch_bucket_free(struct cache_set *, struct bkey *);
+
 int __bch_bucket_alloc_set(struct cache_set *, unsigned,
 			   struct bkey *, int, bool);
 int bch_bucket_alloc_set(struct cache_set *, unsigned,
@@ -919,10 +954,13 @@ int bch_open_buckets_alloc(struct cache_set *);
 void bch_open_buckets_free(struct cache_set *);
 
 int bch_cache_allocator_start(struct cache *ca);
+int bch_cache_allocator_init(struct cache *ca);
 
 void bch_debug_exit(void);
 int bch_debug_init(struct kobject *);
 void bch_request_exit(void);
 int bch_request_init(void);
+void bch_btree_exit(void);
+int bch_btree_init(void);
 
 #endif /* _BCACHE_H */

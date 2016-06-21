@@ -6,7 +6,7 @@
  *
  *  ebtables.c,v 2.0, July, 2002
  *
- *  This code is strongly inspired by the iptables code which is
+ *  This code is stongly inspired on the iptables code which is
  *  Copyright (C) 1999 Paul `Rusty' Russell & Michael J. Neuling
  *
  *  This program is free software; you can redistribute it and/or
@@ -26,7 +26,6 @@
 #include <asm/uaccess.h>
 #include <linux/smp.h>
 #include <linux/cpumask.h>
-#include <linux/audit.h>
 #include <net/sock.h>
 /* needed for logical [in,out]-dev filtering */
 #include "../br_private.h"
@@ -133,13 +132,13 @@ ebt_basic_match(const struct ebt_entry *e, const struct sk_buff *skb,
 	__be16 ethproto;
 	int verdict, i;
 
-	if (skb_vlan_tag_present(skb))
+	if (vlan_tx_tag_present(skb))
 		ethproto = htons(ETH_P_8021Q);
 	else
 		ethproto = h->h_proto;
 
 	if (e->bitmask & EBT_802_3) {
-		if (FWINV2(eth_proto_is_802_3(ethproto), EBT_IPROTO))
+		if (FWINV2(ntohs(ethproto) >= ETH_P_802_3_MIN, EBT_IPROTO))
 			return 1;
 	} else if (!(e->bitmask & EBT_NOPROTO) &&
 	   FWINV2(e->ethproto != ethproto, EBT_IPROTO))
@@ -176,18 +175,17 @@ ebt_basic_match(const struct ebt_entry *e, const struct sk_buff *skb,
 	return 0;
 }
 
-static inline
+static inline __pure
 struct ebt_entry *ebt_next_entry(const struct ebt_entry *entry)
 {
 	return (void *)entry + entry->next_offset;
 }
 
 /* Do some firewalling */
-unsigned int ebt_do_table(struct sk_buff *skb,
-			  const struct nf_hook_state *state,
-			  struct ebt_table *table)
+unsigned int ebt_do_table (unsigned int hook, struct sk_buff *skb,
+   const struct net_device *in, const struct net_device *out,
+   struct ebt_table *table)
 {
-	unsigned int hook = state->hook;
 	int i, nentries;
 	struct ebt_entry *point;
 	struct ebt_counter *counter_base, *cb_base;
@@ -200,9 +198,8 @@ unsigned int ebt_do_table(struct sk_buff *skb,
 	struct xt_action_param acpar;
 
 	acpar.family  = NFPROTO_BRIDGE;
-	acpar.net     = state->net;
-	acpar.in      = state->in;
-	acpar.out     = state->out;
+	acpar.in      = in;
+	acpar.out     = out;
 	acpar.hotdrop = false;
 	acpar.hooknum = hook;
 
@@ -222,7 +219,7 @@ unsigned int ebt_do_table(struct sk_buff *skb,
 	base = private->entries;
 	i = 0;
 	while (i < nentries) {
-		if (ebt_basic_match(point, skb, state->in, state->out))
+		if (ebt_basic_match(point, skb, in, out))
 			goto letscontinue;
 
 		if (EBT_MATCH_ITERATE(point, ebt_do_match, skb, &acpar) != 0)
@@ -330,7 +327,10 @@ find_inlist_lock_noload(struct list_head *head, const char *name, int *error,
 		char name[EBT_FUNCTION_MAXNAMELEN];
 	} *e;
 
-	mutex_lock(mutex);
+	*error = mutex_lock_interruptible(mutex);
+	if (*error != 0)
+		return NULL;
+
 	list_for_each_entry(e, head, list) {
 		if (strcmp(e->name, name) == 0)
 			return e;
@@ -1061,20 +1061,6 @@ static int do_replace_finish(struct net *net, struct ebt_replace *repl,
 	vfree(table);
 
 	vfree(counterstmp);
-
-#ifdef CONFIG_AUDIT
-	if (audit_enabled) {
-		struct audit_buffer *ab;
-
-		ab = audit_log_start(current->audit_context, GFP_KERNEL,
-				     AUDIT_NETFILTER_CFG);
-		if (ab) {
-			audit_log_format(ab, "table=%s family=%u entries=%u",
-					 repl->name, AF_BRIDGE, repl->nentries);
-			audit_log_end(ab);
-		}
-	}
-#endif
 	return ret;
 
 free_unlock:
@@ -1217,7 +1203,10 @@ ebt_register_table(struct net *net, const struct ebt_table *input_table)
 
 	table->private = newinfo;
 	rwlock_init(&table->lock);
-	mutex_lock(&ebt_mutex);
+	ret = mutex_lock_interruptible(&ebt_mutex);
+	if (ret != 0)
+		goto free_chainstack;
+
 	list_for_each_entry(t, &net->xt.tables[NFPROTO_BRIDGE], list) {
 		if (strcmp(t->name, table->name) == 0) {
 			ret = -EEXIST;

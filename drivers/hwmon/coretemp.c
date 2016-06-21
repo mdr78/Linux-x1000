@@ -52,7 +52,7 @@ module_param_named(tjmax, force_tjmax, int, 0444);
 MODULE_PARM_DESC(tjmax, "TjMax value in degrees Celsius");
 
 #define BASE_SYSFS_ATTR_NO	2	/* Sysfs Base attr no for coretemp */
-#define NUM_REAL_CORES		128	/* Number of Real cores per cpu */
+#define NUM_REAL_CORES		32	/* Number of Real cores per cpu */
 #define CORETEMP_NAME_LENGTH	19	/* String Length of attrs */
 #define MAX_CORE_ATTRS		4	/* Maximum no of basic attrs */
 #define TOTAL_ATTRS		(MAX_CORE_ATTRS + 1)
@@ -63,8 +63,7 @@ MODULE_PARM_DESC(tjmax, "TjMax value in degrees Celsius");
 #define TO_ATTR_NO(cpu)		(TO_CORE_ID(cpu) + BASE_SYSFS_ATTR_NO)
 
 #ifdef CONFIG_SMP
-#define for_each_sibling(i, cpu) \
-	for_each_cpu(i, topology_sibling_cpumask(cpu))
+#define for_each_sibling(i, cpu)	for_each_cpu(i, cpu_sibling_mask(cpu))
 #else
 #define for_each_sibling(i, cpu)	for (i = 0; false; )
 #endif
@@ -95,8 +94,6 @@ struct temp_data {
 	bool valid;
 	struct sensor_device_attribute sd_attrs[TOTAL_ATTRS];
 	char attr_name[TOTAL_ATTRS][CORETEMP_NAME_LENGTH];
-	struct attribute *attrs[TOTAL_ATTRS + 1];
-	struct attribute_group attr_group;
 	struct mutex update_lock;
 };
 
@@ -116,6 +113,12 @@ struct pdev_entry {
 
 static LIST_HEAD(pdev_list);
 static DEFINE_MUTEX(pdev_list_mutex);
+
+static ssize_t show_name(struct device *dev,
+			struct device_attribute *devattr, char *buf)
+{
+	return sprintf(buf, "%s\n", DRVNAME);
+}
 
 static ssize_t show_label(struct device *dev,
 				struct device_attribute *devattr, char *buf)
@@ -390,30 +393,47 @@ static int get_tjmax(struct cpuinfo_x86 *c, u32 id, struct device *dev)
 	return adjust_tjmax(c, id, dev);
 }
 
+static int create_name_attr(struct platform_data *pdata,
+				      struct device *dev)
+{
+	sysfs_attr_init(&pdata->name_attr.attr);
+	pdata->name_attr.attr.name = "name";
+	pdata->name_attr.attr.mode = S_IRUGO;
+	pdata->name_attr.show = show_name;
+	return device_create_file(dev, &pdata->name_attr);
+}
+
 static int create_core_attrs(struct temp_data *tdata, struct device *dev,
 			     int attr_no)
 {
-	int i;
+	int err, i;
 	static ssize_t (*const rd_ptr[TOTAL_ATTRS]) (struct device *dev,
 			struct device_attribute *devattr, char *buf) = {
 			show_label, show_crit_alarm, show_temp, show_tjmax,
 			show_ttarget };
-	static const char *const suffixes[TOTAL_ATTRS] = {
-		"label", "crit_alarm", "input", "crit", "max"
-	};
+	static const char *const names[TOTAL_ATTRS] = {
+					"temp%d_label", "temp%d_crit_alarm",
+					"temp%d_input", "temp%d_crit",
+					"temp%d_max" };
 
 	for (i = 0; i < tdata->attr_size; i++) {
-		snprintf(tdata->attr_name[i], CORETEMP_NAME_LENGTH,
-			 "temp%d_%s", attr_no, suffixes[i]);
+		snprintf(tdata->attr_name[i], CORETEMP_NAME_LENGTH, names[i],
+			attr_no);
 		sysfs_attr_init(&tdata->sd_attrs[i].dev_attr.attr);
 		tdata->sd_attrs[i].dev_attr.attr.name = tdata->attr_name[i];
 		tdata->sd_attrs[i].dev_attr.attr.mode = S_IRUGO;
 		tdata->sd_attrs[i].dev_attr.show = rd_ptr[i];
 		tdata->sd_attrs[i].index = attr_no;
-		tdata->attrs[i] = &tdata->sd_attrs[i].dev_attr.attr;
+		err = device_create_file(dev, &tdata->sd_attrs[i].dev_attr);
+		if (err)
+			goto exit_free;
 	}
-	tdata->attr_group.attrs = tdata->attrs;
-	return sysfs_create_group(&dev->kobj, &tdata->attr_group);
+	return 0;
+
+exit_free:
+	while (--i >= 0)
+		device_remove_file(dev, &tdata->sd_attrs[i].dev_attr);
+	return err;
 }
 
 
@@ -528,7 +548,7 @@ static int create_core_data(struct platform_device *pdev, unsigned int cpu,
 	pdata->core_data[attr_no] = tdata;
 
 	/* Create sysfs interfaces */
-	err = create_core_attrs(tdata, pdata->hwmon_dev, attr_no);
+	err = create_core_attrs(tdata, &pdev->dev, attr_no);
 	if (err)
 		goto exit_free;
 
@@ -553,12 +573,14 @@ static void coretemp_add_core(unsigned int cpu, int pkg_flag)
 }
 
 static void coretemp_remove_core(struct platform_data *pdata,
-				 int indx)
+				struct device *dev, int indx)
 {
+	int i;
 	struct temp_data *tdata = pdata->core_data[indx];
 
 	/* Remove the sysfs attributes */
-	sysfs_remove_group(&pdata->hwmon_dev->kobj, &tdata->attr_group);
+	for (i = 0; i < tdata->attr_size; i++)
+		device_remove_file(dev, &tdata->sd_attrs[i].dev_attr);
 
 	kfree(pdata->core_data[indx]);
 	pdata->core_data[indx] = NULL;
@@ -566,20 +588,34 @@ static void coretemp_remove_core(struct platform_data *pdata,
 
 static int coretemp_probe(struct platform_device *pdev)
 {
-	struct device *dev = &pdev->dev;
 	struct platform_data *pdata;
+	int err;
 
 	/* Initialize the per-package data structures */
-	pdata = devm_kzalloc(dev, sizeof(struct platform_data), GFP_KERNEL);
+	pdata = kzalloc(sizeof(struct platform_data), GFP_KERNEL);
 	if (!pdata)
 		return -ENOMEM;
+
+	err = create_name_attr(pdata, &pdev->dev);
+	if (err)
+		goto exit_free;
 
 	pdata->phys_proc_id = pdev->id;
 	platform_set_drvdata(pdev, pdata);
 
-	pdata->hwmon_dev = devm_hwmon_device_register_with_groups(dev, DRVNAME,
-								  pdata, NULL);
-	return PTR_ERR_OR_ZERO(pdata->hwmon_dev);
+	pdata->hwmon_dev = hwmon_device_register(&pdev->dev);
+	if (IS_ERR(pdata->hwmon_dev)) {
+		err = PTR_ERR(pdata->hwmon_dev);
+		dev_err(&pdev->dev, "Class registration failed (%d)\n", err);
+		goto exit_name;
+	}
+	return 0;
+
+exit_name:
+	device_remove_file(&pdev->dev, &pdata->name_attr);
+exit_free:
+	kfree(pdata);
+	return err;
 }
 
 static int coretemp_remove(struct platform_device *pdev)
@@ -589,13 +625,17 @@ static int coretemp_remove(struct platform_device *pdev)
 
 	for (i = MAX_CORE_DATA - 1; i >= 0; --i)
 		if (pdata->core_data[i])
-			coretemp_remove_core(pdata, i);
+			coretemp_remove_core(pdata, &pdev->dev, i);
 
+	device_remove_file(&pdev->dev, &pdata->name_attr);
+	hwmon_device_unregister(pdata->hwmon_dev);
+	kfree(pdata);
 	return 0;
 }
 
 static struct platform_driver coretemp_driver = {
 	.driver = {
+		.owner = THIS_MODULE,
 		.name = DRVNAME,
 	},
 	.probe = coretemp_probe,
@@ -737,7 +777,7 @@ static void put_core_offline(unsigned int cpu)
 		return;
 
 	if (pdata->core_data[indx] && pdata->core_data[indx]->cpu == cpu)
-		coretemp_remove_core(pdata, indx);
+		coretemp_remove_core(pdata, &pdev->dev, indx);
 
 	/*
 	 * If a HT sibling of a core is taken offline, but another HT sibling
@@ -809,20 +849,20 @@ static int __init coretemp_init(void)
 	if (err)
 		goto exit;
 
-	cpu_notifier_register_begin();
+	get_online_cpus();
 	for_each_online_cpu(i)
 		get_core_online(i);
 
 #ifndef CONFIG_HOTPLUG_CPU
 	if (list_empty(&pdev_list)) {
-		cpu_notifier_register_done();
+		put_online_cpus();
 		err = -ENODEV;
 		goto exit_driver_unreg;
 	}
 #endif
 
-	__register_hotcpu_notifier(&coretemp_cpu_notifier);
-	cpu_notifier_register_done();
+	register_hotcpu_notifier(&coretemp_cpu_notifier);
+	put_online_cpus();
 	return 0;
 
 #ifndef CONFIG_HOTPLUG_CPU
@@ -837,8 +877,8 @@ static void __exit coretemp_exit(void)
 {
 	struct pdev_entry *p, *n;
 
-	cpu_notifier_register_begin();
-	__unregister_hotcpu_notifier(&coretemp_cpu_notifier);
+	get_online_cpus();
+	unregister_hotcpu_notifier(&coretemp_cpu_notifier);
 	mutex_lock(&pdev_list_mutex);
 	list_for_each_entry_safe(p, n, &pdev_list, list) {
 		platform_device_unregister(p->pdev);
@@ -846,7 +886,7 @@ static void __exit coretemp_exit(void)
 		kfree(p);
 	}
 	mutex_unlock(&pdev_list_mutex);
-	cpu_notifier_register_done();
+	put_online_cpus();
 	platform_driver_unregister(&coretemp_driver);
 }
 

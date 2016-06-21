@@ -38,6 +38,7 @@ struct max8997_data {
 	struct device *dev;
 	struct max8997_dev *iodev;
 	int num_regulators;
+	struct regulator_dev **rdev;
 	int ramp_delay; /* in mV/us */
 
 	bool buck1_gpiodvs;
@@ -917,13 +918,13 @@ static int max8997_pmic_dt_parse_pdata(struct platform_device *pdev,
 	struct max8997_regulator_data *rdata;
 	unsigned int i, dvs_voltage_nr = 1, ret;
 
-	pmic_np = iodev->dev->of_node;
+	pmic_np = of_node_get(iodev->dev->of_node);
 	if (!pmic_np) {
 		dev_err(&pdev->dev, "could not find pmic sub-node\n");
 		return -ENODEV;
 	}
 
-	regulators_np = of_get_child_by_name(pmic_np, "regulators");
+	regulators_np = of_find_node_by_name(pmic_np, "regulators");
 	if (!regulators_np) {
 		dev_err(&pdev->dev, "could not find regulators sub-node\n");
 		return -EINVAL;
@@ -936,6 +937,7 @@ static int max8997_pmic_dt_parse_pdata(struct platform_device *pdev,
 				pdata->num_regulators, GFP_KERNEL);
 	if (!rdata) {
 		of_node_put(regulators_np);
+		dev_err(&pdev->dev, "could not allocate memory for regulator data\n");
 		return -ENOMEM;
 	}
 
@@ -953,8 +955,7 @@ static int max8997_pmic_dt_parse_pdata(struct platform_device *pdev,
 
 		rdata->id = i;
 		rdata->initdata = of_get_regulator_init_data(&pdev->dev,
-							     reg_np,
-							     &regulators[i]);
+							     reg_np);
 		rdata->reg_node = reg_np;
 		rdata++;
 	}
@@ -1029,10 +1030,10 @@ static int max8997_pmic_probe(struct platform_device *pdev)
 	struct max8997_dev *iodev = dev_get_drvdata(pdev->dev.parent);
 	struct max8997_platform_data *pdata = iodev->pdata;
 	struct regulator_config config = { };
-	struct regulator_dev *rdev;
+	struct regulator_dev **rdev;
 	struct max8997_data *max8997;
 	struct i2c_client *i2c;
-	int i, ret, nr_dvs;
+	int i, ret, size, nr_dvs;
 	u8 max_buck1 = 0, max_buck2 = 0, max_buck5 = 0;
 
 	if (!pdata) {
@@ -1051,6 +1052,12 @@ static int max8997_pmic_probe(struct platform_device *pdev)
 	if (!max8997)
 		return -ENOMEM;
 
+	size = sizeof(struct regulator_dev *) * pdata->num_regulators;
+	max8997->rdev = devm_kzalloc(&pdev->dev, size, GFP_KERNEL);
+	if (!max8997->rdev)
+		return -ENOMEM;
+
+	rdev = max8997->rdev;
 	max8997->dev = &pdev->dev;
 	max8997->iodev = iodev;
 	max8997->num_regulators = pdata->num_regulators;
@@ -1198,12 +1205,12 @@ static int max8997_pmic_probe(struct platform_device *pdev)
 		config.driver_data = max8997;
 		config.of_node = pdata->regulators[i].reg_node;
 
-		rdev = devm_regulator_register(&pdev->dev, &regulators[id],
-					       &config);
-		if (IS_ERR(rdev)) {
+		rdev[i] = devm_regulator_register(&pdev->dev, &regulators[id],
+						  &config);
+		if (IS_ERR(rdev[i])) {
 			dev_err(max8997->dev, "regulator init failed for %d\n",
 					id);
-			return PTR_ERR(rdev);
+			return PTR_ERR(rdev[i]);
 		}
 	}
 
@@ -1219,6 +1226,7 @@ MODULE_DEVICE_TABLE(platform, max8997_pmic_id);
 static struct platform_driver max8997_pmic_driver = {
 	.driver = {
 		.name = "max8997-pmic",
+		.owner = THIS_MODULE,
 	},
 	.probe = max8997_pmic_probe,
 	.id_table = max8997_pmic_id,

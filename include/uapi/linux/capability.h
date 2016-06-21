@@ -308,11 +308,7 @@ struct vfs_cap_data {
 
 #define CAP_LEASE            28
 
-/* Allow writing the audit log via unicast netlink socket */
-
 #define CAP_AUDIT_WRITE      29
-
-/* Allow configuration of audit via unicast netlink socket */
 
 #define CAP_AUDIT_CONTROL    30
 
@@ -347,12 +343,7 @@ struct vfs_cap_data {
 
 #define CAP_BLOCK_SUSPEND    36
 
-/* Allow reading the audit log via multicast netlink socket */
-
-#define CAP_AUDIT_READ		37
-
-
-#define CAP_LAST_CAP         CAP_AUDIT_READ
+#define CAP_LAST_CAP         CAP_BLOCK_SUSPEND
 
 #define cap_valid(x) ((x) >= 0 && (x) <= CAP_LAST_CAP)
 

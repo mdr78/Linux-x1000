@@ -1,54 +1,57 @@
 /*
- * comedi/drivers/mite.c
- * Hardware driver for NI Mite PCI interface chip
- *
- * COMEDI - Linux Control and Measurement Device Interface
- * Copyright (C) 1997-2002 David A. Schleef <ds@schleef.org>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- */
+    comedi/drivers/mite.c
+    Hardware driver for NI Mite PCI interface chip
+
+    COMEDI - Linux Control and Measurement Device Interface
+    Copyright (C) 1997-2002 David A. Schleef <ds@schleef.org>
+
+    This program is free software; you can redistribute it and/or modify
+    it under the terms of the GNU General Public License as published by
+    the Free Software Foundation; either version 2 of the License, or
+    (at your option) any later version.
+
+    This program is distributed in the hope that it will be useful,
+    but WITHOUT ANY WARRANTY; without even the implied warranty of
+    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+    GNU General Public License for more details.
+*/
 
 /*
- * The PCI-MIO E series driver was originally written by
- * Tomasz Motylewski <...>, and ported to comedi by ds.
- *
- * References for specifications:
- *
- *    321747b.pdf  Register Level Programmer Manual (obsolete)
- *    321747c.pdf  Register Level Programmer Manual (new)
- *    DAQ-STC reference manual
- *
- * Other possibly relevant info:
- *
- *    320517c.pdf  User manual (obsolete)
- *    320517f.pdf  User manual (new)
- *    320889a.pdf  delete
- *    320906c.pdf  maximum signal ratings
- *    321066a.pdf  about 16x
- *    321791a.pdf  discontinuation of at-mio-16e-10 rev. c
- *    321808a.pdf  about at-mio-16e-10 rev P
- *    321837a.pdf  discontinuation of at-mio-16de-10 rev d
- *    321838a.pdf  about at-mio-16de-10 rev N
- *
- * ISSUES:
- *
- */
+	The PCI-MIO E series driver was originally written by
+	Tomasz Motylewski <...>, and ported to comedi by ds.
+
+	References for specifications:
+
+	   321747b.pdf  Register Level Programmer Manual (obsolete)
+	   321747c.pdf  Register Level Programmer Manual (new)
+	   DAQ-STC reference manual
+
+	Other possibly relevant info:
+
+	   320517c.pdf  User manual (obsolete)
+	   320517f.pdf  User manual (new)
+	   320889a.pdf  delete
+	   320906c.pdf  maximum signal ratings
+	   321066a.pdf  about 16x
+	   321791a.pdf  discontinuation of at-mio-16e-10 rev. c
+	   321808a.pdf  about at-mio-16e-10 rev P
+	   321837a.pdf  discontinuation of at-mio-16de-10 rev d
+	   321838a.pdf  about at-mio-16de-10 rev N
+
+	ISSUES:
+
+*/
+
+/* #define USE_KMALLOC */
 
 #define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
 
 #include <linux/module.h>
-#include <linux/slab.h>
+#include <linux/pci.h>
 
-#include "../comedi_pci.h"
+#include "../comedidev.h"
 
+#include "comedi_fc.h"
 #include "mite.h"
 
 #define TOP_OF_PAGE(x) ((x)|(~(PAGE_MASK)))
@@ -87,12 +90,10 @@ static unsigned mite_fifo_size(struct mite_struct *mite, unsigned channel)
 	unsigned fcr_bits = readl(mite->mite_io_addr + MITE_FCR(channel));
 	unsigned empty_count = (fcr_bits >> 16) & 0xff;
 	unsigned full_count = fcr_bits & 0xff;
-
 	return empty_count + full_count;
 }
 
-int mite_setup2(struct comedi_device *dev,
-		struct mite_struct *mite, bool use_win1)
+int mite_setup2(struct mite_struct *mite, unsigned use_iodwbsr_1)
 {
 	unsigned long length;
 	int i;
@@ -103,24 +104,24 @@ int mite_setup2(struct comedi_device *dev,
 
 	mite->mite_io_addr = pci_ioremap_bar(mite->pcidev, 0);
 	if (!mite->mite_io_addr) {
-		dev_err(dev->class_dev,
+		dev_err(&mite->pcidev->dev,
 			"Failed to remap mite io memory address\n");
 		return -ENOMEM;
 	}
 	mite->mite_phys_addr = pci_resource_start(mite->pcidev, 0);
 
-	dev->mmio = pci_ioremap_bar(mite->pcidev, 1);
-	if (!dev->mmio) {
-		dev_err(dev->class_dev,
+	mite->daq_io_addr = pci_ioremap_bar(mite->pcidev, 1);
+	if (!mite->daq_io_addr) {
+		dev_err(&mite->pcidev->dev,
 			"Failed to remap daq io memory address\n");
 		return -ENOMEM;
 	}
 	mite->daq_phys_addr = pci_resource_start(mite->pcidev, 1);
 	length = pci_resource_len(mite->pcidev, 1);
 
-	if (use_win1) {
+	if (use_iodwbsr_1) {
 		writel(0, mite->mite_io_addr + MITE_IODWBSR);
-		dev_info(dev->class_dev,
+		dev_info(&mite->pcidev->dev,
 			 "using I/O Window Base Size register 1\n");
 		writel(mite->daq_phys_addr | WENAB |
 		       MITE_IODWBSR_1_WSIZE_bits(length),
@@ -131,7 +132,7 @@ int mite_setup2(struct comedi_device *dev,
 		       mite->mite_io_addr + MITE_IODWBSR);
 	}
 	/*
-	 * Make sure dma bursts work. I got this from running a bus analyzer
+	 * make sure dma bursts work. I got this from running a bus analyzer
 	 * on a pxi-6281 and a pxi-6713. 6713 powered up with register value
 	 * of 0x61f and bursts worked. 6281 powered up with register value of
 	 * 0x1f and bursts didn't work. The NI windows driver reads the
@@ -146,7 +147,7 @@ int mite_setup2(struct comedi_device *dev,
 	csigr_bits = readl(mite->mite_io_addr + MITE_CSIGR);
 	mite->num_channels = mite_csigr_dmac(csigr_bits);
 	if (mite->num_channels > MAX_MITE_DMA_CHANNELS) {
-		dev_warn(dev->class_dev,
+		dev_warn(&mite->pcidev->dev,
 			 "mite: bug? chip claims to have %i dma channels. Setting to %i.\n",
 			 mite->num_channels, MAX_MITE_DMA_CHANNELS);
 		mite->num_channels = MAX_MITE_DMA_CHANNELS;
@@ -161,32 +162,46 @@ int mite_setup2(struct comedi_device *dev,
 		       mite->mite_io_addr + MITE_CHCR(i));
 	}
 	mite->fifo_size = mite_fifo_size(mite, 0);
-	dev_info(dev->class_dev, "fifo size is %i.\n", mite->fifo_size);
+	dev_info(&mite->pcidev->dev, "fifo size is %i.\n", mite->fifo_size);
 	return 0;
 }
 EXPORT_SYMBOL_GPL(mite_setup2);
 
-void mite_detach(struct mite_struct *mite)
+int mite_setup(struct mite_struct *mite)
 {
+	return mite_setup2(mite, 0);
+}
+EXPORT_SYMBOL_GPL(mite_setup);
+
+void mite_unsetup(struct mite_struct *mite)
+{
+	/* unsigned long offset, start, length; */
+
 	if (!mite)
 		return;
 
-	if (mite->mite_io_addr)
+	if (mite->mite_io_addr) {
 		iounmap(mite->mite_io_addr);
-
-	kfree(mite);
+		mite->mite_io_addr = NULL;
+	}
+	if (mite->daq_io_addr) {
+		iounmap(mite->daq_io_addr);
+		mite->daq_io_addr = NULL;
+	}
+	if (mite->mite_phys_addr)
+		mite->mite_phys_addr = 0;
 }
-EXPORT_SYMBOL_GPL(mite_detach);
+EXPORT_SYMBOL_GPL(mite_unsetup);
 
 struct mite_dma_descriptor_ring *mite_alloc_ring(struct mite_struct *mite)
 {
 	struct mite_dma_descriptor_ring *ring =
 	    kmalloc(sizeof(struct mite_dma_descriptor_ring), GFP_KERNEL);
 
-	if (!ring)
-		return NULL;
+	if (ring == NULL)
+		return ring;
 	ring->hw_dev = get_device(&mite->pcidev->dev);
-	if (!ring->hw_dev) {
+	if (ring->hw_dev == NULL) {
 		kfree(ring);
 		return NULL;
 	}
@@ -223,8 +238,7 @@ struct mite_channel *mite_request_channel_in_range(struct mite_struct *mite,
 	unsigned long flags;
 	struct mite_channel *channel = NULL;
 
-	/*
-	 * spin lock so mite_release_channel can be called safely
+	/* spin lock so mite_release_channel can be called safely
 	 * from interrupts
 	 */
 	spin_lock_irqsave(&mite->lock, flags);
@@ -246,15 +260,15 @@ void mite_release_channel(struct mite_channel *mite_chan)
 	struct mite_struct *mite = mite_chan->mite;
 	unsigned long flags;
 
-	/* spin lock to prevent races with mite_request_channel */
+	/*  spin lock to prevent races with mite_request_channel */
 	spin_lock_irqsave(&mite->lock, flags);
 	if (mite->channel_allocated[mite_chan->channel]) {
 		mite_dma_disarm(mite_chan);
 		mite_dma_reset(mite_chan);
-		/*
-		 * disable all channel's interrupts (do it after disarm/reset so
-		 * MITE_CHCR reg isn't changed while dma is still active!)
-		 */
+	/*
+	 * disable all channel's interrupts (do it after disarm/reset so
+	 * MITE_CHCR reg isn't changed while dma is still active!)
+	 */
 		writel(CHCR_CLR_DMA_IE | CHCR_CLR_LINKP_IE |
 		       CHCR_CLR_SAR_IE | CHCR_CLR_DONE_IE |
 		       CHCR_CLR_MRDY_IE | CHCR_CLR_DRDY_IE |
@@ -286,16 +300,15 @@ void mite_dma_arm(struct mite_channel *mite_chan)
 	writel(chor, mite->mite_io_addr + MITE_CHOR(mite_chan->channel));
 	mmiowb();
 	spin_unlock_irqrestore(&mite->lock, flags);
-	/* mite_dma_tcr(mite, channel); */
+/*       mite_dma_tcr(mite, channel); */
 }
 EXPORT_SYMBOL_GPL(mite_dma_arm);
 
 /**************************************/
 
 int mite_buf_change(struct mite_dma_descriptor_ring *ring,
-		    struct comedi_subdevice *s)
+		    struct comedi_async *async)
 {
-	struct comedi_async *async = s->async;
 	unsigned int n_links;
 	int i;
 
@@ -320,7 +333,7 @@ int mite_buf_change(struct mite_dma_descriptor_ring *ring,
 			       n_links * sizeof(struct mite_dma_descriptor),
 			       &ring->descriptors_dma_addr, GFP_KERNEL);
 	if (!ring->descriptors) {
-		dev_err(s->device->class_dev,
+		dev_err(async->subdevice->device->class_dev,
 			"mite: ring buffer allocation failed\n");
 		return -ENOMEM;
 	}
@@ -436,14 +449,12 @@ EXPORT_SYMBOL_GPL(mite_prep_dma);
 static u32 mite_device_bytes_transferred(struct mite_channel *mite_chan)
 {
 	struct mite_struct *mite = mite_chan->mite;
-
 	return readl(mite->mite_io_addr + MITE_DAR(mite_chan->channel));
 }
 
 u32 mite_bytes_in_transit(struct mite_channel *mite_chan)
 {
 	struct mite_struct *mite = mite_chan->mite;
-
 	return readl(mite->mite_io_addr +
 		     MITE_FCR(mite_chan->channel)) & 0x000000FF;
 }
@@ -492,8 +503,13 @@ EXPORT_SYMBOL_GPL(mite_bytes_read_from_memory_ub);
 unsigned mite_dma_tcr(struct mite_channel *mite_chan)
 {
 	struct mite_struct *mite = mite_chan->mite;
+	int tcr;
+	int lkar;
 
-	return readl(mite->mite_io_addr + MITE_TCR(mite_chan->channel));
+	lkar = readl(mite->mite_io_addr + MITE_LKAR(mite_chan->channel));
+	tcr = readl(mite->mite_io_addr + MITE_TCR(mite_chan->channel));
+
+	return tcr;
 }
 EXPORT_SYMBOL_GPL(mite_dma_tcr);
 
@@ -509,60 +525,66 @@ void mite_dma_disarm(struct mite_channel *mite_chan)
 EXPORT_SYMBOL_GPL(mite_dma_disarm);
 
 int mite_sync_input_dma(struct mite_channel *mite_chan,
-			struct comedi_subdevice *s)
+			struct comedi_async *async)
 {
-	struct comedi_async *async = s->async;
 	int count;
 	unsigned int nbytes, old_alloc_count;
+	const unsigned bytes_per_scan = cfc_bytes_per_scan(async->subdevice);
 
 	old_alloc_count = async->buf_write_alloc_count;
 	/* write alloc as much as we can */
-	comedi_buf_write_alloc(s, async->prealloc_bufsz);
+	comedi_buf_write_alloc(async, async->prealloc_bufsz);
 
 	nbytes = mite_bytes_written_to_memory_lb(mite_chan);
 	if ((int)(mite_bytes_written_to_memory_ub(mite_chan) -
 		  old_alloc_count) > 0) {
-		dev_warn(s->device->class_dev,
+		dev_warn(async->subdevice->device->class_dev,
 			 "mite: DMA overwrite of free area\n");
 		async->events |= COMEDI_CB_OVERFLOW;
 		return -1;
 	}
 
 	count = nbytes - async->buf_write_count;
-	/*
-	 * it's possible count will be negative due to conservative value
-	 * returned by mite_bytes_written_to_memory_lb
-	 */
+	/* it's possible count will be negative due to
+	 * conservative value returned by mite_bytes_written_to_memory_lb */
 	if (count <= 0)
 		return 0;
 
-	comedi_buf_write_free(s, count);
-	comedi_inc_scan_progress(s, count);
+	comedi_buf_write_free(async, count);
+
+	async->scan_progress += count;
+	if (async->scan_progress >= bytes_per_scan) {
+		async->scan_progress %= bytes_per_scan;
+		async->events |= COMEDI_CB_EOS;
+	}
 	async->events |= COMEDI_CB_BLOCK;
 	return 0;
 }
 EXPORT_SYMBOL_GPL(mite_sync_input_dma);
 
 int mite_sync_output_dma(struct mite_channel *mite_chan,
-			 struct comedi_subdevice *s)
+			 struct comedi_async *async)
 {
-	struct comedi_async *async = s->async;
-	struct comedi_cmd *cmd = &async->cmd;
-	u32 stop_count = cmd->stop_arg * comedi_bytes_per_scan(s);
-	unsigned int old_alloc_count = async->buf_read_alloc_count;
-	u32 nbytes_ub, nbytes_lb;
 	int count;
+	u32 nbytes_ub, nbytes_lb;
+	unsigned int old_alloc_count;
+	u32 stop_count =
+	    async->cmd.stop_arg * cfc_bytes_per_scan(async->subdevice);
 
-	/* read alloc as much as we can */
-	comedi_buf_read_alloc(s, async->prealloc_bufsz);
+	old_alloc_count = async->buf_read_alloc_count;
+	/*  read alloc as much as we can */
+	comedi_buf_read_alloc(async, async->prealloc_bufsz);
 	nbytes_lb = mite_bytes_read_from_memory_lb(mite_chan);
-	if (cmd->stop_src == TRIG_COUNT && (int)(nbytes_lb - stop_count) > 0)
+	if (async->cmd.stop_src == TRIG_COUNT &&
+	    (int)(nbytes_lb - stop_count) > 0)
 		nbytes_lb = stop_count;
 	nbytes_ub = mite_bytes_read_from_memory_ub(mite_chan);
-	if (cmd->stop_src == TRIG_COUNT && (int)(nbytes_ub - stop_count) > 0)
+	if (async->cmd.stop_src == TRIG_COUNT &&
+	    (int)(nbytes_ub - stop_count) > 0)
 		nbytes_ub = stop_count;
 	if ((int)(nbytes_ub - old_alloc_count) > 0) {
-		dev_warn(s->device->class_dev, "mite: DMA underrun\n");
+		dev_warn(async->subdevice->device->class_dev,
+			 "mite: DMA underrun\n");
 		async->events |= COMEDI_CB_OVERFLOW;
 		return -1;
 	}
@@ -571,7 +593,7 @@ int mite_sync_output_dma(struct mite_channel *mite_chan,
 		return 0;
 
 	if (count) {
-		comedi_buf_read_free(s, count);
+		comedi_buf_read_free(async, count);
 		async->events |= COMEDI_CB_BLOCK;
 	}
 	return 0;
@@ -624,5 +646,5 @@ module_init(mite_module_init);
 module_exit(mite_module_exit);
 
 MODULE_AUTHOR("Comedi http://www.comedi.org");
-MODULE_DESCRIPTION("Comedi helper for NI Mite PCI interface chip");
+MODULE_DESCRIPTION("Comedi low-level driver");
 MODULE_LICENSE("GPL");

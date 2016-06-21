@@ -153,18 +153,111 @@ static bool cs42l73_volatile_register(struct device *dev, unsigned int reg)
 static bool cs42l73_readable_register(struct device *dev, unsigned int reg)
 {
 	switch (reg) {
-	case CS42L73_DEVID_AB ... CS42L73_DEVID_E:
-	case CS42L73_REVID ... CS42L73_IM2:
+	case CS42L73_DEVID_AB:
+	case CS42L73_DEVID_CD:
+	case CS42L73_DEVID_E:
+	case CS42L73_REVID:
+	case CS42L73_PWRCTL1:
+	case CS42L73_PWRCTL2:
+	case CS42L73_PWRCTL3:
+	case CS42L73_CPFCHC:
+	case CS42L73_OLMBMSDC:
+	case CS42L73_DMMCC:
+	case CS42L73_XSPC:
+	case CS42L73_XSPMMCC:
+	case CS42L73_ASPC:
+	case CS42L73_ASPMMCC:
+	case CS42L73_VSPC:
+	case CS42L73_VSPMMCC:
+	case CS42L73_VXSPFS:
+	case CS42L73_MIOPC:
+	case CS42L73_ADCIPC:
+	case CS42L73_MICAPREPGAAVOL:
+	case CS42L73_MICBPREPGABVOL:
+	case CS42L73_IPADVOL:
+	case CS42L73_IPBDVOL:
+	case CS42L73_PBDC:
+	case CS42L73_HLADVOL:
+	case CS42L73_HLBDVOL:
+	case CS42L73_SPKDVOL:
+	case CS42L73_ESLDVOL:
+	case CS42L73_HPAAVOL:
+	case CS42L73_HPBAVOL:
+	case CS42L73_LOAAVOL:
+	case CS42L73_LOBAVOL:
+	case CS42L73_STRINV:
+	case CS42L73_XSPINV:
+	case CS42L73_ASPINV:
+	case CS42L73_VSPINV:
+	case CS42L73_LIMARATEHL:
+	case CS42L73_LIMRRATEHL:
+	case CS42L73_LMAXHL:
+	case CS42L73_LIMARATESPK:
+	case CS42L73_LIMRRATESPK:
+	case CS42L73_LMAXSPK:
+	case CS42L73_LIMARATEESL:
+	case CS42L73_LIMRRATEESL:
+	case CS42L73_LMAXESL:
+	case CS42L73_ALCARATE:
+	case CS42L73_ALCRRATE:
+	case CS42L73_ALCMINMAX:
+	case CS42L73_NGCAB:
+	case CS42L73_ALCNGMC:
+	case CS42L73_MIXERCTL:
+	case CS42L73_HLAIPAA:
+	case CS42L73_HLBIPBA:
+	case CS42L73_HLAXSPAA:
+	case CS42L73_HLBXSPBA:
+	case CS42L73_HLAASPAA:
+	case CS42L73_HLBASPBA:
+	case CS42L73_HLAVSPMA:
+	case CS42L73_HLBVSPMA:
+	case CS42L73_XSPAIPAA:
+	case CS42L73_XSPBIPBA:
+	case CS42L73_XSPAXSPAA:
+	case CS42L73_XSPBXSPBA:
+	case CS42L73_XSPAASPAA:
+	case CS42L73_XSPAASPBA:
+	case CS42L73_XSPAVSPMA:
+	case CS42L73_XSPBVSPMA:
+	case CS42L73_ASPAIPAA:
+	case CS42L73_ASPBIPBA:
+	case CS42L73_ASPAXSPAA:
+	case CS42L73_ASPBXSPBA:
+	case CS42L73_ASPAASPAA:
+	case CS42L73_ASPBASPBA:
+	case CS42L73_ASPAVSPMA:
+	case CS42L73_ASPBVSPMA:
+	case CS42L73_VSPAIPAA:
+	case CS42L73_VSPBIPBA:
+	case CS42L73_VSPAXSPAA:
+	case CS42L73_VSPBXSPBA:
+	case CS42L73_VSPAASPAA:
+	case CS42L73_VSPBASPBA:
+	case CS42L73_VSPAVSPMA:
+	case CS42L73_VSPBVSPMA:
+	case CS42L73_MMIXCTL:
+	case CS42L73_SPKMIPMA:
+	case CS42L73_SPKMXSPA:
+	case CS42L73_SPKMASPA:
+	case CS42L73_SPKMVSPMA:
+	case CS42L73_ESLMIPMA:
+	case CS42L73_ESLMXSPA:
+	case CS42L73_ESLMASPA:
+	case CS42L73_ESLMVSPMA:
+	case CS42L73_IM1:
+	case CS42L73_IM2:
 		return true;
 	default:
 		return false;
 	}
 }
 
-static const DECLARE_TLV_DB_RANGE(hpaloa_tlv,
+static const unsigned int hpaloa_tlv[] = {
+	TLV_DB_RANGE_HEAD(2),
 	0, 13, TLV_DB_SCALE_ITEM(-7600, 200, 0),
-	14, 75, TLV_DB_SCALE_ITEM(-4900, 100, 0)
-);
+	14, 75, TLV_DB_SCALE_ITEM(-4900, 100, 0),
+};
 
 static DECLARE_TLV_DB_SCALE(adc_boost_tlv, 0, 2500, 0);
 
@@ -174,23 +267,24 @@ static DECLARE_TLV_DB_SCALE(ipd_tlv, -9600, 100, 0);
 
 static DECLARE_TLV_DB_SCALE(micpga_tlv, -600, 50, 0);
 
-static const DECLARE_TLV_DB_RANGE(limiter_tlv,
+static const unsigned int limiter_tlv[] = {
+	TLV_DB_RANGE_HEAD(2),
 	0, 2, TLV_DB_SCALE_ITEM(-3000, 600, 0),
-	3, 7, TLV_DB_SCALE_ITEM(-1200, 300, 0)
-);
+	3, 7, TLV_DB_SCALE_ITEM(-1200, 300, 0),
+};
 
 static const DECLARE_TLV_DB_SCALE(attn_tlv, -6300, 100, 1);
 
 static const char * const cs42l73_pgaa_text[] = { "Line A", "Mic 1" };
 static const char * const cs42l73_pgab_text[] = { "Line B", "Mic 2" };
 
-static SOC_ENUM_SINGLE_DECL(pgaa_enum,
-			    CS42L73_ADCIPC, 3,
-			    cs42l73_pgaa_text);
+static const struct soc_enum pgaa_enum =
+	SOC_ENUM_SINGLE(CS42L73_ADCIPC, 3,
+		ARRAY_SIZE(cs42l73_pgaa_text), cs42l73_pgaa_text);
 
-static SOC_ENUM_SINGLE_DECL(pgab_enum,
-			    CS42L73_ADCIPC, 7,
-			    cs42l73_pgab_text);
+static const struct soc_enum pgab_enum =
+	SOC_ENUM_SINGLE(CS42L73_ADCIPC, 7,
+		ARRAY_SIZE(cs42l73_pgab_text), cs42l73_pgab_text);
 
 static const struct snd_kcontrol_new pgaa_mux =
 	SOC_DAPM_ENUM("Left Analog Input Capture Mux", pgaa_enum);
@@ -215,9 +309,9 @@ static const struct snd_kcontrol_new input_right_mixer[] = {
 static const char * const cs42l73_ng_delay_text[] = {
 	"50ms", "100ms", "150ms", "200ms" };
 
-static SOC_ENUM_SINGLE_DECL(ng_delay_enum,
-			    CS42L73_NGCAB, 0,
-			    cs42l73_ng_delay_text);
+static const struct soc_enum ng_delay_enum =
+	SOC_ENUM_SINGLE(CS42L73_NGCAB, 0,
+		ARRAY_SIZE(cs42l73_ng_delay_text), cs42l73_ng_delay_text);
 
 static const char * const cs42l73_mono_mix_texts[] = {
 	"Left", "Right", "Mono Mix"};
@@ -263,19 +357,19 @@ static const struct snd_kcontrol_new esl_xsp_mixer =
 static const char * const cs42l73_ip_swap_text[] = {
 	"Stereo", "Mono A", "Mono B", "Swap A-B"};
 
-static SOC_ENUM_SINGLE_DECL(ip_swap_enum,
-			    CS42L73_MIOPC, 6,
-			    cs42l73_ip_swap_text);
+static const struct soc_enum ip_swap_enum =
+	SOC_ENUM_SINGLE(CS42L73_MIOPC, 6,
+		ARRAY_SIZE(cs42l73_ip_swap_text), cs42l73_ip_swap_text);
 
 static const char * const cs42l73_spo_mixer_text[] = {"Mono", "Stereo"};
 
-static SOC_ENUM_SINGLE_DECL(vsp_output_mux_enum,
-			    CS42L73_MIXERCTL, 5,
-			    cs42l73_spo_mixer_text);
+static const struct soc_enum vsp_output_mux_enum =
+	SOC_ENUM_SINGLE(CS42L73_MIXERCTL, 5,
+		ARRAY_SIZE(cs42l73_spo_mixer_text), cs42l73_spo_mixer_text);
 
-static SOC_ENUM_SINGLE_DECL(xsp_output_mux_enum,
-			    CS42L73_MIXERCTL, 4,
-			    cs42l73_spo_mixer_text);
+static const struct soc_enum xsp_output_mux_enum =
+	SOC_ENUM_SINGLE(CS42L73_MIXERCTL, 4,
+		ARRAY_SIZE(cs42l73_spo_mixer_text), cs42l73_spo_mixer_text);
 
 static const struct snd_kcontrol_new vsp_output_mux =
 	SOC_DAPM_ENUM("Route", vsp_output_mux_enum);
@@ -307,7 +401,7 @@ static const struct snd_kcontrol_new cs42l73_snd_controls[] = {
 			CS42L73_LOBAVOL, 0, 0x41, 0x4B, hpaloa_tlv),
 
 	SOC_DOUBLE_R_SX_TLV("Input PGA Analog Volume", CS42L73_MICAPREPGAAVOL,
-			CS42L73_MICBPREPGABVOL, 0, 0x34,
+			CS42L73_MICBPREPGABVOL, 5, 0x34,
 			0x24, micpga_tlv),
 
 	SOC_DOUBLE_R("MIC Preamp Switch", CS42L73_MICAPREPGAAVOL,
@@ -490,7 +584,7 @@ static const struct snd_kcontrol_new cs42l73_snd_controls[] = {
 static int cs42l73_spklo_spk_amp_event(struct snd_soc_dapm_widget *w,
 	struct snd_kcontrol *kcontrol, int event)
 {
-	struct snd_soc_codec *codec = snd_soc_dapm_to_codec(w->dapm);
+	struct snd_soc_codec *codec = w->codec;
 	struct cs42l73_private *priv = snd_soc_codec_get_drvdata(codec);
 	switch (event) {
 	case SND_SOC_DAPM_POST_PMD:
@@ -506,7 +600,7 @@ static int cs42l73_spklo_spk_amp_event(struct snd_soc_dapm_widget *w,
 static int cs42l73_ear_amp_event(struct snd_soc_dapm_widget *w,
 	struct snd_kcontrol *kcontrol, int event)
 {
-	struct snd_soc_codec *codec = snd_soc_dapm_to_codec(w->dapm);
+	struct snd_soc_codec *codec = w->codec;
 	struct cs42l73_private *priv = snd_soc_codec_get_drvdata(codec);
 	switch (event) {
 	case SND_SOC_DAPM_POST_PMD:
@@ -524,7 +618,7 @@ static int cs42l73_ear_amp_event(struct snd_soc_dapm_widget *w,
 static int cs42l73_hp_amp_event(struct snd_soc_dapm_widget *w,
 	struct snd_kcontrol *kcontrol, int event)
 {
-	struct snd_soc_codec *codec = snd_soc_dapm_to_codec(w->dapm);
+	struct snd_soc_codec *codec = w->codec;
 	struct cs42l73_private *priv = snd_soc_codec_get_drvdata(codec);
 	switch (event) {
 	case SND_SOC_DAPM_POST_PMD:
@@ -1014,7 +1108,7 @@ static int cs42l73_set_dai_fmt(struct snd_soc_dai *codec_dai, unsigned int fmt)
 	return 0;
 }
 
-static const unsigned int cs42l73_asrc_rates[] = {
+static u32 cs42l73_asrc_rates[] = {
 	8000, 11025, 12000, 16000, 22050,
 	24000, 32000, 44100, 48000
 };
@@ -1114,7 +1208,7 @@ static int cs42l73_set_bias_level(struct snd_soc_codec *codec,
 		break;
 
 	case SND_SOC_BIAS_STANDBY:
-		if (snd_soc_codec_get_bias_level(codec) == SND_SOC_BIAS_OFF) {
+		if (codec->dapm.bias_level == SND_SOC_BIAS_OFF) {
 			regcache_cache_only(cs42l73->regmap, false);
 			regcache_sync(cs42l73->regmap);
 		}
@@ -1134,6 +1228,7 @@ static int cs42l73_set_bias_level(struct snd_soc_codec *codec,
 		snd_soc_update_bits(codec, CS42L73_DMMCC, CS42L73_MCLKDIS, 1);
 		break;
 	}
+	codec->dapm.bias_level = level;
 	return 0;
 }
 
@@ -1142,11 +1237,11 @@ static int cs42l73_set_tristate(struct snd_soc_dai *dai, int tristate)
 	struct snd_soc_codec *codec = dai->codec;
 	int id = dai->id;
 
-	return snd_soc_update_bits(codec, CS42L73_SPC(id), CS42L73_SP_3ST,
-				   tristate << 7);
+	return snd_soc_update_bits(codec, CS42L73_SPC(id),
+					0x7F, tristate << 7);
 }
 
-static const struct snd_pcm_hw_constraint_list constraints_12_24 = {
+static struct snd_pcm_hw_constraint_list constraints_12_24 = {
 	.count  = ARRAY_SIZE(cs42l73_asrc_rates),
 	.list   = cs42l73_asrc_rates,
 };
@@ -1159,6 +1254,9 @@ static int cs42l73_pcm_startup(struct snd_pcm_substream *substream,
 					&constraints_12_24);
 	return 0;
 }
+
+/* SNDRV_PCM_RATE_KNOT -> 12000, 24000 Hz, limit with constraint list */
+#define CS42L73_RATES (SNDRV_PCM_RATE_8000_48000 | SNDRV_PCM_RATE_KNOT)
 
 
 #define CS42L73_FORMATS (SNDRV_PCM_FMTBIT_S16_LE | SNDRV_PCM_FMTBIT_S20_3LE |\
@@ -1180,14 +1278,14 @@ static struct snd_soc_dai_driver cs42l73_dai[] = {
 			.stream_name = "XSP Playback",
 			.channels_min = 1,
 			.channels_max = 2,
-			.rates = SNDRV_PCM_RATE_KNOT,
+			.rates = CS42L73_RATES,
 			.formats = CS42L73_FORMATS,
 		},
 		.capture = {
 			.stream_name = "XSP Capture",
 			.channels_min = 1,
 			.channels_max = 2,
-			.rates = SNDRV_PCM_RATE_KNOT,
+			.rates = CS42L73_RATES,
 			.formats = CS42L73_FORMATS,
 		},
 		.ops = &cs42l73_ops,
@@ -1200,14 +1298,14 @@ static struct snd_soc_dai_driver cs42l73_dai[] = {
 			.stream_name = "ASP Playback",
 			.channels_min = 2,
 			.channels_max = 2,
-			.rates = SNDRV_PCM_RATE_KNOT,
+			.rates = CS42L73_RATES,
 			.formats = CS42L73_FORMATS,
 		},
 		.capture = {
 			.stream_name = "ASP Capture",
 			.channels_min = 2,
 			.channels_max = 2,
-			.rates = SNDRV_PCM_RATE_KNOT,
+			.rates = CS42L73_RATES,
 			.formats = CS42L73_FORMATS,
 		},
 		.ops = &cs42l73_ops,
@@ -1220,14 +1318,14 @@ static struct snd_soc_dai_driver cs42l73_dai[] = {
 			.stream_name = "VSP Playback",
 			.channels_min = 1,
 			.channels_max = 2,
-			.rates = SNDRV_PCM_RATE_KNOT,
+			.rates = CS42L73_RATES,
 			.formats = CS42L73_FORMATS,
 		},
 		.capture = {
 			.stream_name = "VSP Capture",
 			.channels_min = 1,
 			.channels_max = 2,
-			.rates = SNDRV_PCM_RATE_KNOT,
+			.rates = CS42L73_RATES,
 			.formats = CS42L73_FORMATS,
 		},
 		.ops = &cs42l73_ops,
@@ -1235,9 +1333,33 @@ static struct snd_soc_dai_driver cs42l73_dai[] = {
 	 }
 };
 
+static int cs42l73_suspend(struct snd_soc_codec *codec)
+{
+	cs42l73_set_bias_level(codec, SND_SOC_BIAS_OFF);
+
+	return 0;
+}
+
+static int cs42l73_resume(struct snd_soc_codec *codec)
+{
+	cs42l73_set_bias_level(codec, SND_SOC_BIAS_STANDBY);
+	return 0;
+}
+
 static int cs42l73_probe(struct snd_soc_codec *codec)
 {
+	int ret;
 	struct cs42l73_private *cs42l73 = snd_soc_codec_get_drvdata(codec);
+
+	codec->control_data = cs42l73->regmap;
+
+	ret = snd_soc_codec_set_cache_io(codec, 8, 8, SND_SOC_REGMAP);
+	if (ret < 0) {
+		dev_err(codec->dev, "Failed to set cache I/O: %d\n", ret);
+		return ret;
+	}
+
+	cs42l73_set_bias_level(codec, SND_SOC_BIAS_STANDBY);
 
 	/* Set Charge Pump Frequency */
 	if (cs42l73->pdata.chgfreq)
@@ -1249,13 +1371,21 @@ static int cs42l73_probe(struct snd_soc_codec *codec)
 	cs42l73->mclksel = CS42L73_CLKID_MCLK1;
 	cs42l73->mclk = 0;
 
+	return ret;
+}
+
+static int cs42l73_remove(struct snd_soc_codec *codec)
+{
+	cs42l73_set_bias_level(codec, SND_SOC_BIAS_OFF);
 	return 0;
 }
 
-static const struct snd_soc_codec_driver soc_codec_dev_cs42l73 = {
+static struct snd_soc_codec_driver soc_codec_dev_cs42l73 = {
 	.probe = cs42l73_probe,
+	.remove = cs42l73_remove,
+	.suspend = cs42l73_suspend,
+	.resume = cs42l73_resume,
 	.set_bias_level = cs42l73_set_bias_level,
-	.suspend_bias_off = true,
 
 	.dapm_widgets = cs42l73_dapm_widgets,
 	.num_dapm_widgets = ARRAY_SIZE(cs42l73_dapm_widgets),
@@ -1266,7 +1396,7 @@ static const struct snd_soc_codec_driver soc_codec_dev_cs42l73 = {
 	.num_controls = ARRAY_SIZE(cs42l73_snd_controls),
 };
 
-static const struct regmap_config cs42l73_regmap = {
+static struct regmap_config cs42l73_regmap = {
 	.reg_bits = 8,
 	.val_bits = 8,
 
@@ -1290,8 +1420,10 @@ static int cs42l73_i2c_probe(struct i2c_client *i2c_client,
 
 	cs42l73 = devm_kzalloc(&i2c_client->dev, sizeof(struct cs42l73_private),
 			       GFP_KERNEL);
-	if (!cs42l73)
+	if (!cs42l73) {
+		dev_err(&i2c_client->dev, "could not allocate codec\n");
 		return -ENOMEM;
+	}
 
 	cs42l73->regmap = devm_regmap_init_i2c(i2c_client, &cs42l73_regmap);
 	if (IS_ERR(cs42l73->regmap)) {
@@ -1323,10 +1455,8 @@ static int cs42l73_i2c_probe(struct i2c_client *i2c_client,
 	i2c_set_clientdata(i2c_client, cs42l73);
 
 	if (cs42l73->pdata.reset_gpio) {
-		ret = devm_gpio_request_one(&i2c_client->dev,
-					    cs42l73->pdata.reset_gpio,
-					    GPIOF_OUT_INIT_HIGH,
-					    "CS42L73 /RST");
+		ret = gpio_request_one(cs42l73->pdata.reset_gpio,
+				       GPIOF_OUT_INIT_HIGH, "CS42L73 /RST");
 		if (ret < 0) {
 			dev_err(&i2c_client->dev, "Failed to request /RST %d: %d\n",
 				cs42l73->pdata.reset_gpio, ret);
@@ -1397,6 +1527,7 @@ MODULE_DEVICE_TABLE(i2c, cs42l73_id);
 static struct i2c_driver cs42l73_i2c_driver = {
 	.driver = {
 		   .name = "cs42l73",
+		   .owner = THIS_MODULE,
 		   .of_match_table = cs42l73_of_match,
 		   },
 	.id_table = cs42l73_id,

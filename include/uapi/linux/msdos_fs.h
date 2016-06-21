@@ -45,7 +45,6 @@
 
 #define CASE_LOWER_BASE	8	/* base is lower case */
 #define CASE_LOWER_EXT	16	/* extension is lower case */
-#define FAT_NO_83NAME	32	/* no 8.3 short filename for this file */
 
 #define DELETED_FLAG	0xe5	/* marks file as deleted when in name[0] */
 #define IS_FREE(n)	(!*(n) || *(n) == DELETED_FLAG)
@@ -135,7 +134,7 @@ struct fat_boot_sector {
 			__u8	vol_id[4];	/* volume ID */
 			__u8	vol_label[11];	/* volume label */
 			__u8	fs_type[8];		/* file system type */
-			/* other fields are not added here */
+			/* other fiealds are not added here */
 		} fat16;
 
 		struct {
@@ -158,7 +157,7 @@ struct fat_boot_sector {
 			__u8	vol_id[4];	/* volume ID */
 			__u8	vol_label[11];	/* volume label */
 			__u8	fs_type[8];		/* file system type */
-			/* other fields are not added here */
+			/* other fiealds are not added here */
 		} fat32;
 	};
 };

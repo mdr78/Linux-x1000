@@ -33,6 +33,7 @@
 #include <linux/usb/otg.h>
 #include <linux/usb/ulpi.h>
 #include <linux/usb/of.h>
+#include <asm/mach-types.h>
 #include <linux/usb/ehci_def.h>
 #include <linux/usb/tegra_usb_phy.h>
 #include <linux/regulator/consumer.h>
@@ -685,8 +686,10 @@ static int ulpi_phy_power_off(struct tegra_usb_phy *phy)
 	return gpio_direction_output(phy->reset_gpio, 0);
 }
 
-static void tegra_usb_phy_close(struct tegra_usb_phy *phy)
+static void tegra_usb_phy_close(struct usb_phy *x)
 {
+	struct tegra_usb_phy *phy = container_of(x, struct tegra_usb_phy, u_phy);
+
 	if (!IS_ERR(phy->vbus))
 		regulator_disable(phy->vbus);
 
@@ -880,8 +883,11 @@ static int utmi_phy_probe(struct tegra_usb_phy *tegra_phy,
 
 	tegra_phy->config = devm_kzalloc(&pdev->dev, sizeof(*config),
 					 GFP_KERNEL);
-	if (!tegra_phy->config)
+	if (!tegra_phy->config) {
+		dev_err(&pdev->dev,
+			"unable to allocate memory for USB UTMIP config\n");
 		return -ENOMEM;
+	}
 
 	config = tegra_phy->config;
 
@@ -959,7 +965,7 @@ static const struct tegra_phy_soc_config tegra30_soc_config = {
 	.requires_extra_tuning_parameters = true,
 };
 
-static const struct of_device_id tegra_usb_phy_id_table[] = {
+static struct of_device_id tegra_usb_phy_id_table[] = {
 	{ .compatible = "nvidia,tegra30-usb-phy", .data = &tegra30_soc_config },
 	{ .compatible = "nvidia,tegra20-usb-phy", .data = &tegra20_soc_config },
 	{ },
@@ -976,8 +982,10 @@ static int tegra_usb_phy_probe(struct platform_device *pdev)
 	int err;
 
 	tegra_phy = devm_kzalloc(&pdev->dev, sizeof(*tegra_phy), GFP_KERNEL);
-	if (!tegra_phy)
+	if (!tegra_phy) {
+		dev_err(&pdev->dev, "unable to allocate memory for USB2 PHY\n");
 		return -ENOMEM;
+	}
 
 	match = of_match_device(tegra_usb_phy_id_table, &pdev->dev);
 	if (!match) {
@@ -1029,7 +1037,7 @@ static int tegra_usb_phy_probe(struct platform_device *pdev)
 	}
 
 	if (of_find_property(np, "dr_mode", NULL))
-		tegra_phy->mode = usb_get_dr_mode(&pdev->dev);
+		tegra_phy->mode = of_usb_get_dr_mode(np);
 	else
 		tegra_phy->mode = USB_DR_MODE_HOST;
 
@@ -1053,13 +1061,14 @@ static int tegra_usb_phy_probe(struct platform_device *pdev)
 	if (err < 0)
 		return err;
 
+	tegra_phy->u_phy.shutdown = tegra_usb_phy_close;
 	tegra_phy->u_phy.set_suspend = tegra_usb_phy_suspend;
 
 	platform_set_drvdata(pdev, tegra_phy);
 
 	err = usb_add_phy_dev(&tegra_phy->u_phy);
 	if (err < 0) {
-		tegra_usb_phy_close(tegra_phy);
+		tegra_usb_phy_close(&tegra_phy->u_phy);
 		return err;
 	}
 
@@ -1071,7 +1080,6 @@ static int tegra_usb_phy_remove(struct platform_device *pdev)
 	struct tegra_usb_phy *tegra_phy = platform_get_drvdata(pdev);
 
 	usb_remove_phy(&tegra_phy->u_phy);
-	tegra_usb_phy_close(tegra_phy);
 
 	return 0;
 }
@@ -1081,6 +1089,7 @@ static struct platform_driver tegra_usb_phy_driver = {
 	.remove		= tegra_usb_phy_remove,
 	.driver		= {
 		.name	= "tegra-phy",
+		.owner	= THIS_MODULE,
 		.of_match_table = tegra_usb_phy_id_table,
 	},
 };

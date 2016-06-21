@@ -90,7 +90,7 @@ static ssize_t sysfs_kf_bin_read(struct kernfs_open_file *of, char *buf,
 		return 0;
 
 	if (size) {
-		if (pos >= size)
+		if (pos > size)
 			return 0;
 		if (pos + count > size)
 			count = size - pos;
@@ -100,24 +100,6 @@ static ssize_t sysfs_kf_bin_read(struct kernfs_open_file *of, char *buf,
 		return -EIO;
 
 	return battr->read(of->file, kobj, battr, buf, pos, count);
-}
-
-/* kernfs read callback for regular sysfs files with pre-alloc */
-static ssize_t sysfs_kf_read(struct kernfs_open_file *of, char *buf,
-			     size_t count, loff_t pos)
-{
-	const struct sysfs_ops *ops = sysfs_file_ops(of->kn);
-	struct kobject *kobj = of->kn->parent->priv;
-	size_t len;
-
-	/*
-	 * If buf != of->prealloc_buf, we don't know how
-	 * large it is, so cannot safely pass it to ->show
-	 */
-	if (pos || WARN_ON_ONCE(buf != of->prealloc_buf))
-		return 0;
-	len = ops->show(kobj, of->kn->priv, buf);
-	return min(count, len);
 }
 
 /* kernfs write callback for regular sysfs files */
@@ -143,7 +125,7 @@ static ssize_t sysfs_kf_bin_write(struct kernfs_open_file *of, char *buf,
 
 	if (size) {
 		if (size <= pos)
-			return -EFBIG;
+			return 0;
 		count = min_t(ssize_t, count, size - pos);
 	}
 	if (!count)
@@ -202,22 +184,6 @@ static const struct kernfs_ops sysfs_file_kfops_rw = {
 	.write		= sysfs_kf_write,
 };
 
-static const struct kernfs_ops sysfs_prealloc_kfops_ro = {
-	.read		= sysfs_kf_read,
-	.prealloc	= true,
-};
-
-static const struct kernfs_ops sysfs_prealloc_kfops_wo = {
-	.write		= sysfs_kf_write,
-	.prealloc	= true,
-};
-
-static const struct kernfs_ops sysfs_prealloc_kfops_rw = {
-	.read		= sysfs_kf_read,
-	.write		= sysfs_kf_write,
-	.prealloc	= true,
-};
-
 static const struct kernfs_ops sysfs_bin_kfops_ro = {
 	.read		= sysfs_kf_bin_read,
 };
@@ -256,22 +222,13 @@ int sysfs_add_file_mode_ns(struct kernfs_node *parent,
 			 kobject_name(kobj)))
 			return -EINVAL;
 
-		if (sysfs_ops->show && sysfs_ops->store) {
-			if (mode & SYSFS_PREALLOC)
-				ops = &sysfs_prealloc_kfops_rw;
-			else
-				ops = &sysfs_file_kfops_rw;
-		} else if (sysfs_ops->show) {
-			if (mode & SYSFS_PREALLOC)
-				ops = &sysfs_prealloc_kfops_ro;
-			else
-				ops = &sysfs_file_kfops_ro;
-		} else if (sysfs_ops->store) {
-			if (mode & SYSFS_PREALLOC)
-				ops = &sysfs_prealloc_kfops_wo;
-			else
-				ops = &sysfs_file_kfops_wo;
-		} else
+		if (sysfs_ops->show && sysfs_ops->store)
+			ops = &sysfs_file_kfops_rw;
+		else if (sysfs_ops->show)
+			ops = &sysfs_file_kfops_ro;
+		else if (sysfs_ops->store)
+			ops = &sysfs_file_kfops_wo;
+		else
 			ops = &sysfs_file_kfops_empty;
 
 		size = PAGE_SIZE;
@@ -296,8 +253,8 @@ int sysfs_add_file_mode_ns(struct kernfs_node *parent,
 	if (!attr->ignore_lockdep)
 		key = attr->key ?: (struct lock_class_key *)&attr->skey;
 #endif
-	kn = __kernfs_create_file(parent, attr->name, mode & 0777, size, ops,
-				  (void *)attr, ns, key);
+	kn = __kernfs_create_file(parent, attr->name, mode, size, ops,
+				  (void *)attr, ns, true, key);
 	if (IS_ERR(kn)) {
 		if (PTR_ERR(kn) == -EEXIST)
 			sysfs_warn_dup(parent, attr->name);
@@ -416,29 +373,6 @@ void sysfs_remove_file_ns(struct kobject *kobj, const struct attribute *attr,
 }
 EXPORT_SYMBOL_GPL(sysfs_remove_file_ns);
 
-/**
- * sysfs_remove_file_self - remove an object attribute from its own method
- * @kobj: object we're acting for
- * @attr: attribute descriptor
- *
- * See kernfs_remove_self() for details.
- */
-bool sysfs_remove_file_self(struct kobject *kobj, const struct attribute *attr)
-{
-	struct kernfs_node *parent = kobj->sd;
-	struct kernfs_node *kn;
-	bool ret;
-
-	kn = kernfs_find_and_get(parent, attr->name);
-	if (WARN_ON_ONCE(!kn))
-		return false;
-
-	ret = kernfs_remove_self(kn);
-
-	kernfs_put(kn);
-	return ret;
-}
-
 void sysfs_remove_files(struct kobject *kobj, const struct attribute **ptr)
 {
 	int i;
@@ -497,3 +431,95 @@ void sysfs_remove_bin_file(struct kobject *kobj,
 	kernfs_remove_by_name(kobj->sd, attr->attr.name);
 }
 EXPORT_SYMBOL_GPL(sysfs_remove_bin_file);
+
+struct sysfs_schedule_callback_struct {
+	struct list_head	workq_list;
+	struct kobject		*kobj;
+	void			(*func)(void *);
+	void			*data;
+	struct module		*owner;
+	struct work_struct	work;
+};
+
+static struct workqueue_struct *sysfs_workqueue;
+static DEFINE_MUTEX(sysfs_workq_mutex);
+static LIST_HEAD(sysfs_workq);
+static void sysfs_schedule_callback_work(struct work_struct *work)
+{
+	struct sysfs_schedule_callback_struct *ss = container_of(work,
+			struct sysfs_schedule_callback_struct, work);
+
+	(ss->func)(ss->data);
+	kobject_put(ss->kobj);
+	module_put(ss->owner);
+	mutex_lock(&sysfs_workq_mutex);
+	list_del(&ss->workq_list);
+	mutex_unlock(&sysfs_workq_mutex);
+	kfree(ss);
+}
+
+/**
+ * sysfs_schedule_callback - helper to schedule a callback for a kobject
+ * @kobj: object we're acting for.
+ * @func: callback function to invoke later.
+ * @data: argument to pass to @func.
+ * @owner: module owning the callback code
+ *
+ * sysfs attribute methods must not unregister themselves or their parent
+ * kobject (which would amount to the same thing).  Attempts to do so will
+ * deadlock, since unregistration is mutually exclusive with driver
+ * callbacks.
+ *
+ * Instead methods can call this routine, which will attempt to allocate
+ * and schedule a workqueue request to call back @func with @data as its
+ * argument in the workqueue's process context.  @kobj will be pinned
+ * until @func returns.
+ *
+ * Returns 0 if the request was submitted, -ENOMEM if storage could not
+ * be allocated, -ENODEV if a reference to @owner isn't available,
+ * -EAGAIN if a callback has already been scheduled for @kobj.
+ */
+int sysfs_schedule_callback(struct kobject *kobj, void (*func)(void *),
+		void *data, struct module *owner)
+{
+	struct sysfs_schedule_callback_struct *ss, *tmp;
+
+	if (!try_module_get(owner))
+		return -ENODEV;
+
+	mutex_lock(&sysfs_workq_mutex);
+	list_for_each_entry_safe(ss, tmp, &sysfs_workq, workq_list)
+		if (ss->kobj == kobj) {
+			module_put(owner);
+			mutex_unlock(&sysfs_workq_mutex);
+			return -EAGAIN;
+		}
+	mutex_unlock(&sysfs_workq_mutex);
+
+	if (sysfs_workqueue == NULL) {
+		sysfs_workqueue = create_singlethread_workqueue("sysfsd");
+		if (sysfs_workqueue == NULL) {
+			module_put(owner);
+			return -ENOMEM;
+		}
+	}
+
+	ss = kmalloc(sizeof(*ss), GFP_KERNEL);
+	if (!ss) {
+		module_put(owner);
+		return -ENOMEM;
+	}
+	kobject_get(kobj);
+	ss->kobj = kobj;
+	ss->func = func;
+	ss->data = data;
+	ss->owner = owner;
+	INIT_WORK(&ss->work, sysfs_schedule_callback_work);
+	INIT_LIST_HEAD(&ss->workq_list);
+	mutex_lock(&sysfs_workq_mutex);
+	list_add_tail(&ss->workq_list, &sysfs_workq);
+	mutex_unlock(&sysfs_workq_mutex);
+	queue_work(sysfs_workqueue, &ss->work);
+	return 0;
+}
+EXPORT_SYMBOL_GPL(sysfs_schedule_callback);

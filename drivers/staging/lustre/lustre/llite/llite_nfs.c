@@ -42,19 +42,16 @@
  */
 
 #define DEBUG_SUBSYSTEM S_LLITE
-#include "../include/lustre_lite.h"
+#include <lustre_lite.h>
 #include "llite_internal.h"
 #include <linux/exportfs.h>
 
 __u32 get_uuid2int(const char *name, int len)
 {
 	__u32 key0 = 0x12a3fe2d, key1 = 0x37abe8f9;
-
 	while (len--) {
 		__u32 key = key1 + (key0 ^ (*name++ * 7152373));
-
-		if (key & 0x80000000)
-			key -= 0x7fffffff;
+		if (key & 0x80000000) key -= 0x7fffffff;
 		key1 = key0;
 		key0 = key;
 	}
@@ -79,7 +76,8 @@ void get_uuid2fsid(const char *name, int len, __kernel_fsid_t *fsid)
 
 static int ll_nfs_test_inode(struct inode *inode, void *opaque)
 {
-	return lu_fid_eq(&ll_i2info(inode)->lli_fid, opaque);
+	return lu_fid_eq(&ll_i2info(inode)->lli_fid,
+			 (struct lu_fid *)opaque);
 }
 
 struct inode *search_inode_for_lustre(struct super_block *sb,
@@ -100,14 +98,14 @@ struct inode *search_inode_for_lustre(struct super_block *sb,
 	if (inode)
 		return inode;
 
-	rc = ll_get_default_mdsize(sbi, &eadatalen);
+	rc = ll_get_max_mdsize(sbi, &eadatalen);
 	if (rc)
 		return ERR_PTR(rc);
 
 	/* Because inode is NULL, ll_prep_md_op_data can not
 	 * be used here. So we allocate op_data ourselves */
-	op_data = kzalloc(sizeof(*op_data), GFP_NOFS);
-	if (!op_data)
+	OBD_ALLOC_PTR(op_data);
+	if (op_data == NULL)
 		return ERR_PTR(-ENOMEM);
 
 	op_data->op_fid1 = *fid;
@@ -116,7 +114,7 @@ struct inode *search_inode_for_lustre(struct super_block *sb,
 
 	/* mds_fid2dentry ignores f_type */
 	rc = md_getattr(sbi->ll_md_exp, op_data, &req);
-	kfree(op_data);
+	OBD_FREE_PTR(op_data);
 	if (rc) {
 		CERROR("can't get object attrs, fid "DFID", rc %d\n",
 		       PFID(fid), rc);
@@ -168,8 +166,11 @@ ll_iget_for_nfs(struct super_block *sb, struct lu_fid *fid, struct lu_fid *paren
 		spin_unlock(&lli->lli_lock);
 	}
 
-	/* N.B. d_obtain_alias() drops inode ref on error */
 	result = d_obtain_alias(inode);
+	if (IS_ERR(result))
+		return result;
+
+	ll_dops_init(result, 1, 0);
 
 	return result;
 }
@@ -204,15 +205,13 @@ static int ll_encode_fh(struct inode *inode, __u32 *fh, int *plen,
 	return LUSTRE_NFS_FID;
 }
 
-static int ll_nfs_get_name_filldir(struct dir_context *ctx, const char *name,
-				   int namelen, loff_t hash, u64 ino,
-				   unsigned type)
+static int ll_nfs_get_name_filldir(void *cookie, const char *name, int namelen,
+				   loff_t hash, u64 ino, unsigned type)
 {
 	/* It is hack to access lde_fid for comparison with lgd_fid.
 	 * So the input 'name' must be part of the 'lu_dirent'. */
 	struct lu_dirent *lde = container_of0(name, struct lu_dirent, lde_name);
-	struct ll_getname_data *lgd =
-		container_of(ctx, struct ll_getname_data, ctx);
+	struct ll_getname_data *lgd = cookie;
 	struct lu_fid fid;
 
 	fid_le_to_cpu(&fid, &lde->lde_fid);
@@ -227,23 +226,19 @@ static int ll_nfs_get_name_filldir(struct dir_context *ctx, const char *name,
 static int ll_get_name(struct dentry *dentry, char *name,
 		       struct dentry *child)
 {
-	struct inode *dir = d_inode(dentry);
+	struct inode *dir = dentry->d_inode;
 	int rc;
 	struct ll_getname_data lgd = {
 		.lgd_name = name,
-		.lgd_fid = ll_i2info(d_inode(child))->lli_fid,
+		.lgd_fid = ll_i2info(child->d_inode)->lli_fid,
 		.ctx.actor = ll_nfs_get_name_filldir,
 	};
 
-	if (!dir || !S_ISDIR(dir->i_mode)) {
-		rc = -ENOTDIR;
-		goto out;
-	}
+	if (!dir || !S_ISDIR(dir->i_mode))
+		GOTO(out, rc = -ENOTDIR);
 
-	if (!dir->i_fop) {
-		rc = -EINVAL;
-		goto out;
-	}
+	if (!dir->i_fop)
+		GOTO(out, rc = -EINVAL);
 
 	mutex_lock(&dir->i_mutex);
 	rc = ll_dir_read(dir, &lgd.ctx);
@@ -279,7 +274,7 @@ static struct dentry *ll_fh_to_parent(struct super_block *sb, struct fid *fid,
 static struct dentry *ll_get_parent(struct dentry *dchild)
 {
 	struct ptlrpc_request *req = NULL;
-	struct inode	  *dir = d_inode(dchild);
+	struct inode	  *dir = dchild->d_inode;
 	struct ll_sb_info     *sbi;
 	struct dentry	 *result = NULL;
 	struct mdt_body       *body;
@@ -295,7 +290,7 @@ static struct dentry *ll_get_parent(struct dentry *dchild)
 	CDEBUG(D_INFO, "getting parent for (%lu,"DFID")\n",
 			dir->i_ino, PFID(ll_inode2fid(dir)));
 
-	rc = ll_get_default_mdsize(sbi, &lmmsize);
+	rc = ll_get_max_mdsize(sbi, &lmmsize);
 	if (rc != 0)
 		return ERR_PTR(rc);
 

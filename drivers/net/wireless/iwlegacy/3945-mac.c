@@ -1248,7 +1248,14 @@ il3945_rx_handle(struct il_priv *il)
 		len = le32_to_cpu(pkt->len_n_flags) & IL_RX_FRAME_SIZE_MSK;
 		len += sizeof(u32);	/* account for status word */
 
-		reclaim = il_need_reclaim(il, pkt);
+		/* Reclaim a command buffer only if this packet is a response
+		 *   to a (driver-originated) command.
+		 * If the packet (e.g. Rx frame) originated from uCode,
+		 *   there is no command buffer to reclaim.
+		 * Ucode should set SEQ_RX_FRAME bit if ucode-originated,
+		 *   but apparently a few don't get set; catch them here. */
+		reclaim = !(pkt->hdr.sequence & SEQ_RX_FRAME) &&
+		    pkt->hdr.cmd != N_STATS && pkt->hdr.cmd != C_TX;
 
 		/* Based on type of command response or notification,
 		 *   handle those that need handling via function in
@@ -1488,14 +1495,12 @@ il3945_irq_tasklet(struct il_priv *il)
 	if (inta & CSR_INT_BIT_WAKEUP) {
 		D_ISR("Wakeup interrupt\n");
 		il_rx_queue_update_write_ptr(il, &il->rxq);
-
-		spin_lock_irqsave(&il->lock, flags);
 		il_txq_update_write_ptr(il, &il->txq[0]);
 		il_txq_update_write_ptr(il, &il->txq[1]);
 		il_txq_update_write_ptr(il, &il->txq[2]);
 		il_txq_update_write_ptr(il, &il->txq[3]);
 		il_txq_update_write_ptr(il, &il->txq[4]);
-		spin_unlock_irqrestore(&il->lock, flags);
+		il_txq_update_write_ptr(il, &il->txq[5]);
 
 		il->isr_stats.wakeup++;
 		handled |= CSR_INT_BIT_WAKEUP;
@@ -3048,7 +3053,7 @@ il3945_configure_filter(struct ieee80211_hw *hw, unsigned int changed_flags,
 	D_MAC80211("Enter: changed: 0x%x, total: 0x%x\n", changed_flags,
 		   *total_flags);
 
-	CHK(FIF_OTHER_BSS, RXON_FILTER_PROMISC_MSK);
+	CHK(FIF_OTHER_BSS | FIF_PROMISC_IN_BSS, RXON_FILTER_PROMISC_MSK);
 	CHK(FIF_CONTROL, RXON_FILTER_CTL2HOST_MSK);
 	CHK(FIF_BCN_PRBRESP_PROMISC, RXON_FILTER_BCON_AWARE_MSK);
 
@@ -3074,7 +3079,7 @@ il3945_configure_filter(struct ieee80211_hw *hw, unsigned int changed_flags,
 	 * filters into the device.
 	 */
 	*total_flags &=
-	    FIF_OTHER_BSS | FIF_ALLMULTI |
+	    FIF_OTHER_BSS | FIF_ALLMULTI | FIF_PROMISC_IN_BSS |
 	    FIF_BCN_PRBRESP_PROMISC | FIF_CONTROL;
 }
 
@@ -3259,7 +3264,7 @@ il3945_show_measurement(struct device *d, struct device_attribute *attr,
 
 	while (size && PAGE_SIZE - len) {
 		hex_dump_to_buffer(data + ofs, size, 16, 1, buf + len,
-				   PAGE_SIZE - len, true);
+				   PAGE_SIZE - len, 1);
 		len = strlen(buf);
 		if (PAGE_SIZE - len)
 			buf[len++] = '\n';
@@ -3429,7 +3434,9 @@ il3945_setup_deferred_work(struct il_priv *il)
 
 	il3945_hw_setup_deferred_work(il);
 
-	setup_timer(&il->watchdog, il_bg_watchdog, (unsigned long)il);
+	init_timer(&il->watchdog);
+	il->watchdog.data = (unsigned long)il;
+	il->watchdog.function = il_bg_watchdog;
 
 	tasklet_init(&il->irq_tasklet,
 		     (void (*)(unsigned long))il3945_irq_tasklet,
@@ -3561,10 +3568,8 @@ il3945_setup_mac(struct il_priv *il)
 	hw->vif_data_size = sizeof(struct il_vif_priv);
 
 	/* Tell mac80211 our characteristics */
-	ieee80211_hw_set(hw, SUPPORTS_DYNAMIC_PS);
-	ieee80211_hw_set(hw, SUPPORTS_PS);
-	ieee80211_hw_set(hw, SIGNAL_DBM);
-	ieee80211_hw_set(hw, SPECTRUM_MGMT);
+	hw->flags = IEEE80211_HW_SIGNAL_DBM | IEEE80211_HW_SPECTRUM_MGMT |
+		    IEEE80211_HW_SUPPORTS_PS | IEEE80211_HW_SUPPORTS_DYNAMIC_PS;
 
 	hw->wiphy->interface_modes =
 	    BIT(NL80211_IFTYPE_STATION) | BIT(NL80211_IFTYPE_ADHOC);

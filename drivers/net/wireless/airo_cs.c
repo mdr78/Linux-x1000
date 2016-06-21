@@ -56,18 +56,18 @@ static void airo_release(struct pcmcia_device *link);
 
 static void airo_detach(struct pcmcia_device *p_dev);
 
-struct local_info {
+typedef struct local_info_t {
 	struct net_device *eth_dev;
-};
+} local_info_t;
 
 static int airo_probe(struct pcmcia_device *p_dev)
 {
-	struct local_info *local;
+	local_info_t *local;
 
 	dev_dbg(&p_dev->dev, "airo_attach()\n");
 
 	/* Allocate space for private device-specific data */
-	local = kzalloc(sizeof(*local), GFP_KERNEL);
+	local = kzalloc(sizeof(local_info_t), GFP_KERNEL);
 	if (!local)
 		return -ENOMEM;
 
@@ -82,11 +82,10 @@ static void airo_detach(struct pcmcia_device *link)
 
 	airo_release(link);
 
-	if (((struct local_info *)link->priv)->eth_dev) {
-		stop_airo_card(((struct local_info *)link->priv)->eth_dev,
-			       0);
+	if (((local_info_t *)link->priv)->eth_dev) {
+		stop_airo_card(((local_info_t *)link->priv)->eth_dev, 0);
 	}
-	((struct local_info *)link->priv)->eth_dev = NULL;
+	((local_info_t *)link->priv)->eth_dev = NULL;
 
 	kfree(link->priv);
 } /* airo_detach */
@@ -102,7 +101,7 @@ static int airo_cs_config_check(struct pcmcia_device *p_dev, void *priv_data)
 
 static int airo_config(struct pcmcia_device *link)
 {
-	struct local_info *dev;
+	local_info_t *dev;
 	int ret;
 
 	dev = link->priv;
@@ -122,10 +121,10 @@ static int airo_config(struct pcmcia_device *link)
 	ret = pcmcia_enable_device(link);
 	if (ret)
 		goto failed;
-	((struct local_info *)link->priv)->eth_dev =
+	((local_info_t *)link->priv)->eth_dev =
 		init_airo_card(link->irq,
 			       link->resource[0]->start, 1, &link->dev);
-	if (!((struct local_info *)link->priv)->eth_dev)
+	if (!((local_info_t *)link->priv)->eth_dev)
 		goto failed;
 
 	return 0;
@@ -143,7 +142,7 @@ static void airo_release(struct pcmcia_device *link)
 
 static int airo_suspend(struct pcmcia_device *link)
 {
-	struct local_info *local = link->priv;
+	local_info_t *local = link->priv;
 
 	netif_device_detach(local->eth_dev);
 
@@ -152,7 +151,7 @@ static int airo_suspend(struct pcmcia_device *link)
 
 static int airo_resume(struct pcmcia_device *link)
 {
-	struct local_info *local = link->priv;
+	local_info_t *local = link->priv;
 
 	if (link->open) {
 		reset_airo_card(local->eth_dev);

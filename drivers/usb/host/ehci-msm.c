@@ -80,12 +80,12 @@ static int ehci_msm_probe(struct platform_device *pdev)
 		return  -ENOMEM;
 	}
 
-	ret = platform_get_irq(pdev, 0);
-	if (ret < 0) {
+	hcd->irq = platform_get_irq(pdev, 0);
+	if (hcd->irq < 0) {
 		dev_err(&pdev->dev, "Unable to get IRQ resource\n");
+		ret = hcd->irq;
 		goto put_hcd;
 	}
-	hcd->irq = ret;
 
 	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
 	if (!res) {
@@ -125,7 +125,7 @@ static int ehci_msm_probe(struct platform_device *pdev)
 		goto put_hcd;
 	}
 
-	hcd->usb_phy = phy;
+	hcd->phy = phy;
 	device_init_wakeup(&pdev->dev, 1);
 	/*
 	 * OTG device parent of HCD takes care of putting
@@ -152,7 +152,7 @@ static int ehci_msm_remove(struct platform_device *pdev)
 	pm_runtime_disable(&pdev->dev);
 	pm_runtime_set_suspended(&pdev->dev);
 
-	otg_set_host(hcd->usb_phy->otg, NULL);
+	otg_set_host(hcd->phy->otg, NULL);
 
 	/* FIXME: need to call usb_remove_hcd() here? */
 
@@ -191,7 +191,7 @@ static const struct dev_pm_ops ehci_msm_dev_pm_ops = {
 	.resume          = ehci_msm_pm_resume,
 };
 
-static const struct of_device_id msm_ehci_dt_match[] = {
+static struct of_device_id msm_ehci_dt_match[] = {
 	{ .compatible = "qcom,ehci-host", },
 	{}
 };

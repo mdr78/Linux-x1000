@@ -54,7 +54,7 @@ $(obj)/built-in.o: $(obj)/vdso-syms.o
 $(obj)/built-in.o: ld_flags += -R $(obj)/vdso-syms.o
 
 SYSCFLAGS_vdso.so.dbg = -shared -s -Wl,-soname=linux-vdso.so.1 \
-                            $(call cc-ldoption, -Wl$(comma)--hash-style=both)
+                            $(call cc-ldoption, -Wl$(comma)--hash-style=sysv)
 SYSCFLAGS_vdso_syms.o = -r
 $(obj)/vdso-syms.o: $(src)/vdso.lds $(obj)/vrt_sigreturn.o FORCE
 	$(call if_changed,vdsold)
@@ -104,7 +104,7 @@ $(obj-vdso32:%=%): KBUILD_AFLAGS = $(KBUILD_AFLAGS_32)
 $(obj-vdso32:%=%): KBUILD_CFLAGS = $(KBUILD_CFLAGS_32)
 
 $(obj)/vgettimeofday32.o: $(obj)/vgettimeofday.c
-	$(call if_changed_rule,cc_o_c)
+	$(call if_changed,cc_o_c)
 
 $(obj)/vrt_sigreturn32.o: $(obj)/vrt_sigreturn.S
 	$(call if_changed,as_o_S)
@@ -113,6 +113,6 @@ $(obj)/vrt_sigreturn32.o: $(obj)/vrt_sigreturn.S
 $(obj)/vdso32.o: $(obj)/vdso32.so
 
 SYSCFLAGS_vdso32.so.dbg = -m32 -shared -s -Wl,-soname=linux-vdso32.so.1 \
-			    $(call cc-ldoption, -Wl$(comma)--hash-style=both)
+			    $(call cc-ldoption, -Wl$(comma)--hash-style=sysv)
 $(obj)/vdso32.so.dbg: $(src)/vdso.lds $(obj-vdso32)
 	$(call if_changed,vdsold)

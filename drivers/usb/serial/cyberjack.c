@@ -220,7 +220,7 @@ static int cyberjack_write(struct tty_struct *tty,
 		result = usb_submit_urb(port->write_urb, GFP_ATOMIC);
 		if (result) {
 			dev_err(&port->dev,
-				"%s - failed submitting write urb, error %d\n",
+				"%s - failed submitting write urb, error %d",
 				__func__, result);
 			/* Throw away data. No better idea what to do with it. */
 			priv->wrfilled = 0;

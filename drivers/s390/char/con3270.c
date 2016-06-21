@@ -7,7 +7,6 @@
  *     Copyright IBM Corp. 2003, 2009
  */
 
-#include <linux/module.h>
 #include <linux/console.h>
 #include <linux/init.h>
 #include <linux/interrupt.h>
@@ -30,9 +29,6 @@
 #define CON3270_STRING_PAGES 4
 
 static struct raw3270_fn con3270_fn;
-
-static bool auto_update = 1;
-module_param(auto_update, bool, 0);
 
 /*
  * Main 3270 console view data structure.
@@ -208,8 +204,6 @@ con3270_update(struct con3270 *cp)
 	struct string *s, *n;
 	int rc;
 
-	if (!auto_update && !raw3270_view_active(&cp->view))
-		return;
 	if (cp->view.dev)
 		raw3270_activate_view(&cp->view);
 
@@ -413,10 +407,6 @@ con3270_irq(struct con3270 *cp, struct raw3270_request *rq, struct irb *irb)
 		else
 			/* Normal end. Copy residual count. */
 			rq->rescnt = irb->scsw.cmd.count;
-	} else if (irb->scsw.cmd.dstat & DEV_STAT_DEV_END) {
-		/* Interrupt without an outstanding request -> update all */
-		cp->update_flags = CON_UPDATE_ALL;
-		con3270_set_timer(cp, 1);
 	}
 	return RAW3270_IO_DONE;
 }
@@ -539,7 +529,6 @@ con3270_flush(void)
 	if (!cp->view.dev)
 		return;
 	raw3270_pm_unfreeze(&cp->view);
-	raw3270_activate_view(&cp->view);
 	spin_lock_irqsave(&cp->view.lock, flags);
 	con3270_wait_write(cp);
 	cp->nr_up = 0;

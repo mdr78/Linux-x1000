@@ -847,6 +847,7 @@ void __init vr41xx_siu_early_setup(struct uart_port *port)
 	siu_uart_ports[port->line].type = port->type;
 	siu_uart_ports[port->line].uartclk = SIU_BAUD_BASE * 16;
 	siu_uart_ports[port->line].mapbase = port->mapbase;
+	siu_uart_ports[port->line].mapbase = port->mapbase;
 	siu_uart_ports[port->line].ops = &siu_uart_ops;
 }
 
@@ -954,6 +955,7 @@ static struct platform_driver siu_device_driver = {
 	.resume		= siu_resume,
 	.driver		= {
 		.name	= "SIU",
+		.owner	= THIS_MODULE,
 	},
 };
 

@@ -1,6 +1,6 @@
-#!/bin/bash
+#!/bin/sh
 #
-# Usage: configinit.sh config-spec-file [ build output dir ]
+# sh configinit.sh config-spec-file [ build output dir ]
 #
 # Create a .config file from the spec file.  Run from the kernel source tree.
 # Exits with 0 if all went well, with 1 if all went well but the config
@@ -62,11 +62,11 @@ grep '^grep' < $T/u.sh > $T/upd.sh
 echo "cat - $c" >> $T/upd.sh
 make mrproper
 make $buildloc distclean > $builddir/Make.distclean 2>&1
-make $buildloc $TORTURE_DEFCONFIG > $builddir/Make.defconfig.out 2>&1
+make $buildloc defconfig > $builddir/Make.defconfig.out 2>&1
 mv $builddir/.config $builddir/.config.sav
 sh $T/upd.sh < $builddir/.config.sav > $builddir/.config
 cp $builddir/.config $builddir/.config.new
-yes '' | make $buildloc oldconfig > $builddir/Make.oldconfig.out 2> $builddir/Make.oldconfig.err
+yes '' | make $buildloc oldconfig > $builddir/Make.modconfig.out 2>&1
 
 # verify new config matches specification.
 configcheck.sh $builddir/.config $c

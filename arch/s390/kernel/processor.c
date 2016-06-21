@@ -8,49 +8,31 @@
 
 #include <linux/kernel.h>
 #include <linux/init.h>
+#include <linux/smp.h>
 #include <linux/seq_file.h>
 #include <linux/delay.h>
 #include <linux/cpu.h>
-#include <asm/diag.h>
 #include <asm/elf.h>
 #include <asm/lowcore.h>
 #include <asm/param.h>
-#include <asm/smp.h>
 
 static DEFINE_PER_CPU(struct cpuid, cpu_id);
-
-void notrace cpu_relax(void)
-{
-	if (!smp_cpu_mtid && MACHINE_HAS_DIAG44) {
-		diag_stat_inc(DIAG_STAT_X044);
-		asm volatile("diag 0,0,0x44");
-	}
-	barrier();
-}
-EXPORT_SYMBOL(cpu_relax);
 
 /*
  * cpu_init - initializes state that is per-CPU.
  */
 void cpu_init(void)
 {
-	struct cpuid *id = this_cpu_ptr(&cpu_id);
+	struct s390_idle_data *idle = &__get_cpu_var(s390_idle);
+	struct cpuid *id = &__get_cpu_var(cpu_id);
 
 	get_cpu_id(id);
 	atomic_inc(&init_mm.mm_count);
 	current->active_mm = &init_mm;
 	BUG_ON(current->mm);
 	enter_lazy_tlb(&init_mm, current);
+	memset(idle, 0, sizeof(*idle));
 }
-
-/*
- * cpu_have_feature - Test CPU features on module initialization
- */
-int cpu_have_feature(unsigned int num)
-{
-	return elf_hwcap & (1UL << num);
-}
-EXPORT_SYMBOL(cpu_have_feature);
 
 /*
  * show_cpuinfo - Get information on one CPU for use by procfs.
@@ -59,7 +41,7 @@ static int show_cpuinfo(struct seq_file *m, void *v)
 {
 	static const char *hwcap_str[] = {
 		"esan3", "zarch", "stfle", "msa", "ldisp", "eimm", "dfp",
-		"edat", "etf3eh", "highgprs", "te", "vx"
+		"edat", "etf3eh", "highgprs", "te"
 	};
 	unsigned long n = (unsigned long) v - 1;
 	int i;

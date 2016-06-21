@@ -12,7 +12,6 @@
 #include <linux/module.h>
 #include <linux/delay.h>
 #include <linux/device.h>
-#include <linux/gpio.h>
 #include <linux/slab.h>
 #include <linux/io.h>
 #include <linux/ioport.h>
@@ -351,6 +350,7 @@ static void *bfin_spi_next_transfer(struct bfin_spi_master_data *drv_data)
 static void bfin_spi_giveback(struct bfin_spi_master_data *drv_data)
 {
 	struct bfin_spi_slave_data *chip = drv_data->cur_chip;
+	struct spi_transfer *last_transfer;
 	unsigned long flags;
 	struct spi_message *msg;
 
@@ -361,6 +361,9 @@ static void bfin_spi_giveback(struct bfin_spi_master_data *drv_data)
 	drv_data->cur_chip = NULL;
 	queue_work(drv_data->workqueue, &drv_data->pump_messages);
 	spin_unlock_irqrestore(&drv_data->lock, flags);
+
+	last_transfer = list_entry(msg->transfers.prev,
+				   struct spi_transfer, transfer_list);
 
 	msg->state = NULL;
 
@@ -559,7 +562,7 @@ static void bfin_spi_pump_transfers(unsigned long data)
 	struct spi_transfer *previous = NULL;
 	struct bfin_spi_slave_data *chip = NULL;
 	unsigned int bits_per_word;
-	u16 cr, cr_width = 0, dma_width, dma_config;
+	u16 cr, cr_width, dma_width, dma_config;
 	u32 tranf_success = 1;
 	u8 full_duplex = 0;
 
@@ -648,6 +651,7 @@ static void bfin_spi_pump_transfers(unsigned long data)
 	} else if (bits_per_word == 8) {
 		drv_data->n_bytes = bits_per_word/8;
 		drv_data->len = transfer->len;
+		cr_width = 0;
 		drv_data->ops = &bfin_bfin_spi_transfer_ops_u8;
 	}
 	cr = bfin_read(&drv_data->regs->ctl) & ~(BIT_CTL_TIMOD | BIT_CTL_WORDSIZE);
@@ -661,7 +665,11 @@ static void bfin_spi_pump_transfers(unsigned long data)
 	message->state = RUNNING_STATE;
 	dma_config = 0;
 
-	bfin_write(&drv_data->regs->baud, hz_to_spi_baud(transfer->speed_hz));
+	/* Speed setup (surely valid because already checked) */
+	if (transfer->speed_hz)
+		bfin_write(&drv_data->regs->baud, hz_to_spi_baud(transfer->speed_hz));
+	else
+		bfin_write(&drv_data->regs->baud, chip->baud);
 
 	bfin_write(&drv_data->regs->stat, BIT_STAT_CLR);
 	bfin_spi_cs_active(drv_data, chip);
@@ -1022,6 +1030,10 @@ static int bfin_spi_setup(struct spi_device *spi)
 	}
 
 	/* translate common spi framework into our register */
+	if (spi->mode & ~(SPI_CPOL | SPI_CPHA | SPI_LSB_FIRST)) {
+		dev_err(&spi->dev, "unsupported spi modes detected\n");
+		goto error;
+	}
 	if (spi->mode & SPI_CPOL)
 		chip->ctl_reg |= BIT_CTL_CPOL;
 	if (spi->mode & SPI_CPHA)
@@ -1450,6 +1462,7 @@ MODULE_ALIAS("platform:bfin-spi");
 static struct platform_driver bfin_spi_driver = {
 	.driver	= {
 		.name	= DRV_NAME,
+		.owner	= THIS_MODULE,
 		.pm	= BFIN_SPI_PM_OPS,
 	},
 	.probe		= bfin_spi_probe,

@@ -36,7 +36,6 @@
 #include "tdfx_drv.h"
 
 #include <drm/drm_pciids.h>
-#include <drm/drm_legacy.h>
 
 static struct pci_device_id pciidlist[] = {
 	tdfx_PCI_IDS
@@ -47,7 +46,7 @@ static const struct file_operations tdfx_driver_fops = {
 	.open = drm_open,
 	.release = drm_release,
 	.unlocked_ioctl = drm_ioctl,
-	.mmap = drm_legacy_mmap,
+	.mmap = drm_mmap,
 	.poll = drm_poll,
 #ifdef CONFIG_COMPAT
 	.compat_ioctl = drm_compat_ioctl,
@@ -56,7 +55,6 @@ static const struct file_operations tdfx_driver_fops = {
 };
 
 static struct drm_driver driver = {
-	.set_busid = drm_pci_set_busid,
 	.fops = &tdfx_driver_fops,
 	.name = DRIVER_NAME,
 	.desc = DRIVER_DESC,

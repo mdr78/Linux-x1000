@@ -16,7 +16,9 @@
 #include <linux/nfs_fs.h>
 #include "internal.h"
 
-#define NFSDBG_FACILITY	NFSDBG_MOUNT
+#ifdef NFS_DEBUG
+# define NFSDBG_FACILITY	NFSDBG_MOUNT
+#endif
 
 /*
  * Defined by RFC 1094, section A.3; and RFC 1813, section 5.1.4
@@ -65,7 +67,7 @@ enum {
 	MOUNTPROC3_EXPORT	= 5,
 };
 
-static struct rpc_program mnt_program;
+static const struct rpc_program mnt_program;
 
 /*
  * Defined by OpenGroup XNFS Version 3W, chapter 8
@@ -142,7 +144,7 @@ struct mnt_fhstatus {
  * with the list from the server or a faked-up list if the server didn't
  * provide one.
  */
-int nfs_mount(struct nfs_mount_request *info, int m_prog)
+int nfs_mount(struct nfs_mount_request *info)
 {
 	struct mountres	result = {
 		.fh		= info->fh,
@@ -176,7 +178,6 @@ int nfs_mount(struct nfs_mount_request *info, int m_prog)
 	if (info->noresvport)
 		args.flags |= RPC_CLNT_CREATE_NONPRIVPORT;
 
-	mnt_program.number = m_prog;
 	mnt_clnt = rpc_create(&args);
 	if (IS_ERR(mnt_clnt))
 		goto out_clnt_err;
@@ -525,7 +526,7 @@ static const struct rpc_version *mnt_version[] = {
 
 static struct rpc_stat mnt_stats;
 
-static struct rpc_program mnt_program = {
+static const struct rpc_program mnt_program = {
 	.name		= "mount",
 	.number		= NFS_MNT_PROGRAM,
 	.nrvers		= ARRAY_SIZE(mnt_version),

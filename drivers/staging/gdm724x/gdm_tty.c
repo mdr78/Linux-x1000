@@ -88,7 +88,7 @@ static int gdm_tty_install(struct tty_driver *driver, struct tty_struct *tty)
 
 	mutex_lock(&gdm_table_lock);
 	gdm = gdm_table[i][j];
-	if (!gdm) {
+	if (gdm == NULL) {
 		mutex_unlock(&gdm_table_lock);
 		return -ENODEV;
 	}
@@ -111,28 +111,24 @@ static int gdm_tty_install(struct tty_driver *driver, struct tty_struct *tty)
 static int gdm_tty_open(struct tty_struct *tty, struct file *filp)
 {
 	struct gdm *gdm = tty->driver_data;
-
 	return tty_port_open(&gdm->port, tty, filp);
 }
 
 static void gdm_tty_cleanup(struct tty_struct *tty)
 {
 	struct gdm *gdm = tty->driver_data;
-
 	tty_port_put(&gdm->port);
 }
 
 static void gdm_tty_hangup(struct tty_struct *tty)
 {
 	struct gdm *gdm = tty->driver_data;
-
 	tty_port_hangup(&gdm->port);
 }
 
 static void gdm_tty_close(struct tty_struct *tty, struct file *filp)
 {
 	struct gdm *gdm = tty->driver_data;
-
 	tty_port_close(&gdm->port, tty, filp);
 }
 
@@ -143,7 +139,6 @@ static int gdm_tty_recv_complete(void *data,
 				 int complete)
 {
 	struct gdm *gdm = tty_dev->gdm[index];
-
 	if (!GDM_TTY_READY(gdm)) {
 		if (complete == RECV_PACKET_PROCESS_COMPLETE)
 			gdm_tty_recv(gdm, gdm_tty_recv_complete);
@@ -167,7 +162,7 @@ static int gdm_tty_recv_complete(void *data,
 
 static void gdm_tty_send_complete(void *arg)
 {
-	struct gdm *gdm = arg;
+	struct gdm *gdm = (struct gdm *)arg;
 
 	if (!GDM_TTY_READY(gdm))
 		return;
@@ -193,7 +188,7 @@ static int gdm_tty_write(struct tty_struct *tty, const unsigned char *buf,
 		sending_len = remain > MUX_TX_MAX_SIZE ? MUX_TX_MAX_SIZE :
 							 remain;
 		gdm_tty_send(gdm,
-			     (void *)(buf + sent_len),
+			     (void *)(buf+sent_len),
 			     sending_len,
 			     gdm->index,
 			     gdm_tty_send_complete,
@@ -226,7 +221,7 @@ int register_lte_tty_device(struct tty_dev *tty_dev, struct device *device)
 
 	for (i = 0; i < TTY_MAX_COUNT; i++) {
 
-		gdm = kmalloc(sizeof(*gdm), GFP_KERNEL);
+		gdm = kmalloc(sizeof(struct gdm), GFP_KERNEL);
 		if (!gdm)
 			return -ENOMEM;
 

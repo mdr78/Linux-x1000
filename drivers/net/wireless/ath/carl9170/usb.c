@@ -651,7 +651,6 @@ int carl9170_exec_cmd(struct ar9170 *ar, const enum carl9170_cmd_oids cmd,
 	unsigned int plen, void *payload, unsigned int outlen, void *out)
 {
 	int err = -ENOMEM;
-	unsigned long time_left;
 
 	if (!IS_ACCEPTING_CMD(ar))
 		return -EIO;
@@ -673,8 +672,8 @@ int carl9170_exec_cmd(struct ar9170 *ar, const enum carl9170_cmd_oids cmd,
 	err = __carl9170_exec_cmd(ar, &ar->cmd, false);
 
 	if (!(cmd & CARL9170_CMD_ASYNC_FLAG)) {
-		time_left = wait_for_completion_timeout(&ar->cmd_wait, HZ);
-		if (time_left == 0) {
+		err = wait_for_completion_timeout(&ar->cmd_wait, HZ);
+		if (err == 0) {
 			err = -ETIMEDOUT;
 			goto err_unbuf;
 		}
@@ -1100,14 +1099,8 @@ static int carl9170_usb_probe(struct usb_interface *intf,
 
 	carl9170_set_state(ar, CARL9170_STOPPED);
 
-	err = request_firmware_nowait(THIS_MODULE, 1, CARL9170FW_NAME,
+	return request_firmware_nowait(THIS_MODULE, 1, CARL9170FW_NAME,
 		&ar->udev->dev, GFP_KERNEL, ar, carl9170_usb_firmware_step2);
-	if (err) {
-		usb_put_dev(udev);
-		usb_put_dev(udev);
-		carl9170_free(ar);
-	}
-	return err;
 }
 
 static void carl9170_usb_disconnect(struct usb_interface *intf)

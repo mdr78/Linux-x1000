@@ -47,7 +47,6 @@ struct device_node;
 
 #define FB_MISC_PRIM_COLOR	1
 #define FB_MISC_1ST_DETAIL	2	/* First Detailed Timing is preferred */
-#define FB_MISC_HDMI		4
 struct fb_chroma {
 	__u32 redx;	/* in fraction of 1024 */
 	__u32 greenx;
@@ -156,7 +155,7 @@ struct fb_cursor_user {
 #define FB_EVENT_GET_REQ                0x0D
 /*      Unbind from the console if possible */
 #define FB_EVENT_FB_UNBIND              0x0E
-/*      CONSOLE-SPECIFIC: remap all consoles to new fb - for vga_switcheroo */
+/*      CONSOLE-SPECIFIC: remap all consoles to new fb - for vga switcheroo */
 #define FB_EVENT_REMAP_ALL_CONSOLE      0x0F
 /*      A hardware display blank early change occured */
 #define FB_EARLY_EVENT_BLANK		0x10
@@ -483,10 +482,7 @@ struct fb_info {
 #ifdef CONFIG_FB_TILEBLITTING
 	struct fb_tile_ops *tileops;    /* Tile Blitting */
 #endif
-	union {
-		char __iomem *screen_base;	/* Virtual address */
-		char *screen_buffer;
-	};
+	char __iomem *screen_base;	/* Virtual address */
 	unsigned long screen_size;	/* Amount of ioremapped VRAM or 0 */ 
 	void *pseudo_palette;		/* Fake palette of 16 colors */ 
 #define FBINFO_STATE_RUNNING	0
@@ -556,7 +552,7 @@ static inline struct apertures_struct *alloc_apertures(unsigned int max_num) {
 #define fb_memcpy_fromfb sbus_memcpy_fromio
 #define fb_memcpy_tofb sbus_memcpy_toio
 
-#elif defined(__i386__) || defined(__alpha__) || defined(__x86_64__) || defined(__hppa__) || defined(__sh__) || defined(__powerpc__) || defined(__avr32__) || defined(__bfin__) || defined(__arm__)
+#elif defined(__i386__) || defined(__alpha__) || defined(__x86_64__) || defined(__hppa__) || defined(__sh__) || defined(__powerpc__) || defined(__avr32__) || defined(__bfin__)
 
 #define fb_readb __raw_readb
 #define fb_readw __raw_readw
@@ -645,7 +641,7 @@ static inline void unlock_fb_info(struct fb_info *info)
 static inline void __fb_pad_aligned_buffer(u8 *dst, u32 d_pitch,
 					   u8 *src, u32 s_pitch, u32 height)
 {
-	u32 i, j;
+	int i, j;
 
 	d_pitch -= s_pitch;
 
@@ -729,9 +725,7 @@ extern int fb_videomode_from_videomode(const struct videomode *vm,
 				       struct fb_videomode *fbmode);
 
 /* drivers/video/modedb.c */
-#define VESA_MODEDB_SIZE 43
-#define DMT_SIZE 0x50
-
+#define VESA_MODEDB_SIZE 34
 extern void fb_var_to_videomode(struct fb_videomode *mode,
 				const struct fb_var_screeninfo *var);
 extern void fb_videomode_to_var(struct fb_var_screeninfo *var,
@@ -782,17 +776,9 @@ struct fb_videomode {
 	u32 flag;
 };
 
-struct dmt_videomode {
-	u32 dmt_id;
-	u32 std_2byte_code;
-	u32 cvt_3byte_code;
-	const struct fb_videomode *mode;
-};
-
 extern const char *fb_mode_option;
 extern const struct fb_videomode vesa_modes[];
-extern const struct fb_videomode cea_modes[65];
-extern const struct dmt_videomode dmt_modes[];
+extern const struct fb_videomode cea_modes[64];
 
 struct fb_modelist {
 	struct list_head list;

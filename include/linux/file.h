@@ -19,7 +19,6 @@ struct dentry;
 struct path;
 extern struct file *alloc_file(struct path *, fmode_t mode,
 	const struct file_operations *fop);
-extern struct file *get_empty_filp(void);
 
 static inline void fput_light(struct file *file, int fput_needed)
 {
@@ -67,6 +66,7 @@ extern void set_close_on_exec(unsigned int fd, int flag);
 extern bool get_close_on_exec(unsigned int fd);
 extern void put_filp(struct file *);
 extern int get_unused_fd_flags(unsigned flags);
+#define get_unused_fd() get_unused_fd_flags(0)
 extern void put_unused_fd(unsigned int fd);
 
 extern void fd_install(unsigned int fd, struct file *file);

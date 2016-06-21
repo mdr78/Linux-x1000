@@ -34,7 +34,6 @@
 #include <linux/vmalloc.h>
 #include <linux/slab.h>
 #include <drm/drmP.h>
-#include "drm_legacy.h"
 
 #define DEBUG_SCATTER 0
 
@@ -79,8 +78,8 @@ void drm_legacy_sg_cleanup(struct drm_device *dev)
 # define ScatterHandle(x) (unsigned int)(x)
 #endif
 
-int drm_legacy_sg_alloc(struct drm_device *dev, void *data,
-			struct drm_file *file_priv)
+int drm_sg_alloc(struct drm_device *dev, void *data,
+		 struct drm_file *file_priv)
 {
 	struct drm_scatter_gather *request = data;
 	struct drm_sg_mem *entry;
@@ -195,8 +194,8 @@ int drm_legacy_sg_alloc(struct drm_device *dev, void *data,
 	return -ENOMEM;
 }
 
-int drm_legacy_sg_free(struct drm_device *dev, void *data,
-		       struct drm_file *file_priv)
+int drm_sg_free(struct drm_device *dev, void *data,
+		struct drm_file *file_priv)
 {
 	struct drm_scatter_gather *request = data;
 	struct drm_sg_mem *entry;

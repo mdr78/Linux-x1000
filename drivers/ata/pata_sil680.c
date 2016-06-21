@@ -25,6 +25,7 @@
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/pci.h>
+#include <linux/init.h>
 #include <linux/blkdev.h>
 #include <linux/delay.h>
 #include <scsi/scsi_host.h>
@@ -374,10 +375,10 @@ static int sil680_init_one(struct pci_dev *pdev, const struct pci_device_id *id)
 	host->iomap = pcim_iomap_table(pdev);
 
 	/* Setup DMA masks */
-	rc = dma_set_mask(&pdev->dev, ATA_DMA_MASK);
+	rc = pci_set_dma_mask(pdev, ATA_DMA_MASK);
 	if (rc)
 		return rc;
-	rc = dma_set_coherent_mask(&pdev->dev, ATA_DMA_MASK);
+	rc = pci_set_consistent_dma_mask(pdev, ATA_DMA_MASK);
 	if (rc)
 		return rc;
 	pci_set_master(pdev);

@@ -27,10 +27,10 @@
 #include <linux/init.h>
 #include <linux/module.h>
 #include <linux/types.h>
+#include <linux/syscore_ops.h>
 #include <linux/acpi.h>
 #include <acpi/processor.h>
 #include <xen/xen.h>
-#include <xen/xen-ops.h>
 #include <xen/interface/platform.h>
 #include <asm/xen/hypercall.h>
 
@@ -127,7 +127,7 @@ static int push_cxx_to_hypervisor(struct acpi_processor *_pr)
 			pr_debug("     C%d: %s %d uS\n",
 				 cx->type, cx->desc, (u32)cx->latency);
 		}
-	} else if ((ret != -EINVAL) && (ret != -ENOSYS))
+	} else if (ret != -EINVAL)
 		/* EINVAL means the ACPI ID is incorrect - meaning the ACPI
 		 * table is referencing a non-existing CPU - which can happen
 		 * with broken ACPI tables. */
@@ -259,7 +259,7 @@ static int push_pxx_to_hypervisor(struct acpi_processor *_pr)
 			(u32) perf->states[i].power,
 			(u32) perf->states[i].transition_latency);
 		}
-	} else if ((ret != -EINVAL) && (ret != -ENOSYS))
+	} else if (ret != -EINVAL)
 		/* EINVAL means the ACPI ID is incorrect - meaning the ACPI
 		 * table is referencing a non-existing CPU - which can happen
 		 * with broken ACPI tables. */
@@ -495,15 +495,14 @@ static int xen_upload_processor_pm_data(void)
 	return rc;
 }
 
-static int xen_acpi_processor_resume(struct notifier_block *nb,
-				     unsigned long action, void *data)
+static void xen_acpi_processor_resume(void)
 {
 	bitmap_zero(acpi_ids_done, nr_acpi_bits);
-	return xen_upload_processor_pm_data();
+	xen_upload_processor_pm_data();
 }
 
-struct notifier_block xen_acpi_processor_resume_nb = {
-	.notifier_call = xen_acpi_processor_resume,
+static struct syscore_ops xap_syscore_ops = {
+	.resume	= xen_acpi_processor_resume,
 };
 
 static int __init xen_acpi_processor_init(void)
@@ -556,13 +555,15 @@ static int __init xen_acpi_processor_init(void)
 	if (rc)
 		goto err_unregister;
 
-	xen_resume_notifier_register(&xen_acpi_processor_resume_nb);
+	register_syscore_ops(&xap_syscore_ops);
 
 	return 0;
 err_unregister:
-	for_each_possible_cpu(i)
-		acpi_processor_unregister_performance(i);
-
+	for_each_possible_cpu(i) {
+		struct acpi_processor_performance *perf;
+		perf = per_cpu_ptr(acpi_perf_data, i);
+		acpi_processor_unregister_performance(perf, i);
+	}
 err_out:
 	/* Freeing a NULL pointer is OK: alloc_percpu zeroes. */
 	free_acpi_perf_data();
@@ -573,13 +574,15 @@ static void __exit xen_acpi_processor_exit(void)
 {
 	int i;
 
-	xen_resume_notifier_unregister(&xen_acpi_processor_resume_nb);
+	unregister_syscore_ops(&xap_syscore_ops);
 	kfree(acpi_ids_done);
 	kfree(acpi_id_present);
 	kfree(acpi_id_cst_present);
-	for_each_possible_cpu(i)
-		acpi_processor_unregister_performance(i);
-
+	for_each_possible_cpu(i) {
+		struct acpi_processor_performance *perf;
+		perf = per_cpu_ptr(acpi_perf_data, i);
+		acpi_processor_unregister_performance(perf, i);
+	}
 	free_acpi_perf_data();
 }
 

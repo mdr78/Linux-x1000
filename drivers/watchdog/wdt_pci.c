@@ -49,6 +49,7 @@
 #include <linux/delay.h>
 #include <linux/notifier.h>
 #include <linux/reboot.h>
+#include <linux/init.h>
 #include <linux/fs.h>
 #include <linux/pci.h>
 #include <linux/io.h>

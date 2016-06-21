@@ -38,7 +38,6 @@
 #include <drm/drmP.h>
 #include "radeon.h"
 #include "radeon_asic.h"
-#include "radeon_audio.h"
 #include "atom.h"
 #include "rs600d.h"
 
@@ -110,7 +109,19 @@ void avivo_wait_for_vblank(struct radeon_device *rdev, int crtc)
 	}
 }
 
-void rs600_page_flip(struct radeon_device *rdev, int crtc_id, u64 crtc_base)
+void rs600_pre_page_flip(struct radeon_device *rdev, int crtc)
+{
+	/* enable the pflip int */
+	radeon_irq_kms_pflip_irq_get(rdev, crtc);
+}
+
+void rs600_post_page_flip(struct radeon_device *rdev, int crtc)
+{
+	/* disable the pflip int */
+	radeon_irq_kms_pflip_irq_put(rdev, crtc);
+}
+
+u32 rs600_page_flip(struct radeon_device *rdev, int crtc_id, u64 crtc_base)
 {
 	struct radeon_crtc *radeon_crtc = rdev->mode_info.crtcs[crtc_id];
 	u32 tmp = RREG32(AVIVO_D1GRPH_UPDATE + radeon_crtc->crtc_offset);
@@ -137,15 +148,9 @@ void rs600_page_flip(struct radeon_device *rdev, int crtc_id, u64 crtc_base)
 	/* Unlock the lock, so double-buffering can take place inside vblank */
 	tmp &= ~AVIVO_D1GRPH_UPDATE_LOCK;
 	WREG32(AVIVO_D1GRPH_UPDATE + radeon_crtc->crtc_offset, tmp);
-}
-
-bool rs600_page_flip_pending(struct radeon_device *rdev, int crtc_id)
-{
-	struct radeon_crtc *radeon_crtc = rdev->mode_info.crtcs[crtc_id];
 
 	/* Return current update_pending status: */
-	return !!(RREG32(AVIVO_D1GRPH_UPDATE + radeon_crtc->crtc_offset) &
-		AVIVO_D1GRPH_SURFACE_UPDATE_PENDING);
+	return RREG32(AVIVO_D1GRPH_UPDATE + radeon_crtc->crtc_offset) & AVIVO_D1GRPH_SURFACE_UPDATE_PENDING;
 }
 
 void avivo_program_fmt(struct drm_encoder *encoder)
@@ -556,6 +561,7 @@ static int rs600_gart_enable(struct radeon_device *rdev)
 	r = radeon_gart_table_vram_pin(rdev);
 	if (r)
 		return r;
+	radeon_gart_restore(rdev);
 	/* Enable bus master */
 	tmp = RREG32(RADEON_BUS_CNTL) & ~RS600_BUS_MASTER_DIS;
 	WREG32(RADEON_BUS_CNTL, tmp);
@@ -626,26 +632,26 @@ static void rs600_gart_fini(struct radeon_device *rdev)
 	radeon_gart_table_vram_free(rdev);
 }
 
-uint64_t rs600_gart_get_page_entry(uint64_t addr, uint32_t flags)
-{
-	addr = addr & 0xFFFFFFFFFFFFF000ULL;
-	addr |= R600_PTE_SYSTEM;
-	if (flags & RADEON_GART_PAGE_VALID)
-		addr |= R600_PTE_VALID;
-	if (flags & RADEON_GART_PAGE_READ)
-		addr |= R600_PTE_READABLE;
-	if (flags & RADEON_GART_PAGE_WRITE)
-		addr |= R600_PTE_WRITEABLE;
-	if (flags & RADEON_GART_PAGE_SNOOP)
-		addr |= R600_PTE_SNOOPED;
-	return addr;
-}
+#define R600_PTE_VALID     (1 << 0)
+#define R600_PTE_SYSTEM    (1 << 1)
+#define R600_PTE_SNOOPED   (1 << 2)
+#define R600_PTE_READABLE  (1 << 5)
+#define R600_PTE_WRITEABLE (1 << 6)
 
-void rs600_gart_set_page(struct radeon_device *rdev, unsigned i,
-			 uint64_t entry)
+int rs600_gart_set_page(struct radeon_device *rdev, int i, uint64_t addr)
 {
 	void __iomem *ptr = (void *)rdev->gart.ptr;
-	writeq(entry, ptr + (i * 8));
+
+	if (i < 0 || i > rdev->gart.num_gpu_pages) {
+		return -EINVAL;
+	}
+	addr = addr & 0xFFFFFFFFFFFFF000ULL;
+	if (addr != rdev->dummy_page.addr)
+		addr |= R600_PTE_VALID | R600_PTE_READABLE |
+			R600_PTE_WRITEABLE;
+	addr |= R600_PTE_SYSTEM | R600_PTE_SNOOPED;
+	writeq(addr, ptr + (i * 8));
+	return 0;
 }
 
 int rs600_irq_set(struct radeon_device *rdev)
@@ -694,10 +700,6 @@ int rs600_irq_set(struct radeon_device *rdev)
 	WREG32(R_007D18_DC_HOT_PLUG_DETECT2_INT_CONTROL, hpd2);
 	if (ASIC_IS_DCE2(rdev))
 		WREG32(R_007408_HDMI0_AUDIO_PACKET_CONTROL, hdmi0);
-
-	/* posting read */
-	RREG32(R_000040_GEN_INT_CNTL);
-
 	return 0;
 }
 
@@ -787,7 +789,7 @@ int rs600_irq_process(struct radeon_device *rdev)
 				wake_up(&rdev->irq.vblank_queue);
 			}
 			if (atomic_read(&rdev->irq.pflip[0]))
-				radeon_crtc_handle_vblank(rdev, 0);
+				radeon_crtc_handle_flip(rdev, 0);
 		}
 		if (G_007EDC_LB_D2_VBLANK_INTERRUPT(rdev->irq.stat_regs.r500.disp_int)) {
 			if (rdev->irq.crtc_vblank_int[1]) {
@@ -796,7 +798,7 @@ int rs600_irq_process(struct radeon_device *rdev)
 				wake_up(&rdev->irq.vblank_queue);
 			}
 			if (atomic_read(&rdev->irq.pflip[1]))
-				radeon_crtc_handle_vblank(rdev, 1);
+				radeon_crtc_handle_flip(rdev, 1);
 		}
 		if (G_007EDC_DC_HOT_PLUG_DETECT1_INTERRUPT(rdev->irq.stat_regs.r500.disp_int)) {
 			queue_hotplug = true;
@@ -813,7 +815,7 @@ int rs600_irq_process(struct radeon_device *rdev)
 		status = rs600_irq_ack(rdev);
 	}
 	if (queue_hotplug)
-		schedule_delayed_work(&rdev->hotplug_work, 0);
+		schedule_work(&rdev->hotplug_work);
 	if (queue_hdmi)
 		schedule_work(&rdev->audio_work);
 	if (rdev->msi_enabled) {
@@ -1021,7 +1023,7 @@ static int rs600_startup(struct radeon_device *rdev)
 		return r;
 	}
 
-	r = radeon_audio_init(rdev);
+	r = r600_audio_init(rdev);
 	if (r) {
 		dev_err(rdev->dev, "failed initializing audio\n");
 		return r;
@@ -1062,7 +1064,7 @@ int rs600_resume(struct radeon_device *rdev)
 int rs600_suspend(struct radeon_device *rdev)
 {
 	radeon_pm_suspend(rdev);
-	radeon_audio_fini(rdev);
+	r600_audio_fini(rdev);
 	r100_cp_disable(rdev);
 	radeon_wb_disable(rdev);
 	rs600_irq_disable(rdev);
@@ -1073,7 +1075,7 @@ int rs600_suspend(struct radeon_device *rdev)
 void rs600_fini(struct radeon_device *rdev)
 {
 	radeon_pm_fini(rdev);
-	radeon_audio_fini(rdev);
+	r600_audio_fini(rdev);
 	r100_cp_fini(rdev);
 	radeon_wb_fini(rdev);
 	radeon_ib_pool_fini(rdev);

@@ -42,9 +42,6 @@ int test__task_exit(void)
 		.uses_mmap	= true,
 	};
 	const char *argv[] = { "true", NULL };
-	char sbuf[STRERR_BUFSIZE];
-	struct cpu_map *cpus;
-	struct thread_map *threads;
 
 	signal(SIGCHLD, sig_handler);
 
@@ -60,18 +57,13 @@ int test__task_exit(void)
 	 * perf_evlist__prepare_workload we'll fill in the only thread
 	 * we're monitoring, the one forked there.
 	 */
-	cpus = cpu_map__dummy_new();
-	threads = thread_map__new_by_tid(-1);
-	if (!cpus || !threads) {
+	evlist->cpus = cpu_map__dummy_new();
+	evlist->threads = thread_map__new_by_tid(-1);
+	if (!evlist->cpus || !evlist->threads) {
 		err = -ENOMEM;
 		pr_debug("Not enough memory to create thread/cpu maps\n");
-		goto out_free_maps;
+		goto out_delete_evlist;
 	}
-
-	perf_evlist__set_maps(evlist, cpus, threads);
-
-	cpus	= NULL;
-	threads = NULL;
 
 	err = perf_evlist__prepare_workload(evlist, &target, argv, false,
 					    workload_exec_failed_signal);
@@ -90,14 +82,13 @@ int test__task_exit(void)
 
 	err = perf_evlist__open(evlist);
 	if (err < 0) {
-		pr_debug("Couldn't open the evlist: %s\n",
-			 strerror_r(-err, sbuf, sizeof(sbuf)));
+		pr_debug("Couldn't open the evlist: %s\n", strerror(-err));
 		goto out_delete_evlist;
 	}
 
 	if (perf_evlist__mmap(evlist, 128, true) < 0) {
 		pr_debug("failed to mmap events: %d (%s)\n", errno,
-			 strerror_r(errno, sbuf, sizeof(sbuf)));
+			 strerror(errno));
 		goto out_delete_evlist;
 	}
 
@@ -112,7 +103,7 @@ retry:
 	}
 
 	if (!exited || !nr_exit) {
-		perf_evlist__poll(evlist, -1);
+		poll(evlist->pollfd, evlist->nr_fds, -1);
 		goto retry;
 	}
 
@@ -121,9 +112,6 @@ retry:
 		err = -1;
 	}
 
-out_free_maps:
-	cpu_map__put(cpus);
-	thread_map__put(threads);
 out_delete_evlist:
 	perf_evlist__delete(evlist);
 	return err;

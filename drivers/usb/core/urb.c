@@ -129,8 +129,9 @@ void usb_anchor_urb(struct urb *urb, struct usb_anchor *anchor)
 	list_add_tail(&urb->anchor_list, &anchor->urb_list);
 	urb->anchor = anchor;
 
-	if (unlikely(anchor->poisoned))
+	if (unlikely(anchor->poisoned)) {
 		atomic_inc(&urb->reject);
+	}
 
 	spin_unlock_irqrestore(&anchor->lock, flags);
 }
@@ -453,7 +454,6 @@ int usb_submit_urb(struct urb *urb, gfp_t mem_flags)
 			URB_FREE_BUFFER);
 	switch (xfertype) {
 	case USB_ENDPOINT_XFER_BULK:
-	case USB_ENDPOINT_XFER_INT:
 		if (is_out)
 			allowed |= URB_ZERO_PACKET;
 		/* FALLTHROUGH */
@@ -831,7 +831,7 @@ EXPORT_SYMBOL_GPL(usb_unpoison_anchored_urbs);
  *
  * this allows all outstanding URBs to be unlinked starting
  * from the back of the queue. This function is asynchronous.
- * The unlinking is just triggered. It may happen after this
+ * The unlinking is just tiggered. It may happen after this
  * function has returned.
  *
  * This routine should not be called by a driver after its disconnect

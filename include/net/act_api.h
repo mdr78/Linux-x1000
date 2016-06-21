@@ -21,8 +21,6 @@ struct tcf_common {
 	struct gnet_stats_rate_est64	tcfc_rate_est;
 	spinlock_t			tcfc_lock;
 	struct rcu_head			tcfc_rcu;
-	struct gnet_stats_basic_cpu __percpu *cpu_bstats;
-	struct gnet_stats_queue __percpu *cpu_qstats;
 };
 #define tcf_head	common.tcfc_head
 #define tcf_index	common.tcfc_index
@@ -70,17 +68,6 @@ static inline void tcf_hashinfo_destroy(struct tcf_hashinfo *hf)
 	kfree(hf->htab);
 }
 
-/* Update lastuse only if needed, to avoid dirtying a cache line.
- * We use a temp variable to avoid fetching jiffies twice.
- */
-static inline void tcf_lastuse_update(struct tcf_t *tm)
-{
-	unsigned long now = jiffies;
-
-	if (tm->lastuse != now)
-		tm->lastuse = now;
-}
-
 #ifdef CONFIG_NET_CLS_ACT
 
 #define ACT_P_CREATED 1
@@ -102,7 +89,7 @@ struct tc_action_ops {
 	struct module		*owner;
 	int     (*act)(struct sk_buff *, const struct tc_action *, struct tcf_result *);
 	int     (*dump)(struct sk_buff *, struct tc_action *, int, int);
-	void	(*cleanup)(struct tc_action *, int bind);
+	int     (*cleanup)(struct tc_action *, int bind);
 	int     (*lookup)(struct tc_action *, u32);
 	int     (*init)(struct net *net, struct nlattr *nla,
 			struct nlattr *est, struct tc_action *act, int ovr,
@@ -111,23 +98,20 @@ struct tc_action_ops {
 };
 
 int tcf_hash_search(struct tc_action *a, u32 index);
+void tcf_hash_destroy(struct tcf_common *p, struct tcf_hashinfo *hinfo);
+int tcf_hash_release(struct tcf_common *p, int bind,
+		     struct tcf_hashinfo *hinfo);
 u32 tcf_hash_new_index(struct tcf_hashinfo *hinfo);
-int tcf_hash_check(u32 index, struct tc_action *a, int bind);
-int tcf_hash_create(u32 index, struct nlattr *est, struct tc_action *a,
-		    int size, int bind, bool cpustats);
-void tcf_hash_cleanup(struct tc_action *a, struct nlattr *est);
-void tcf_hash_insert(struct tc_action *a);
+struct tcf_common *tcf_hash_check(u32 index, struct tc_action *a,
+				  int bind);
+struct tcf_common *tcf_hash_create(u32 index, struct nlattr *est,
+				   struct tc_action *a, int size,
+				   int bind);
+void tcf_hash_insert(struct tcf_common *p, struct tcf_hashinfo *hinfo);
 
-int __tcf_hash_release(struct tc_action *a, bool bind, bool strict);
-
-static inline int tcf_hash_release(struct tc_action *a, bool bind)
-{
-	return __tcf_hash_release(a, bind, false);
-}
-
-int tcf_register_action(struct tc_action_ops *a, unsigned int mask);
+int tcf_register_action(struct tc_action_ops *a);
 int tcf_unregister_action(struct tc_action_ops *a);
-int tcf_action_destroy(struct list_head *actions, int bind);
+void tcf_action_destroy(struct list_head *actions, int bind);
 int tcf_action_exec(struct sk_buff *skb, const struct list_head *actions,
 		    struct tcf_result *res);
 int tcf_action_init(struct net *net, struct nlattr *nla,

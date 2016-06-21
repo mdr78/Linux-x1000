@@ -42,13 +42,10 @@
  * @{
  */
 
-#include <linux/atomic.h>
-#include <linux/list.h>
-#include <linux/rcupdate.h>
-#include <linux/spinlock.h>
-#include <linux/types.h>
+#include <linux/lustre_handles.h>
 
-#include "../../include/linux/libcfs/libcfs.h"
+#include <linux/libcfs/libcfs.h>
+
 
 struct portals_handle_ops {
 	void (*hop_addref)(void *object);
@@ -72,12 +69,11 @@ struct portals_handle {
 	struct portals_handle_ops	*h_ops;
 
 	/* newly added fields to handle the RCU issue. -jxiong */
-	struct rcu_head			h_rcu;
+	cfs_rcu_head_t			h_rcu;
 	spinlock_t			h_lock;
 	unsigned int			h_size:31;
 	unsigned int			h_in:1;
 };
-
 #define RCU2HANDLE(rcu)    container_of(rcu, struct portals_handle, h_rcu)
 
 /* handles.c */
@@ -86,8 +82,9 @@ struct portals_handle {
 void class_handle_hash(struct portals_handle *,
 		       struct portals_handle_ops *ops);
 void class_handle_unhash(struct portals_handle *);
+void class_handle_hash_back(struct portals_handle *);
 void *class_handle2object(__u64 cookie);
-void class_handle_free_cb(struct rcu_head *rcu);
+void class_handle_free_cb(cfs_rcu_head_t *);
 int class_handle_init(void);
 void class_handle_cleanup(void);
 

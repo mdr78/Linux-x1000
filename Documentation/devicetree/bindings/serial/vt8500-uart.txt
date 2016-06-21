@@ -1,8 +1,7 @@
 * VIA VT8500 and WonderMedia WM8xxx UART Controller
 
 Required properties:
-- compatible: should be "via,vt8500-uart" (for VIA/WonderMedia chips up to and
-	including WM8850/WM8950), or "wm,wm8880-uart" (for WM8880 and later)
+- compatible: should be "via,vt8500-uart"
 
 - reg: base physical address of the controller and length of memory mapped
 	region.

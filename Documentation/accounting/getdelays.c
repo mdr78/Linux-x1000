@@ -314,7 +314,6 @@ int main(int argc, char *argv[])
 			break;
 		case 'm':
 			strncpy(cpumask, optarg, sizeof(cpumask));
-			cpumask[sizeof(cpumask) - 1] = '\0';
 			maskset = 1;
 			printf("cpumask %s maskset %d\n", cpumask, maskset);
 			break;

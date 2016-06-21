@@ -95,22 +95,17 @@ static int pcm1681_set_deemph(struct snd_soc_codec *codec)
 	struct pcm1681_private *priv = snd_soc_codec_get_drvdata(codec);
 	int i = 0, val = -1, enable = 0;
 
-	if (priv->deemph) {
-		for (i = 0; i < ARRAY_SIZE(pcm1681_deemph); i++) {
-			if (pcm1681_deemph[i] == priv->rate) {
+	if (priv->deemph)
+		for (i = 0; i < ARRAY_SIZE(pcm1681_deemph); i++)
+			if (pcm1681_deemph[i] == priv->rate)
 				val = i;
-				break;
-			}
-		}
-	}
 
 	if (val != -1) {
 		regmap_update_bits(priv->regmap, PCM1681_DEEMPH_CONTROL,
-				   PCM1681_DEEMPH_RATE_MASK, val << 3);
+					PCM1681_DEEMPH_RATE_MASK, val);
 		enable = 1;
-	} else {
+	} else
 		enable = 0;
-	}
 
 	/* enable/disable deemphasis functionality */
 	return regmap_update_bits(priv->regmap, PCM1681_DEEMPH_CONTROL,
@@ -120,10 +115,10 @@ static int pcm1681_set_deemph(struct snd_soc_codec *codec)
 static int pcm1681_get_deemph(struct snd_kcontrol *kcontrol,
 			      struct snd_ctl_elem_value *ucontrol)
 {
-	struct snd_soc_codec *codec = snd_soc_kcontrol_codec(kcontrol);
+	struct snd_soc_codec *codec = snd_kcontrol_chip(kcontrol);
 	struct pcm1681_private *priv = snd_soc_codec_get_drvdata(codec);
 
-	ucontrol->value.integer.value[0] = priv->deemph;
+	ucontrol->value.enumerated.item[0] = priv->deemph;
 
 	return 0;
 }
@@ -131,10 +126,10 @@ static int pcm1681_get_deemph(struct snd_kcontrol *kcontrol,
 static int pcm1681_put_deemph(struct snd_kcontrol *kcontrol,
 			      struct snd_ctl_elem_value *ucontrol)
 {
-	struct snd_soc_codec *codec = snd_soc_kcontrol_codec(kcontrol);
+	struct snd_soc_codec *codec = snd_kcontrol_chip(kcontrol);
 	struct pcm1681_private *priv = snd_soc_codec_get_drvdata(codec);
 
-	priv->deemph = ucontrol->value.integer.value[0];
+	priv->deemph = ucontrol->value.enumerated.item[0];
 
 	return pcm1681_set_deemph(codec);
 }
@@ -177,21 +172,16 @@ static int pcm1681_hw_params(struct snd_pcm_substream *substream,
 	struct snd_soc_codec *codec = dai->codec;
 	struct pcm1681_private *priv = snd_soc_codec_get_drvdata(codec);
 	int val = 0, ret;
+	int pcm_format = params_format(params);
 
 	priv->rate = params_rate(params);
 
 	switch (priv->format & SND_SOC_DAIFMT_FORMAT_MASK) {
 	case SND_SOC_DAIFMT_RIGHT_J:
-		switch (params_width(params)) {
-		case 24:
-			val = 0;
-			break;
-		case 16:
-			val = 3;
-			break;
-		default:
-			return -EINVAL;
-		}
+		if (pcm_format == SNDRV_PCM_FORMAT_S24_LE)
+			val = 0x00;
+		else if (pcm_format == SNDRV_PCM_FORMAT_S16_LE)
+			val = 0x03;
 		break;
 	case SND_SOC_DAIFMT_I2S:
 		val = 0x04;
@@ -335,6 +325,7 @@ static int pcm1681_i2c_remove(struct i2c_client *client)
 static struct i2c_driver pcm1681_i2c_driver = {
 	.driver = {
 		.name	= "pcm1681",
+		.owner	= THIS_MODULE,
 		.of_match_table = of_match_ptr(pcm1681_dt_ids),
 	},
 	.id_table	= pcm1681_i2c_id,

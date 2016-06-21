@@ -99,7 +99,7 @@ static int pcie_port_enable_msix(struct pci_dev *dev, int *vectors, int mask)
 	for (i = 0; i < nr_entries; i++)
 		msix_entries[i].entry = i;
 
-	status = pci_enable_msix_exact(dev, msix_entries, nr_entries);
+	status = pci_enable_msix(dev, msix_entries, nr_entries);
 	if (status)
 		goto Exit;
 
@@ -171,7 +171,7 @@ static int pcie_port_enable_msix(struct pci_dev *dev, int *vectors, int mask)
 		pci_disable_msix(dev);
 
 		/* Now allocate the MSI-X vectors for real */
-		status = pci_enable_msix_exact(dev, msix_entries, nvec);
+		status = pci_enable_msix(dev, msix_entries, nvec);
 		if (status)
 			goto Exit;
 	}
@@ -379,13 +379,10 @@ int pcie_port_device_register(struct pci_dev *dev)
 	/*
 	 * Initialize service irqs. Don't use service devices that
 	 * require interrupts if there is no way to generate them.
-	 * However, some drivers may have a polling mode (e.g. pciehp_poll_mode)
-	 * that can be used in the absence of irqs.  Allow them to determine
-	 * if that is to be used.
 	 */
 	status = init_service_irqs(dev, irqs, capabilities);
 	if (status) {
-		capabilities &= PCIE_PORT_SERVICE_VC | PCIE_PORT_SERVICE_HP;
+		capabilities &= PCIE_PORT_SERVICE_VC;
 		if (!capabilities)
 			goto error_disable;
 	}
@@ -448,7 +445,7 @@ static int resume_iter(struct device *dev, void *data)
 }
 
 /**
- * pcie_port_device_resume - resume port services associated with a PCIe port
+ * pcie_port_device_suspend - resume port services associated with a PCIe port
  * @dev: PCI Express port to handle
  */
 int pcie_port_device_resume(struct device *dev)

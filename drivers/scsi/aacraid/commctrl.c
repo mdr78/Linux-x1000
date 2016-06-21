@@ -689,10 +689,7 @@ static int aac_send_raw_srb(struct aac_dev* dev, void __user * arg)
 			kfree (usg);
 		}
 		srbcmd->count = cpu_to_le32(byte_count);
-		if (user_srbcmd->sg.count)
-			psg->count = cpu_to_le32(sg_indx+1);
-		else
-			psg->count = 0;
+		psg->count = cpu_to_le32(sg_indx+1);
 		status = aac_fib_send(ScsiPortCommand64, srbfib, actual_fibsize, FsaNormal, 1, 1,NULL,NULL);
 	} else {
 		struct user_sgmap* upsg = &user_srbcmd->sg;
@@ -778,10 +775,7 @@ static int aac_send_raw_srb(struct aac_dev* dev, void __user * arg)
 			}
 		}
 		srbcmd->count = cpu_to_le32(byte_count);
-		if (user_srbcmd->sg.count)
-			psg->count = cpu_to_le32(sg_indx+1);
-		else
-			psg->count = 0;
+		psg->count = cpu_to_le32(sg_indx+1);
 		status = aac_fib_send(ScsiPortCommand, srbfib, actual_fibsize, FsaNormal, 1, 1, NULL, NULL);
 	}
 	if (status == -ERESTARTSYS) {

@@ -13,7 +13,6 @@
  *		Vineet Gupta
  */
 
-#include <linux/crc32.h>
 #include <linux/etherdevice.h>
 #include <linux/interrupt.h>
 #include <linux/io.h>
@@ -26,17 +25,8 @@
 
 #include "emac.h"
 
-
-/**
- * arc_emac_tx_avail - Return the number of available slots in the tx ring.
- * @priv: Pointer to ARC EMAC private data structure.
- *
- * returns: the number of slots available for transmission in tx the ring.
- */
-static inline int arc_emac_tx_avail(struct arc_emac_priv *priv)
-{
-	return (priv->txbd_dirty + TX_BD_NUM - priv->txbd_curr - 1) % TX_BD_NUM;
-}
+#define DRV_NAME	"arc_emac"
+#define DRV_VERSION	"1.0"
 
 /**
  * arc_emac_adjust_link - Adjust the PHY link duplex.
@@ -59,8 +49,6 @@ static void arc_emac_adjust_link(struct net_device *ndev)
 	if (priv->speed != phy_dev->speed) {
 		priv->speed = phy_dev->speed;
 		state_changed = 1;
-		if (priv->set_mac_speed)
-			priv->set_mac_speed(priv, priv->speed);
 	}
 
 	if (priv->duplex != phy_dev->duplex) {
@@ -131,10 +119,8 @@ static int arc_emac_set_settings(struct net_device *ndev,
 static void arc_emac_get_drvinfo(struct net_device *ndev,
 				 struct ethtool_drvinfo *info)
 {
-	struct arc_emac_priv *priv = netdev_priv(ndev);
-
-	strlcpy(info->driver, priv->drv_name, sizeof(info->driver));
-	strlcpy(info->version, priv->drv_version, sizeof(info->version));
+	strlcpy(info->driver, DRV_NAME, sizeof(info->driver));
+	strlcpy(info->version, DRV_VERSION, sizeof(info->version));
 }
 
 static const struct ethtool_ops arc_emac_ethtool_ops = {
@@ -153,7 +139,7 @@ static const struct ethtool_ops arc_emac_ethtool_ops = {
 static void arc_emac_tx_clean(struct net_device *ndev)
 {
 	struct arc_emac_priv *priv = netdev_priv(ndev);
-	struct net_device_stats *stats = &ndev->stats;
+	struct net_device_stats *stats = &priv->stats;
 	unsigned int i;
 
 	for (i = 0; i < TX_BD_NUM; i++) {
@@ -193,15 +179,10 @@ static void arc_emac_tx_clean(struct net_device *ndev)
 		txbd->info = 0;
 
 		*txbd_dirty = (*txbd_dirty + 1) % TX_BD_NUM;
+
+		if (netif_queue_stopped(ndev))
+			netif_wake_queue(ndev);
 	}
-
-	/* Ensure that txbd_dirty is visible to tx() before checking
-	 * for queue stopped.
-	 */
-	smp_mb();
-
-	if (netif_queue_stopped(ndev) && arc_emac_tx_avail(priv))
-		netif_wake_queue(ndev);
 }
 
 /**
@@ -220,7 +201,7 @@ static int arc_emac_rx(struct net_device *ndev, int budget)
 
 	for (work_done = 0; work_done < budget; work_done++) {
 		unsigned int *last_rx_bd = &priv->last_rx_bd;
-		struct net_device_stats *stats = &ndev->stats;
+		struct net_device_stats *stats = &priv->stats;
 		struct buffer_state *rx_buff = &priv->rx_buff[*last_rx_bd];
 		struct arc_emac_bd *rxbd = &priv->rxbd[*last_rx_bd];
 		unsigned int pktlen, info = le32_to_cpu(rxbd->info);
@@ -316,7 +297,7 @@ static int arc_emac_poll(struct napi_struct *napi, int budget)
 	work_done = arc_emac_rx(ndev, budget);
 	if (work_done < budget) {
 		napi_complete(napi);
-		arc_reg_or(priv, R_ENABLE, RXINT_MASK | TXINT_MASK);
+		arc_reg_or(priv, R_ENABLE, RXINT_MASK);
 	}
 
 	return work_done;
@@ -336,7 +317,7 @@ static irqreturn_t arc_emac_intr(int irq, void *dev_instance)
 {
 	struct net_device *ndev = dev_instance;
 	struct arc_emac_priv *priv = netdev_priv(ndev);
-	struct net_device_stats *stats = &ndev->stats;
+	struct net_device_stats *stats = &priv->stats;
 	unsigned int status;
 
 	status = arc_reg_get(priv, R_STATUS);
@@ -345,9 +326,9 @@ static irqreturn_t arc_emac_intr(int irq, void *dev_instance)
 	/* Reset all flags except "MDIO complete" */
 	arc_reg_set(priv, R_STATUS, status);
 
-	if (status & (RXINT_MASK | TXINT_MASK)) {
+	if (status & RXINT_MASK) {
 		if (likely(napi_schedule_prep(&priv->napi))) {
-			arc_reg_clr(priv, R_ENABLE, RXINT_MASK | TXINT_MASK);
+			arc_reg_clr(priv, R_ENABLE, RXINT_MASK);
 			__napi_schedule(&priv->napi);
 		}
 	}
@@ -380,15 +361,6 @@ static irqreturn_t arc_emac_intr(int irq, void *dev_instance)
 
 	return IRQ_HANDLED;
 }
-
-#ifdef CONFIG_NET_POLL_CONTROLLER
-static void arc_emac_poll_controller(struct net_device *dev)
-{
-	disable_irq(dev->irq);
-	arc_emac_intr(dev->irq, dev);
-	enable_irq(dev->irq);
-}
-#endif
 
 /**
  * arc_emac_open - Open the network device.
@@ -458,7 +430,7 @@ static int arc_emac_open(struct net_device *ndev)
 	arc_reg_set(priv, R_TX_RING, (unsigned int)priv->txbd_dma);
 
 	/* Enable interrupts */
-	arc_reg_set(priv, R_ENABLE, RXINT_MASK | TXINT_MASK | ERR_MASK);
+	arc_reg_set(priv, R_ENABLE, RXINT_MASK | ERR_MASK);
 
 	/* Set CONTROL */
 	arc_reg_set(priv, R_CTRL,
@@ -479,41 +451,6 @@ static int arc_emac_open(struct net_device *ndev)
 }
 
 /**
- * arc_emac_set_rx_mode - Change the receive filtering mode.
- * @ndev:	Pointer to the network device.
- *
- * This function enables/disables promiscuous or all-multicast mode
- * and updates the multicast filtering list of the network device.
- */
-static void arc_emac_set_rx_mode(struct net_device *ndev)
-{
-	struct arc_emac_priv *priv = netdev_priv(ndev);
-
-	if (ndev->flags & IFF_PROMISC) {
-		arc_reg_or(priv, R_CTRL, PROM_MASK);
-	} else {
-		arc_reg_clr(priv, R_CTRL, PROM_MASK);
-
-		if (ndev->flags & IFF_ALLMULTI) {
-			arc_reg_set(priv, R_LAFL, ~0);
-			arc_reg_set(priv, R_LAFH, ~0);
-		} else {
-			struct netdev_hw_addr *ha;
-			unsigned int filter[2] = { 0, 0 };
-			int bit;
-
-			netdev_for_each_mc_addr(ha, ndev) {
-				bit = ether_crc_le(ETH_ALEN, ha->addr) >> 26;
-				filter[bit >> 5] |= 1 << (bit & 31);
-			}
-
-			arc_reg_set(priv, R_LAFL, filter[0]);
-			arc_reg_set(priv, R_LAFH, filter[1]);
-		}
-	}
-}
-
-/**
  * arc_emac_stop - Close the network device.
  * @ndev:	Pointer to the network device.
  *
@@ -529,7 +466,7 @@ static int arc_emac_stop(struct net_device *ndev)
 	netif_stop_queue(ndev);
 
 	/* Disable interrupts */
-	arc_reg_clr(priv, R_ENABLE, RXINT_MASK | TXINT_MASK | ERR_MASK);
+	arc_reg_clr(priv, R_ENABLE, RXINT_MASK | ERR_MASK);
 
 	/* Disable EMAC */
 	arc_reg_clr(priv, R_CTRL, EN_MASK);
@@ -547,7 +484,7 @@ static int arc_emac_stop(struct net_device *ndev)
 static struct net_device_stats *arc_emac_stats(struct net_device *ndev)
 {
 	struct arc_emac_priv *priv = netdev_priv(ndev);
-	struct net_device_stats *stats = &ndev->stats;
+	struct net_device_stats *stats = &priv->stats;
 	unsigned long miss, rxerr;
 	u8 rxcrc, rxfram, rxoflow;
 
@@ -583,7 +520,7 @@ static int arc_emac_tx(struct sk_buff *skb, struct net_device *ndev)
 {
 	struct arc_emac_priv *priv = netdev_priv(ndev);
 	unsigned int len, *txbd_curr = &priv->txbd_curr;
-	struct net_device_stats *stats = &ndev->stats;
+	struct net_device_stats *stats = &priv->stats;
 	__le32 *info = &priv->txbd[*txbd_curr].info;
 	dma_addr_t addr;
 
@@ -592,9 +529,11 @@ static int arc_emac_tx(struct sk_buff *skb, struct net_device *ndev)
 
 	len = max_t(unsigned int, ETH_ZLEN, skb->len);
 
-	if (unlikely(!arc_emac_tx_avail(priv))) {
+	/* EMAC still holds this buffer in its possession.
+	 * CPU must not modify this buffer descriptor
+	 */
+	if (unlikely((le32_to_cpu(*info) & OWN_MASK) == FOR_EMAC)) {
 		netif_stop_queue(ndev);
-		netdev_err(ndev, "BUG! Tx Ring full when queue awake!\n");
 		return NETDEV_TX_BUSY;
 	}
 
@@ -623,35 +562,16 @@ static int arc_emac_tx(struct sk_buff *skb, struct net_device *ndev)
 	/* Increment index to point to the next BD */
 	*txbd_curr = (*txbd_curr + 1) % TX_BD_NUM;
 
-	/* Ensure that tx_clean() sees the new txbd_curr before
-	 * checking the queue status. This prevents an unneeded wake
-	 * of the queue in tx_clean().
-	 */
-	smp_mb();
+	/* Get "info" of the next BD */
+	info = &priv->txbd[*txbd_curr].info;
 
-	if (!arc_emac_tx_avail(priv)) {
+	/* Check if if Tx BD ring is full - next BD is still owned by EMAC */
+	if (unlikely((le32_to_cpu(*info) & OWN_MASK) == FOR_EMAC))
 		netif_stop_queue(ndev);
-		/* Refresh tx_dirty */
-		smp_mb();
-		if (arc_emac_tx_avail(priv))
-			netif_start_queue(ndev);
-	}
 
 	arc_reg_set(priv, R_STATUS, TXPL_MASK);
 
 	return NETDEV_TX_OK;
-}
-
-static void arc_emac_set_address_internal(struct net_device *ndev)
-{
-	struct arc_emac_priv *priv = netdev_priv(ndev);
-	unsigned int addr_low, addr_hi;
-
-	addr_low = le32_to_cpu(*(__le32 *) &ndev->dev_addr[0]);
-	addr_hi = le16_to_cpu(*(__le16 *) &ndev->dev_addr[4]);
-
-	arc_reg_set(priv, R_ADDRL, addr_low);
-	arc_reg_set(priv, R_ADDRH, addr_hi);
 }
 
 /**
@@ -667,7 +587,9 @@ static void arc_emac_set_address_internal(struct net_device *ndev)
  */
 static int arc_emac_set_address(struct net_device *ndev, void *p)
 {
+	struct arc_emac_priv *priv = netdev_priv(ndev);
 	struct sockaddr *addr = p;
+	unsigned int addr_low, addr_hi;
 
 	if (netif_running(ndev))
 		return -EBUSY;
@@ -677,7 +599,11 @@ static int arc_emac_set_address(struct net_device *ndev, void *p)
 
 	memcpy(ndev->dev_addr, addr->sa_data, ndev->addr_len);
 
-	arc_emac_set_address_internal(ndev);
+	addr_low = le32_to_cpu(*(__le32 *) &ndev->dev_addr[0]);
+	addr_hi = le16_to_cpu(*(__le16 *) &ndev->dev_addr[4]);
+
+	arc_reg_set(priv, R_ADDRL, addr_low);
+	arc_reg_set(priv, R_ADDRH, addr_hi);
 
 	return 0;
 }
@@ -688,44 +614,55 @@ static const struct net_device_ops arc_emac_netdev_ops = {
 	.ndo_start_xmit		= arc_emac_tx,
 	.ndo_set_mac_address	= arc_emac_set_address,
 	.ndo_get_stats		= arc_emac_stats,
-	.ndo_set_rx_mode	= arc_emac_set_rx_mode,
-#ifdef CONFIG_NET_POLL_CONTROLLER
-	.ndo_poll_controller	= arc_emac_poll_controller,
-#endif
 };
 
-int arc_emac_probe(struct net_device *ndev, int interface)
+static int arc_emac_probe(struct platform_device *pdev)
 {
-	struct device *dev = ndev->dev.parent;
 	struct resource res_regs;
 	struct device_node *phy_node;
 	struct arc_emac_priv *priv;
+	struct net_device *ndev;
 	const char *mac_addr;
 	unsigned int id, clock_frequency, irq;
 	int err;
 
+	if (!pdev->dev.of_node)
+		return -ENODEV;
 
 	/* Get PHY from device tree */
-	phy_node = of_parse_phandle(dev->of_node, "phy", 0);
+	phy_node = of_parse_phandle(pdev->dev.of_node, "phy", 0);
 	if (!phy_node) {
-		dev_err(dev, "failed to retrieve phy description from device tree\n");
+		dev_err(&pdev->dev, "failed to retrieve phy description from device tree\n");
 		return -ENODEV;
 	}
 
 	/* Get EMAC registers base address from device tree */
-	err = of_address_to_resource(dev->of_node, 0, &res_regs);
+	err = of_address_to_resource(pdev->dev.of_node, 0, &res_regs);
 	if (err) {
-		dev_err(dev, "failed to retrieve registers base from device tree\n");
+		dev_err(&pdev->dev, "failed to retrieve registers base from device tree\n");
 		return -ENODEV;
+	}
+
+	/* Get CPU clock frequency from device tree */
+	if (of_property_read_u32(pdev->dev.of_node, "clock-frequency",
+				 &clock_frequency)) {
+		dev_err(&pdev->dev, "failed to retrieve <clock-frequency> from device tree\n");
+		return -EINVAL;
 	}
 
 	/* Get IRQ from device tree */
-	irq = irq_of_parse_and_map(dev->of_node, 0);
+	irq = irq_of_parse_and_map(pdev->dev.of_node, 0);
 	if (!irq) {
-		dev_err(dev, "failed to retrieve <irq> value from device tree\n");
+		dev_err(&pdev->dev, "failed to retrieve <irq> value from device tree\n");
 		return -ENODEV;
 	}
 
+	ndev = alloc_etherdev(sizeof(struct arc_emac_priv));
+	if (!ndev)
+		return -ENOMEM;
+
+	platform_set_drvdata(pdev, ndev);
+	SET_NETDEV_DEV(ndev, &pdev->dev);
 
 	ndev->netdev_ops = &arc_emac_netdev_ops;
 	ndev->ethtool_ops = &arc_emac_ethtool_ops;
@@ -734,124 +671,102 @@ int arc_emac_probe(struct net_device *ndev, int interface)
 	ndev->flags &= ~IFF_MULTICAST;
 
 	priv = netdev_priv(ndev);
-	priv->dev = dev;
+	priv->dev = &pdev->dev;
+	priv->ndev = ndev;
 
-	priv->regs = devm_ioremap_resource(dev, &res_regs);
+	priv->regs = devm_ioremap_resource(&pdev->dev, &res_regs);
 	if (IS_ERR(priv->regs)) {
-		return PTR_ERR(priv->regs);
+		err = PTR_ERR(priv->regs);
+		goto out;
 	}
-	dev_dbg(dev, "Registers base address is 0x%p\n", priv->regs);
-
-	if (priv->clk) {
-		err = clk_prepare_enable(priv->clk);
-		if (err) {
-			dev_err(dev, "failed to enable clock\n");
-			return err;
-		}
-
-		clock_frequency = clk_get_rate(priv->clk);
-	} else {
-		/* Get CPU clock frequency from device tree */
-		if (of_property_read_u32(dev->of_node, "clock-frequency",
-					 &clock_frequency)) {
-			dev_err(dev, "failed to retrieve <clock-frequency> from device tree\n");
-			return -EINVAL;
-		}
-	}
+	dev_dbg(&pdev->dev, "Registers base address is 0x%p\n", priv->regs);
 
 	id = arc_reg_get(priv, R_ID);
 
 	/* Check for EMAC revision 5 or 7, magic number */
 	if (!(id == 0x0005fd02 || id == 0x0007fd02)) {
-		dev_err(dev, "ARC EMAC not detected, id=0x%x\n", id);
+		dev_err(&pdev->dev, "ARC EMAC not detected, id=0x%x\n", id);
 		err = -ENODEV;
-		goto out_clken;
+		goto out;
 	}
-	dev_info(dev, "ARC EMAC detected with id: 0x%x\n", id);
+	dev_info(&pdev->dev, "ARC EMAC detected with id: 0x%x\n", id);
 
 	/* Set poll rate so that it polls every 1 ms */
 	arc_reg_set(priv, R_POLLRATE, clock_frequency / 1000000);
 
 	ndev->irq = irq;
-	dev_info(dev, "IRQ is %d\n", ndev->irq);
+	dev_info(&pdev->dev, "IRQ is %d\n", ndev->irq);
 
 	/* Register interrupt handler for device */
-	err = devm_request_irq(dev, ndev->irq, arc_emac_intr, 0,
+	err = devm_request_irq(&pdev->dev, ndev->irq, arc_emac_intr, 0,
 			       ndev->name, ndev);
 	if (err) {
-		dev_err(dev, "could not allocate IRQ\n");
-		goto out_clken;
+		dev_err(&pdev->dev, "could not allocate IRQ\n");
+		goto out;
 	}
 
 	/* Get MAC address from device tree */
-	mac_addr = of_get_mac_address(dev->of_node);
+	mac_addr = of_get_mac_address(pdev->dev.of_node);
 
 	if (mac_addr)
 		memcpy(ndev->dev_addr, mac_addr, ETH_ALEN);
 	else
 		eth_hw_addr_random(ndev);
 
-	arc_emac_set_address_internal(ndev);
-	dev_info(dev, "MAC address is now %pM\n", ndev->dev_addr);
+	dev_info(&pdev->dev, "MAC address is now %pM\n", ndev->dev_addr);
 
 	/* Do 1 allocation instead of 2 separate ones for Rx and Tx BD rings */
-	priv->rxbd = dmam_alloc_coherent(dev, RX_RING_SZ + TX_RING_SZ,
+	priv->rxbd = dmam_alloc_coherent(&pdev->dev, RX_RING_SZ + TX_RING_SZ,
 					 &priv->rxbd_dma, GFP_KERNEL);
 
 	if (!priv->rxbd) {
-		dev_err(dev, "failed to allocate data buffers\n");
+		dev_err(&pdev->dev, "failed to allocate data buffers\n");
 		err = -ENOMEM;
-		goto out_clken;
+		goto out;
 	}
 
 	priv->txbd = priv->rxbd + RX_BD_NUM;
 
 	priv->txbd_dma = priv->rxbd_dma + RX_RING_SZ;
-	dev_dbg(dev, "EMAC Device addr: Rx Ring [0x%x], Tx Ring[%x]\n",
+	dev_dbg(&pdev->dev, "EMAC Device addr: Rx Ring [0x%x], Tx Ring[%x]\n",
 		(unsigned int)priv->rxbd_dma, (unsigned int)priv->txbd_dma);
 
-	err = arc_mdio_probe(priv);
+	err = arc_mdio_probe(pdev, priv);
 	if (err) {
-		dev_err(dev, "failed to probe MII bus\n");
-		goto out_clken;
+		dev_err(&pdev->dev, "failed to probe MII bus\n");
+		goto out;
 	}
 
 	priv->phy_dev = of_phy_connect(ndev, phy_node, arc_emac_adjust_link, 0,
-				       interface);
+				       PHY_INTERFACE_MODE_MII);
 	if (!priv->phy_dev) {
-		dev_err(dev, "of_phy_connect() failed\n");
+		dev_err(&pdev->dev, "of_phy_connect() failed\n");
 		err = -ENODEV;
-		goto out_mdio;
+		goto out;
 	}
 
-	dev_info(dev, "connected to %s phy with id 0x%x\n",
+	dev_info(&pdev->dev, "connected to %s phy with id 0x%x\n",
 		 priv->phy_dev->drv->name, priv->phy_dev->phy_id);
 
 	netif_napi_add(ndev, &priv->napi, arc_emac_poll, ARC_EMAC_NAPI_WEIGHT);
 
 	err = register_netdev(ndev);
 	if (err) {
-		dev_err(dev, "failed to register network device\n");
-		goto out_netif_api;
+		netif_napi_del(&priv->napi);
+		dev_err(&pdev->dev, "failed to register network device\n");
+		goto out;
 	}
 
 	return 0;
 
-out_netif_api:
-	netif_napi_del(&priv->napi);
-	phy_disconnect(priv->phy_dev);
-	priv->phy_dev = NULL;
-out_mdio:
-	arc_mdio_remove(priv);
-out_clken:
-	if (priv->clk)
-		clk_disable_unprepare(priv->clk);
+out:
+	free_netdev(ndev);
 	return err;
 }
-EXPORT_SYMBOL_GPL(arc_emac_probe);
 
-int arc_emac_remove(struct net_device *ndev)
+static int arc_emac_remove(struct platform_device *pdev)
 {
+	struct net_device *ndev = platform_get_drvdata(pdev);
 	struct arc_emac_priv *priv = netdev_priv(ndev);
 
 	phy_disconnect(priv->phy_dev);
@@ -859,15 +774,28 @@ int arc_emac_remove(struct net_device *ndev)
 	arc_mdio_remove(priv);
 	unregister_netdev(ndev);
 	netif_napi_del(&priv->napi);
-
-	if (!IS_ERR(priv->clk)) {
-		clk_disable_unprepare(priv->clk);
-	}
-
+	free_netdev(ndev);
 
 	return 0;
 }
-EXPORT_SYMBOL_GPL(arc_emac_remove);
+
+static const struct of_device_id arc_emac_dt_ids[] = {
+	{ .compatible = "snps,arc-emac" },
+	{ /* Sentinel */ }
+};
+MODULE_DEVICE_TABLE(of, arc_emac_dt_ids);
+
+static struct platform_driver arc_emac_driver = {
+	.probe = arc_emac_probe,
+	.remove = arc_emac_remove,
+	.driver = {
+		.name = DRV_NAME,
+		.owner = THIS_MODULE,
+		.of_match_table  = arc_emac_dt_ids,
+		},
+};
+
+module_platform_driver(arc_emac_driver);
 
 MODULE_AUTHOR("Alexey Brodkin <abrodkin@synopsys.com>");
 MODULE_DESCRIPTION("ARC EMAC driver");

@@ -464,6 +464,7 @@ efi_map_pal_code (void)
 		 GRANULEROUNDDOWN((unsigned long) pal_vaddr),
 		 pte_val(pfn_pte(__pa(pal_vaddr) >> PAGE_SHIFT, PAGE_KERNEL)),
 		 IA64_GRANULE_SHIFT);
+	paravirt_dv_serialize_data();
 	ia64_set_psr(psr);		/* restore psr */
 }
 
@@ -475,9 +476,6 @@ efi_init (void)
 	u64 efi_desc_size;
 	char *cp, vendor[100] = "unknown";
 	int i;
-
-	set_bit(EFI_BOOT, &efi.flags);
-	set_bit(EFI_64BIT, &efi.flags);
 
 	/*
 	 * It's too early to be able to use the standard kernel command line
@@ -531,8 +529,6 @@ efi_init (void)
 	       efi.systab->hdr.revision >> 16,
 	       efi.systab->hdr.revision & 0xffff, vendor);
 
-	set_bit(EFI_SYSTEM_TABLES, &efi.flags);
-
 	palo_phys      = EFI_INVALID_TABLE_ADDR;
 
 	if (efi_config_init(arch_tables) != 0)
@@ -567,7 +563,6 @@ efi_init (void)
 		{
 			const char *unit;
 			unsigned long size;
-			char buf[64];
 
 			md = p;
 			size = md->num_pages << EFI_PAGE_SHIFT;
@@ -586,10 +581,9 @@ efi_init (void)
 				unit = "KB";
 			}
 
-			printk("mem%02d: %s "
+			printk("mem%02d: type=%2u, attr=0x%016lx, "
 			       "range=[0x%016lx-0x%016lx) (%4lu%s)\n",
-			       i, efi_md_typeattr_format(buf, sizeof(buf), md),
-			       md->phys_addr,
+			       i, md->type, md->attribute, md->phys_addr,
 			       md->phys_addr + efi_md_size(md), size, unit);
 		}
 	}
@@ -662,8 +656,6 @@ efi_enter_virtual_mode (void)
 		       "virtual mode (status=%lu)\n", status);
 		return;
 	}
-
-	set_bit(EFI_RUNTIME_SERVICES, &efi.flags);
 
 	/*
 	 * Now that EFI is in virtual mode, we call the EFI functions more
@@ -1220,10 +1212,6 @@ efi_initialize_iomem_resources(struct resource *code_resource,
 			case EFI_UNUSABLE_MEMORY:
 				name = "reserved";
 				flags |= IORESOURCE_DISABLED;
-				break;
-
-			case EFI_PERSISTENT_MEMORY:
-				name = "Persistent Memory";
 				break;
 
 			case EFI_RESERVED_TYPE:

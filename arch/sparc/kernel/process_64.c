@@ -88,7 +88,7 @@ void arch_cpu_idle(void)
 }
 
 #ifdef CONFIG_HOTPLUG_CPU
-void arch_cpu_idle_dead(void)
+void arch_cpu_idle_dead()
 {
 	sched_preempt_enable_no_resched();
 	cpu_play_dead();
@@ -239,7 +239,7 @@ static void __global_reg_poll(struct global_reg_snapshot *gp)
 	}
 }
 
-void arch_trigger_all_cpu_backtrace(bool include_self)
+void arch_trigger_all_cpu_backtrace(void)
 {
 	struct thread_info *tp = current_thread_info();
 	struct pt_regs *regs = get_irq_regs();
@@ -251,22 +251,16 @@ void arch_trigger_all_cpu_backtrace(bool include_self)
 
 	spin_lock_irqsave(&global_cpu_snapshot_lock, flags);
 
-	this_cpu = raw_smp_processor_id();
-
 	memset(global_cpu_snapshot, 0, sizeof(global_cpu_snapshot));
 
-	if (include_self)
-		__global_reg_self(tp, regs, this_cpu);
+	this_cpu = raw_smp_processor_id();
+
+	__global_reg_self(tp, regs, this_cpu);
 
 	smp_fetch_global_regs();
 
 	for_each_online_cpu(cpu) {
-		struct global_reg_snapshot *gp;
-
-		if (!include_self && cpu == this_cpu)
-			continue;
-
-		gp = &global_cpu_snapshot[cpu].reg;
+		struct global_reg_snapshot *gp = &global_cpu_snapshot[cpu].reg;
 
 		__global_reg_poll(gp);
 
@@ -287,8 +281,6 @@ void arch_trigger_all_cpu_backtrace(bool include_self)
 			printk("             TPC[%lx] O7[%lx] I7[%lx] RPC[%lx]\n",
 			       gp->tpc, gp->o7, gp->i7, gp->rpc);
 		}
-
-		touch_nmi_watchdog();
 	}
 
 	memset(global_cpu_snapshot, 0, sizeof(global_cpu_snapshot));
@@ -300,7 +292,7 @@ void arch_trigger_all_cpu_backtrace(bool include_self)
 
 static void sysrq_handle_globreg(int key)
 {
-	arch_trigger_all_cpu_backtrace(true);
+	arch_trigger_all_cpu_backtrace();
 }
 
 static struct sysrq_key_op sparc_globalreg_op = {
@@ -364,8 +356,6 @@ static void pmu_snapshot_all_cpus(void)
 		       (cpu == this_cpu ? '*' : ' '), cpu,
 		       pp->pcr[0], pp->pcr[1], pp->pcr[2], pp->pcr[3],
 		       pp->pic[0], pp->pic[1], pp->pic[2], pp->pic[3]);
-
-		touch_nmi_watchdog();
 	}
 
 	memset(global_cpu_snapshot, 0, sizeof(global_cpu_snapshot));

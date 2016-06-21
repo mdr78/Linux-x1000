@@ -42,40 +42,20 @@
 
 typedef unsigned long pte_basic_t;
 
-static inline void clear_page(void *addr)
+static __inline__ void clear_page(void *addr)
 {
-	unsigned long iterations;
-	unsigned long onex, twox, fourx, eightx;
+	unsigned long lines, line_size;
 
-	iterations = ppc64_caches.dlines_per_page / 8;
+	line_size = ppc64_caches.dline_size;
+	lines = ppc64_caches.dlines_per_page;
 
-	/*
-	 * Some verisions of gcc use multiply instructions to
-	 * calculate the offsets so lets give it a hand to
-	 * do better.
-	 */
-	onex = ppc64_caches.dline_size;
-	twox = onex << 1;
-	fourx = onex << 2;
-	eightx = onex << 3;
-
-	asm volatile(
+	__asm__ __volatile__(
 	"mtctr	%1	# clear_page\n\
-	.balign	16\n\
-1:	dcbz	0,%0\n\
-	dcbz	%3,%0\n\
-	dcbz	%4,%0\n\
-	dcbz	%5,%0\n\
-	dcbz	%6,%0\n\
-	dcbz	%7,%0\n\
-	dcbz	%8,%0\n\
-	dcbz	%9,%0\n\
-	add	%0,%0,%10\n\
+1:      dcbz	0,%0\n\
+	add	%0,%0,%3\n\
 	bdnz+	1b"
-	: "=&r" (addr)
-	: "r" (iterations), "0" (addr), "b" (onex), "b" (twox),
-		"b" (twox+onex), "b" (fourx), "b" (fourx+onex),
-		"b" (twox+fourx), "b" (eightx-onex), "r" (eightx)
+        : "=r" (addr)
+        : "r" (lines), "0" (addr), "r" (line_size)
 	: "ctr", "memory");
 }
 
@@ -124,6 +104,7 @@ extern unsigned long slice_get_unmapped_area(unsigned long addr,
 extern unsigned int get_slice_psize(struct mm_struct *mm,
 				    unsigned long addr);
 
+extern void slice_init_context(struct mm_struct *mm, unsigned int psize);
 extern void slice_set_user_psize(struct mm_struct *mm, unsigned int psize);
 extern void slice_set_range_psize(struct mm_struct *mm, unsigned long start,
 				  unsigned long len, unsigned int psize);

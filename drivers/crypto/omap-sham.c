@@ -362,13 +362,7 @@ static void omap_sham_copy_ready_hash(struct ahash_request *req)
 
 static int omap_sham_hw_init(struct omap_sham_dev *dd)
 {
-	int err;
-
-	err = pm_runtime_get_sync(dd->dev);
-	if (err < 0) {
-		dev_err(dd->dev, "failed to get sync: %d\n", err);
-		return err;
-	}
+	pm_runtime_get_sync(dd->dev);
 
 	if (!test_bit(FLAGS_INIT, &dd->flags)) {
 		set_bit(FLAGS_INIT, &dd->flags);
@@ -588,7 +582,7 @@ static int omap_sham_xmit_dma(struct omap_sham_dev *dd, dma_addr_t dma_addr,
 		 * the dmaengine may try to DMA the incorrect amount of data.
 		 */
 		sg_init_table(&ctx->sgl, 1);
-		sg_assign_page(&ctx->sgl, sg_page(ctx->sg));
+		ctx->sgl.page_link = ctx->sg->page_link;
 		ctx->sgl.offset = ctx->sg->offset;
 		sg_dma_len(&ctx->sgl) = len32;
 		sg_dma_address(&ctx->sgl) = sg_dma_address(ctx->sg);
@@ -642,18 +636,11 @@ static size_t omap_sham_append_buffer(struct omap_sham_reqctx *ctx,
 static size_t omap_sham_append_sg(struct omap_sham_reqctx *ctx)
 {
 	size_t count;
-	const u8 *vaddr;
 
 	while (ctx->sg) {
-		vaddr = kmap_atomic(sg_page(ctx->sg));
-		vaddr += ctx->sg->offset;
-
 		count = omap_sham_append_buffer(ctx,
-				vaddr + ctx->offset,
+				sg_virt(ctx->sg) + ctx->offset,
 				ctx->sg->length - ctx->offset);
-
-		kunmap_atomic((void *)vaddr);
-
 		if (!count)
 			break;
 		ctx->offset += count;
@@ -956,14 +943,17 @@ static int omap_sham_finish_hmac(struct ahash_request *req)
 	struct omap_sham_hmac_ctx *bctx = tctx->base;
 	int bs = crypto_shash_blocksize(bctx->shash);
 	int ds = crypto_shash_digestsize(bctx->shash);
-	SHASH_DESC_ON_STACK(shash, bctx->shash);
+	struct {
+		struct shash_desc shash;
+		char ctx[crypto_shash_descsize(bctx->shash)];
+	} desc;
 
-	shash->tfm = bctx->shash;
-	shash->flags = 0; /* not CRYPTO_TFM_REQ_MAY_SLEEP */
+	desc.shash.tfm = bctx->shash;
+	desc.shash.flags = 0; /* not CRYPTO_TFM_REQ_MAY_SLEEP */
 
-	return crypto_shash_init(shash) ?:
-	       crypto_shash_update(shash, bctx->opad, bs) ?:
-	       crypto_shash_finup(shash, req->result, ds, req->result);
+	return crypto_shash_init(&desc.shash) ?:
+	       crypto_shash_update(&desc.shash, bctx->opad, bs) ?:
+	       crypto_shash_finup(&desc.shash, req->result, ds, req->result);
 }
 
 static int omap_sham_finish(struct ahash_request *req)
@@ -1122,15 +1112,18 @@ static int omap_sham_update(struct ahash_request *req)
 	return omap_sham_enqueue(req, OP_UPDATE);
 }
 
-static int omap_sham_shash_digest(struct crypto_shash *tfm, u32 flags,
+static int omap_sham_shash_digest(struct crypto_shash *shash, u32 flags,
 				  const u8 *data, unsigned int len, u8 *out)
 {
-	SHASH_DESC_ON_STACK(shash, tfm);
+	struct {
+		struct shash_desc shash;
+		char ctx[crypto_shash_descsize(shash)];
+	} desc;
 
-	shash->tfm = tfm;
-	shash->flags = flags & CRYPTO_TFM_REQ_MAY_SLEEP;
+	desc.shash.tfm = shash;
+	desc.shash.flags = flags & CRYPTO_TFM_REQ_MAY_SLEEP;
 
-	return crypto_shash_digest(shash, data, len, out);
+	return crypto_shash_digest(&desc.shash, data, len, out);
 }
 
 static int omap_sham_final_shash(struct ahash_request *req)
@@ -1799,10 +1792,6 @@ static const struct of_device_id omap_sham_of_match[] = {
 		.data		= &omap_sham_pdata_omap2,
 	},
 	{
-		.compatible	= "ti,omap3-sham",
-		.data		= &omap_sham_pdata_omap2,
-	},
-	{
 		.compatible	= "ti,omap4-sham",
 		.data		= &omap_sham_pdata_omap4,
 	},
@@ -1956,14 +1945,7 @@ static int omap_sham_probe(struct platform_device *pdev)
 	dd->flags |= dd->pdata->flags;
 
 	pm_runtime_enable(dev);
-	pm_runtime_irq_safe(dev);
-
-	err = pm_runtime_get_sync(dev);
-	if (err < 0) {
-		dev_err(dev, "failed to get sync: %d\n", err);
-		goto err_pm;
-	}
-
+	pm_runtime_get_sync(dev);
 	rev = omap_sham_read(dd, SHA_REG_REV(dd));
 	pm_runtime_put_sync(&pdev->dev);
 
@@ -1993,7 +1975,6 @@ err_algs:
 		for (j = dd->pdata->algs_info[i].registered - 1; j >= 0; j--)
 			crypto_unregister_ahash(
 					&dd->pdata->algs_info[i].algs_list[j]);
-err_pm:
 	pm_runtime_disable(dev);
 	if (dd->dma_lch)
 		dma_release_channel(dd->dma_lch);
@@ -2036,22 +2017,21 @@ static int omap_sham_suspend(struct device *dev)
 
 static int omap_sham_resume(struct device *dev)
 {
-	int err = pm_runtime_get_sync(dev);
-	if (err < 0) {
-		dev_err(dev, "failed to get sync: %d\n", err);
-		return err;
-	}
+	pm_runtime_get_sync(dev);
 	return 0;
 }
 #endif
 
-static SIMPLE_DEV_PM_OPS(omap_sham_pm_ops, omap_sham_suspend, omap_sham_resume);
+static const struct dev_pm_ops omap_sham_pm_ops = {
+	SET_SYSTEM_SLEEP_PM_OPS(omap_sham_suspend, omap_sham_resume)
+};
 
 static struct platform_driver omap_sham_driver = {
 	.probe	= omap_sham_probe,
 	.remove	= omap_sham_remove,
 	.driver	= {
 		.name	= "omap-sham",
+		.owner	= THIS_MODULE,
 		.pm	= &omap_sham_pm_ops,
 		.of_match_table	= omap_sham_of_match,
 	},

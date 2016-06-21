@@ -82,8 +82,6 @@ VERSION
 		__vdso_rt_sigreturn;
 		__vdso_gettimeofday;
 		gettimeofday;
-		__vdso_clock_gettime;
-		clock_gettime;
 	local:*;
 	};
 }

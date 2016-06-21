@@ -4384,13 +4384,11 @@ enum place_holder_in_cap_bitmap {
 	MAX_FEATURE_SUPPORTED = 128,
 };
 
-#define WCN36XX_HAL_CAPS_SIZE 4
-
 struct wcn36xx_hal_feat_caps_msg {
 
 	struct wcn36xx_hal_msg_header header;
 
-	u32 feat_caps[WCN36XX_HAL_CAPS_SIZE];
+	u32 feat_caps[4];
 } __packed;
 
 /* status codes to help debug rekey failures */

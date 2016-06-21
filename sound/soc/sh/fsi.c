@@ -232,7 +232,10 @@ struct fsi_stream {
 	 * these are for DMAEngine
 	 */
 	struct dma_chan		*chan;
+	struct work_struct	work;
 	int			dma_id;
+	int			loop_cnt;
+	int			additional_pos;
 };
 
 struct fsi_clk {
@@ -250,7 +253,6 @@ struct fsi_clk {
 
 struct fsi_priv {
 	void __iomem *base;
-	phys_addr_t phys;
 	struct fsi_master *master;
 
 	struct fsi_stream playback;
@@ -261,12 +263,12 @@ struct fsi_priv {
 	u32 fmt;
 
 	int chan_num:16;
-	unsigned int clk_master:1;
-	unsigned int clk_cpg:1;
-	unsigned int spdif:1;
-	unsigned int enable_stream:1;
-	unsigned int bit_clk_inv:1;
-	unsigned int lr_clk_inv:1;
+	int clk_master:1;
+	int clk_cpg:1;
+	int spdif:1;
+	int enable_stream:1;
+	int bit_clk_inv:1;
+	int lr_clk_inv:1;
 };
 
 struct fsi_stream_handler {
@@ -821,9 +823,12 @@ static int fsi_clk_enable(struct device *dev,
 			return ret;
 		}
 
-		clk_enable(clock->xck);
-		clk_enable(clock->ick);
-		clk_enable(clock->div);
+		if (clock->xck)
+			clk_enable(clock->xck);
+		if (clock->ick)
+			clk_enable(clock->ick);
+		if (clock->div)
+			clk_enable(clock->div);
 
 		clock->count++;
 	}
@@ -840,9 +845,12 @@ static int fsi_clk_disable(struct device *dev,
 		return -EINVAL;
 
 	if (1 == clock->count--) {
-		clk_disable(clock->xck);
-		clk_disable(clock->ick);
-		clk_disable(clock->div);
+		if (clock->xck)
+			clk_disable(clock->xck);
+		if (clock->ick)
+			clk_disable(clock->ick);
+		if (clock->div)
+			clk_disable(clock->div);
 	}
 
 	return 0;
@@ -1033,26 +1041,6 @@ static int fsi_clk_set_rate_cpg(struct device *dev,
 	return ret;
 }
 
-static void fsi_pointer_update(struct fsi_stream *io, int size)
-{
-	io->buff_sample_pos += size;
-
-	if (io->buff_sample_pos >=
-	    io->period_samples * (io->period_pos + 1)) {
-		struct snd_pcm_substream *substream = io->substream;
-		struct snd_pcm_runtime *runtime = substream->runtime;
-
-		io->period_pos++;
-
-		if (io->period_pos >= runtime->periods) {
-			io->buff_sample_pos = 0;
-			io->period_pos = 0;
-		}
-
-		snd_pcm_period_elapsed(substream);
-	}
-}
-
 /*
  *		pio data transfer handler
  */
@@ -1119,10 +1107,30 @@ static int fsi_pio_transfer(struct fsi_priv *fsi, struct fsi_stream *io,
 		void (*run32)(struct fsi_priv *fsi, u8 *buf, int samples),
 		int samples)
 {
+	struct snd_pcm_runtime *runtime;
+	struct snd_pcm_substream *substream;
 	u8 *buf;
+	int over_period;
 
 	if (!fsi_stream_is_working(fsi, io))
 		return -EINVAL;
+
+	over_period	= 0;
+	substream	= io->substream;
+	runtime		= substream->runtime;
+
+	/* FSI FIFO has limit.
+	 * So, this driver can not send periods data at a time
+	 */
+	if (io->buff_sample_pos >=
+	    io->period_samples * (io->period_pos + 1)) {
+
+		over_period = 1;
+		io->period_pos = (io->period_pos + 1) % runtime->periods;
+
+		if (0 == io->period_pos)
+			io->buff_sample_pos = 0;
+	}
 
 	buf = fsi_pio_get_area(fsi, io);
 
@@ -1137,7 +1145,11 @@ static int fsi_pio_transfer(struct fsi_priv *fsi, struct fsi_stream *io,
 		return -EINVAL;
 	}
 
-	fsi_pointer_update(io, samples);
+	/* update buff_sample_pos */
+	io->buff_sample_pos += samples;
+
+	if (over_period)
+		snd_pcm_period_elapsed(substream);
 
 	return 0;
 }
@@ -1273,53 +1285,88 @@ static int fsi_dma_init(struct fsi_priv *fsi, struct fsi_stream *io)
 	io->bus_option = BUSOP_SET(24, PACKAGE_24BITBUS_BACK) |
 			 BUSOP_SET(16, PACKAGE_16BITBUS_STREAM);
 
+	io->loop_cnt = 2; /* push 1st, 2nd period first, then 3rd, 4th... */
+	io->additional_pos = 0;
+
 	return 0;
+}
+
+static dma_addr_t fsi_dma_get_area(struct fsi_stream *io, int additional)
+{
+	struct snd_pcm_runtime *runtime = io->substream->runtime;
+	int period = io->period_pos + additional;
+
+	if (period >= runtime->periods)
+		period = 0;
+
+	return runtime->dma_addr +
+		samples_to_bytes(runtime, period * io->period_samples);
 }
 
 static void fsi_dma_complete(void *data)
 {
 	struct fsi_stream *io = (struct fsi_stream *)data;
 	struct fsi_priv *fsi = fsi_stream_to_priv(io);
+	struct snd_pcm_runtime *runtime = io->substream->runtime;
 
-	fsi_pointer_update(io, io->period_samples);
+	io->buff_sample_pos += io->period_samples;
+	io->period_pos++;
+
+	if (io->period_pos >= runtime->periods) {
+		io->period_pos = 0;
+		io->buff_sample_pos = 0;
+	}
 
 	fsi_count_fifo_err(fsi);
+	fsi_stream_transfer(io);
+
+	snd_pcm_period_elapsed(io->substream);
 }
 
-static int fsi_dma_transfer(struct fsi_priv *fsi, struct fsi_stream *io)
+static void fsi_dma_do_work(struct work_struct *work)
 {
-	struct snd_soc_dai *dai = fsi_get_dai(io->substream);
-	struct snd_pcm_substream *substream = io->substream;
+	struct fsi_stream *io = container_of(work, struct fsi_stream, work);
+	struct fsi_priv *fsi = fsi_stream_to_priv(io);
+	struct snd_soc_dai *dai;
 	struct dma_async_tx_descriptor *desc;
+	struct snd_pcm_runtime *runtime;
+	enum dma_data_direction dir;
 	int is_play = fsi_stream_is_play(fsi, io);
-	enum dma_transfer_direction dir;
-	int ret = -EIO;
+	int len, i;
+	dma_addr_t buf;
 
-	if (is_play)
-		dir = DMA_MEM_TO_DEV;
-	else
-		dir = DMA_DEV_TO_MEM;
+	if (!fsi_stream_is_working(fsi, io))
+		return;
 
-	desc = dmaengine_prep_dma_cyclic(io->chan,
-					 substream->runtime->dma_addr,
-					 snd_pcm_lib_buffer_bytes(substream),
-					 snd_pcm_lib_period_bytes(substream),
-					 dir,
-					 DMA_PREP_INTERRUPT | DMA_CTRL_ACK);
-	if (!desc) {
-		dev_err(dai->dev, "dmaengine_prep_dma_cyclic() fail\n");
-		goto fsi_dma_transfer_err;
+	dai	= fsi_get_dai(io->substream);
+	runtime	= io->substream->runtime;
+	dir	= is_play ? DMA_TO_DEVICE : DMA_FROM_DEVICE;
+	len	= samples_to_bytes(runtime, io->period_samples);
+
+	for (i = 0; i < io->loop_cnt; i++) {
+		buf	= fsi_dma_get_area(io, io->additional_pos);
+
+		desc = dmaengine_prep_slave_single(io->chan, buf, len, dir,
+					DMA_PREP_INTERRUPT | DMA_CTRL_ACK);
+		if (!desc) {
+			dev_err(dai->dev, "dmaengine_prep_slave_sg() fail\n");
+			return;
+		}
+
+		desc->callback		= fsi_dma_complete;
+		desc->callback_param	= io;
+
+		if (dmaengine_submit(desc) < 0) {
+			dev_err(dai->dev, "tx_submit() fail\n");
+			return;
+		}
+
+		dma_async_issue_pending(io->chan);
+
+		io->additional_pos = 1;
 	}
 
-	desc->callback		= fsi_dma_complete;
-	desc->callback_param	= io;
-
-	if (dmaengine_submit(desc) < 0) {
-		dev_err(dai->dev, "tx_submit() fail\n");
-		goto fsi_dma_transfer_err;
-	}
-
-	dma_async_issue_pending(io->chan);
+	io->loop_cnt = 1;
 
 	/*
 	 * FIXME
@@ -1336,11 +1383,13 @@ static int fsi_dma_transfer(struct fsi_priv *fsi, struct fsi_stream *io)
 			fsi_reg_write(fsi, DIFF_ST, 0);
 		}
 	}
+}
 
-	ret = 0;
+static int fsi_dma_transfer(struct fsi_priv *fsi, struct fsi_stream *io)
+{
+	schedule_work(&io->work);
 
-fsi_dma_transfer_err:
-	return ret;
+	return 0;
 }
 
 static int fsi_dma_push_start_stop(struct fsi_priv *fsi, struct fsi_stream *io,
@@ -1372,18 +1421,13 @@ static int fsi_dma_probe(struct fsi_priv *fsi, struct fsi_stream *io, struct dev
 				shdma_chan_filter, (void *)io->dma_id,
 				dev, is_play ? "tx" : "rx");
 	if (io->chan) {
-		struct dma_slave_config cfg = {};
+		struct dma_slave_config cfg;
 		int ret;
 
-		if (is_play) {
-			cfg.dst_addr		= fsi->phys + REG_DODT;
-			cfg.dst_addr_width	= DMA_SLAVE_BUSWIDTH_4_BYTES;
-			cfg.direction		= DMA_MEM_TO_DEV;
-		} else {
-			cfg.src_addr		= fsi->phys + REG_DIDT;
-			cfg.src_addr_width	= DMA_SLAVE_BUSWIDTH_4_BYTES;
-			cfg.direction		= DMA_DEV_TO_MEM;
-		}
+		cfg.slave_id	= io->dma_id;
+		cfg.dst_addr	= 0; /* use default addr */
+		cfg.src_addr	= 0; /* use default addr */
+		cfg.direction	= is_play ? DMA_MEM_TO_DEV : DMA_DEV_TO_MEM;
 
 		ret = dmaengine_slave_config(io->chan, &cfg);
 		if (ret < 0) {
@@ -1406,11 +1450,15 @@ static int fsi_dma_probe(struct fsi_priv *fsi, struct fsi_stream *io, struct dev
 		return fsi_stream_probe(fsi, dev);
 	}
 
+	INIT_WORK(&io->work, fsi_dma_do_work);
+
 	return 0;
 }
 
 static int fsi_dma_remove(struct fsi_priv *fsi, struct fsi_stream *io)
 {
+	cancel_work_sync(&io->work);
+
 	fsi_stream_stop(fsi, io);
 
 	if (io->chan)
@@ -1583,9 +1631,9 @@ static int fsi_dai_trigger(struct snd_pcm_substream *substream, int cmd,
 		if (!ret)
 			ret = fsi_hw_startup(fsi, io, dai->dev);
 		if (!ret)
-			ret = fsi_stream_start(fsi, io);
-		if (!ret)
 			ret = fsi_stream_transfer(io);
+		if (!ret)
+			fsi_stream_start(fsi, io);
 		break;
 	case SNDRV_PCM_TRIGGER_STOP:
 		if (!ret)
@@ -1768,6 +1816,11 @@ static struct snd_pcm_ops fsi_pcm_ops = {
 #define PREALLOC_BUFFER		(32 * 1024)
 #define PREALLOC_BUFFER_MAX	(32 * 1024)
 
+static void fsi_pcm_free(struct snd_pcm *pcm)
+{
+	snd_pcm_lib_preallocate_free_for_all(pcm);
+}
+
 static int fsi_pcm_new(struct snd_soc_pcm_runtime *rtd)
 {
 	return snd_pcm_lib_preallocate_pages_for_all(
@@ -1819,6 +1872,7 @@ static struct snd_soc_dai_driver fsi_soc_dai[] = {
 static struct snd_soc_platform_driver fsi_soc_platform = {
 	.ops		= &fsi_pcm_ops,
 	.pcm_new	= fsi_pcm_new,
+	.pcm_free	= fsi_pcm_free,
 };
 
 static const struct snd_soc_component_driver fsi_soc_component = {
@@ -1882,39 +1936,7 @@ static void fsi_handler_init(struct fsi_priv *fsi,
 	}
 }
 
-static const struct fsi_core fsi1_core = {
-	.ver	= 1,
-
-	/* Interrupt */
-	.int_st	= INT_ST,
-	.iemsk	= IEMSK,
-	.imsk	= IMSK,
-};
-
-static const struct fsi_core fsi2_core = {
-	.ver	= 2,
-
-	/* Interrupt */
-	.int_st	= CPU_INT_ST,
-	.iemsk	= CPU_IEMSK,
-	.imsk	= CPU_IMSK,
-	.a_mclk	= A_MST_CTLR,
-	.b_mclk	= B_MST_CTLR,
-};
-
-static const struct of_device_id fsi_of_match[] = {
-	{ .compatible = "renesas,sh_fsi",	.data = &fsi1_core},
-	{ .compatible = "renesas,sh_fsi2",	.data = &fsi2_core},
-	{},
-};
-MODULE_DEVICE_TABLE(of, fsi_of_match);
-
-static const struct platform_device_id fsi_id_table[] = {
-	{ "sh_fsi",	(kernel_ulong_t)&fsi1_core },
-	{},
-};
-MODULE_DEVICE_TABLE(platform, fsi_id_table);
-
+static struct of_device_id fsi_of_match[];
 static int fsi_probe(struct platform_device *pdev)
 {
 	struct fsi_master *master;
@@ -1979,7 +2001,6 @@ static int fsi_probe(struct platform_device *pdev)
 	/* FSI A setting */
 	fsi		= &master->fsia;
 	fsi->base	= master->base;
-	fsi->phys	= res->start;
 	fsi->master	= master;
 	fsi_port_info_init(fsi, &info.port_a);
 	fsi_handler_init(fsi, &info.port_a);
@@ -1992,7 +2013,6 @@ static int fsi_probe(struct platform_device *pdev)
 	/* FSI B setting */
 	fsi		= &master->fsib;
 	fsi->base	= master->base + 0x40;
-	fsi->phys	= res->start + 0x40;
 	fsi->master	= master;
 	fsi_port_info_init(fsi, &info.port_b);
 	fsi_handler_init(fsi, &info.port_b);
@@ -2112,6 +2132,40 @@ static struct dev_pm_ops fsi_pm_ops = {
 	.resume			= fsi_resume,
 };
 
+static struct fsi_core fsi1_core = {
+	.ver	= 1,
+
+	/* Interrupt */
+	.int_st	= INT_ST,
+	.iemsk	= IEMSK,
+	.imsk	= IMSK,
+};
+
+static struct fsi_core fsi2_core = {
+	.ver	= 2,
+
+	/* Interrupt */
+	.int_st	= CPU_INT_ST,
+	.iemsk	= CPU_IEMSK,
+	.imsk	= CPU_IMSK,
+	.a_mclk	= A_MST_CTLR,
+	.b_mclk	= B_MST_CTLR,
+};
+
+static struct of_device_id fsi_of_match[] = {
+	{ .compatible = "renesas,sh_fsi",	.data = &fsi1_core},
+	{ .compatible = "renesas,sh_fsi2",	.data = &fsi2_core},
+	{},
+};
+MODULE_DEVICE_TABLE(of, fsi_of_match);
+
+static struct platform_device_id fsi_id_table[] = {
+	{ "sh_fsi",	(kernel_ulong_t)&fsi1_core },
+	{ "sh_fsi2",	(kernel_ulong_t)&fsi2_core },
+	{},
+};
+MODULE_DEVICE_TABLE(platform, fsi_id_table);
+
 static struct platform_driver fsi_driver = {
 	.driver 	= {
 		.name	= "fsi-pcm-audio",
@@ -2125,7 +2179,7 @@ static struct platform_driver fsi_driver = {
 
 module_platform_driver(fsi_driver);
 
-MODULE_LICENSE("GPL v2");
+MODULE_LICENSE("GPL");
 MODULE_DESCRIPTION("SuperH onchip FSI audio driver");
 MODULE_AUTHOR("Kuninori Morimoto <morimoto.kuninori@renesas.com>");
 MODULE_ALIAS("platform:fsi-pcm-audio");

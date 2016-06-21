@@ -338,7 +338,7 @@ void dlm_print_one_mle(struct dlm_master_list_entry *mle)
 
 #ifdef CONFIG_DEBUG_FS
 
-static struct dentry *dlm_debugfs_root;
+static struct dentry *dlm_debugfs_root = NULL;
 
 #define DLM_DEBUGFS_DIR				"o2dlm"
 #define DLM_DEBUGFS_DLM_STATE			"dlm_state"
@@ -406,7 +406,7 @@ static int debug_purgelist_print(struct dlm_ctxt *dlm, char *buf, int len)
 	}
 	spin_unlock(&dlm->spinlock);
 
-	out += snprintf(buf + out, len - out, "Total on list: %lu\n", total);
+	out += snprintf(buf + out, len - out, "Total on list: %ld\n", total);
 
 	return out;
 }
@@ -464,7 +464,7 @@ static int debug_mle_print(struct dlm_ctxt *dlm, char *buf, int len)
 	spin_unlock(&dlm->master_lock);
 
 	out += snprintf(buf + out, len - out,
-			"Total: %lu, Longest: %lu\n", total, longest);
+			"Total: %ld, Longest: %ld\n", total, longest);
 	return out;
 }
 
@@ -647,30 +647,41 @@ static const struct seq_operations debug_lockres_ops = {
 static int debug_lockres_open(struct inode *inode, struct file *file)
 {
 	struct dlm_ctxt *dlm = inode->i_private;
-	struct debug_lockres *dl;
-	void *buf;
+	int ret = -ENOMEM;
+	struct seq_file *seq;
+	struct debug_lockres *dl = NULL;
 
-	buf = kmalloc(PAGE_SIZE, GFP_KERNEL);
-	if (!buf)
+	dl = kzalloc(sizeof(struct debug_lockres), GFP_KERNEL);
+	if (!dl) {
+		mlog_errno(ret);
 		goto bail;
-
-	dl = __seq_open_private(file, &debug_lockres_ops, sizeof(*dl));
-	if (!dl)
-		goto bailfree;
+	}
 
 	dl->dl_len = PAGE_SIZE;
-	dl->dl_buf = buf;
+	dl->dl_buf = kmalloc(dl->dl_len, GFP_KERNEL);
+	if (!dl->dl_buf) {
+		mlog_errno(ret);
+		goto bail;
+	}
+
+	ret = seq_open(file, &debug_lockres_ops);
+	if (ret) {
+		mlog_errno(ret);
+		goto bail;
+	}
+
+	seq = file->private_data;
+	seq->private = dl;
 
 	dlm_grab(dlm);
 	dl->dl_ctxt = dlm;
 
 	return 0;
-
-bailfree:
-	kfree(buf);
 bail:
-	mlog_errno(-ENOMEM);
-	return -ENOMEM;
+	if (dl)
+		kfree(dl->dl_buf);
+	kfree(dl);
+	return ret;
 }
 
 static int debug_lockres_release(struct inode *inode, struct file *file)

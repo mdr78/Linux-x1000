@@ -38,7 +38,7 @@
 #include <asm/pgtable.h>
 #include <asm/tlbflush.h>
 #include <linux/swapops.h>
-#include <linux/swap_cgroup.h>
+#include <linux/page_cgroup.h>
 
 static bool swap_count_continued(struct swap_info_struct *, pgoff_t,
 				 unsigned char);
@@ -523,14 +523,37 @@ static unsigned long scan_swap_map(struct swap_info_struct *si,
 		/*
 		 * If seek is expensive, start searching for new cluster from
 		 * start of partition, to minimize the span of allocated swap.
-		 * If seek is cheap, that is the SWP_SOLIDSTATE si->cluster_info
-		 * case, just handled by scan_swap_map_try_ssd_cluster() above.
+		 * But if seek is cheap, search from our current position, so
+		 * that swap is allocated from all over the partition: if the
+		 * Flash Translation Layer only remaps within limited zones,
+		 * we don't want to wear out the first zone too quickly.
 		 */
-		scan_base = offset = si->lowest_bit;
+		if (!(si->flags & SWP_SOLIDSTATE))
+			scan_base = offset = si->lowest_bit;
 		last_in_cluster = offset + SWAPFILE_CLUSTER - 1;
 
 		/* Locate the first empty (unaligned) cluster */
 		for (; last_in_cluster <= si->highest_bit; offset++) {
+			if (si->swap_map[offset])
+				last_in_cluster = offset + SWAPFILE_CLUSTER;
+			else if (offset == last_in_cluster) {
+				spin_lock(&si->lock);
+				offset -= SWAPFILE_CLUSTER - 1;
+				si->cluster_next = offset;
+				si->cluster_nr = SWAPFILE_CLUSTER - 1;
+				goto checks;
+			}
+			if (unlikely(--latency_ration < 0)) {
+				cond_resched();
+				latency_ration = LATENCY_LIMIT;
+			}
+		}
+
+		offset = si->lowest_bit;
+		last_in_cluster = offset + SWAPFILE_CLUSTER - 1;
+
+		/* Locate the first empty (unaligned) cluster */
+		for (; last_in_cluster < scan_base; offset++) {
 			if (si->swap_map[offset])
 				last_in_cluster = offset + SWAPFILE_CLUSTER;
 			else if (offset == last_in_cluster) {
@@ -843,13 +866,16 @@ void swap_free(swp_entry_t entry)
 /*
  * Called after dropping swapcache to decrease refcnt to swap entries.
  */
-void swapcache_free(swp_entry_t entry)
+void swapcache_free(swp_entry_t entry, struct page *page)
 {
 	struct swap_info_struct *p;
+	unsigned char count;
 
 	p = swap_info_get(entry);
 	if (p) {
-		swap_entry_free(p, entry, SWAP_HAS_CACHE);
+		count = swap_entry_free(p, entry, SWAP_HAS_CACHE);
+		if (page)
+			mem_cgroup_uncharge_swapcache(page, entry, count != 0);
 		spin_unlock(&p->lock);
 	}
 }
@@ -871,48 +897,6 @@ int page_swapcount(struct page *page)
 		count = swap_count(p->swap_map[swp_offset(entry)]);
 		spin_unlock(&p->lock);
 	}
-	return count;
-}
-
-/*
- * How many references to @entry are currently swapped out?
- * This considers COUNT_CONTINUED so it returns exact answer.
- */
-int swp_swapcount(swp_entry_t entry)
-{
-	int count, tmp_count, n;
-	struct swap_info_struct *p;
-	struct page *page;
-	pgoff_t offset;
-	unsigned char *map;
-
-	p = swap_info_get(entry);
-	if (!p)
-		return 0;
-
-	count = swap_count(p->swap_map[swp_offset(entry)]);
-	if (!(count & COUNT_CONTINUED))
-		goto out;
-
-	count &= ~COUNT_CONTINUED;
-	n = SWAP_MAP_MAX + 1;
-
-	offset = swp_offset(entry);
-	page = vmalloc_to_page(p->swap_map + offset);
-	offset &= ~PAGE_MASK;
-	VM_BUG_ON(page_private(page) != SWP_CONTINUED);
-
-	do {
-		page = list_entry(page->lru.next, struct page, lru);
-		map = kmap_atomic(page);
-		tmp_count = map[offset];
-		kunmap_atomic(map);
-
-		count += (tmp_count & ~COUNT_CONTINUED) * n;
-		n *= (SWAP_CONT_MAX + 1);
-	} while (tmp_count & COUNT_CONTINUED);
-out:
-	spin_unlock(&p->lock);
 	return count;
 }
 
@@ -1145,14 +1129,15 @@ static int unuse_pte(struct vm_area_struct *vma, pmd_t *pmd,
 	if (unlikely(!page))
 		return -ENOMEM;
 
-	if (mem_cgroup_try_charge(page, vma->vm_mm, GFP_KERNEL, &memcg)) {
+	if (mem_cgroup_try_charge_swapin(vma->vm_mm, page,
+					 GFP_KERNEL, &memcg)) {
 		ret = -ENOMEM;
 		goto out_nolock;
 	}
 
 	pte = pte_offset_map_lock(vma->vm_mm, pmd, addr, &ptl);
 	if (unlikely(!maybe_same_pte(*pte, swp_entry_to_pte(entry)))) {
-		mem_cgroup_cancel_charge(page, memcg);
+		mem_cgroup_cancel_charge_swapin(memcg);
 		ret = 0;
 		goto out;
 	}
@@ -1162,14 +1147,11 @@ static int unuse_pte(struct vm_area_struct *vma, pmd_t *pmd,
 	get_page(page);
 	set_pte_at(vma->vm_mm, addr, pte,
 		   pte_mkold(mk_pte(page, vma->vm_page_prot)));
-	if (page == swapcache) {
+	if (page == swapcache)
 		page_add_anon_rmap(page, vma, addr);
-		mem_cgroup_commit_charge(page, memcg, true);
-	} else { /* ksm created a completely new copy */
+	else /* ksm created a completely new copy */
 		page_add_new_anon_rmap(page, vma, addr);
-		mem_cgroup_commit_charge(page, memcg, false);
-		lru_cache_add_active_or_unevictable(page, vma);
-	}
+	mem_cgroup_commit_charge_swapin(page, memcg);
 	swap_free(entry);
 	/*
 	 * Move the page to the active list so it is not
@@ -1354,7 +1336,7 @@ static unsigned int find_next_to_unuse(struct swap_info_struct *si,
 			else
 				continue;
 		}
-		count = READ_ONCE(si->swap_map[i]);
+		count = ACCESS_ONCE(si->swap_map[i]);
 		if (count && swap_count(count) != SWAP_MAP_BAD)
 			break;
 	}
@@ -2074,7 +2056,7 @@ static int swap_show(struct seq_file *swap, void *v)
 	}
 
 	file = si->swap_file;
-	len = seq_file_path(swap, file, " \t\n\\");
+	len = seq_path(swap, &file->f_path, " \t\n\\");
 	seq_printf(swap, "%*s%s\t%u\t%u\t%d\n",
 			len < 40 ? 40 - len : 1, " ",
 			S_ISBLK(file_inode(file)->i_mode) ?
@@ -2185,10 +2167,11 @@ static int claim_swapfile(struct swap_info_struct *p, struct inode *inode)
 	if (S_ISBLK(inode->i_mode)) {
 		p->bdev = bdgrab(I_BDEV(inode));
 		error = blkdev_get(p->bdev,
-				   FMODE_READ | FMODE_WRITE | FMODE_EXCL, p);
+				   FMODE_READ | FMODE_WRITE | FMODE_EXCL,
+				   sys_swapon);
 		if (error < 0) {
 			p->bdev = NULL;
-			return error;
+			return -EINVAL;
 		}
 		p->old_block_size = block_size(p->bdev);
 		error = set_blocksize(p->bdev, PAGE_SIZE);
@@ -2389,6 +2372,7 @@ SYSCALL_DEFINE2(swapon, const char __user *, specialfile, int, swap_flags)
 	struct filename *name;
 	struct file *swap_file = NULL;
 	struct address_space *mapping;
+	int i;
 	int prio;
 	int error;
 	union swap_header *swap_header;
@@ -2428,8 +2412,19 @@ SYSCALL_DEFINE2(swapon, const char __user *, specialfile, int, swap_flags)
 
 	p->swap_file = swap_file;
 	mapping = swap_file->f_mapping;
-	inode = mapping->host;
 
+	for (i = 0; i < nr_swapfiles; i++) {
+		struct swap_info_struct *q = swap_info[i];
+
+		if (q == p || !q->swap_file)
+			continue;
+		if (mapping == q->swap_file->f_mapping) {
+			error = -EBUSY;
+			goto bad_swap;
+		}
+	}
+
+	inode = mapping->host;
 	/* If S_ISREG(inode->i_mode) will do mutex_lock(&inode->i_mutex); */
 	error = claim_swapfile(p, inode);
 	if (unlikely(error))
@@ -2462,8 +2457,6 @@ SYSCALL_DEFINE2(swapon, const char __user *, specialfile, int, swap_flags)
 		goto bad_swap;
 	}
 	if (p->bdev && blk_queue_nonrot(bdev_get_queue(p->bdev))) {
-		int cpu;
-
 		p->flags |= SWP_SOLIDSTATE;
 		/*
 		 * select a random position to start with to help wear leveling
@@ -2482,9 +2475,9 @@ SYSCALL_DEFINE2(swapon, const char __user *, specialfile, int, swap_flags)
 			error = -ENOMEM;
 			goto bad_swap;
 		}
-		for_each_possible_cpu(cpu) {
+		for_each_possible_cpu(i) {
 			struct percpu_cluster *cluster;
-			cluster = per_cpu_ptr(p->percpu_cluster, cpu);
+			cluster = per_cpu_ptr(p->percpu_cluster, i);
 			cluster_set_null(&cluster->index);
 		}
 	}

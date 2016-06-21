@@ -34,21 +34,18 @@
 
 #define NV_DPMS_CLEARED 0x80
 
-struct nvkm_i2c_port;
+struct nouveau_i2c_port;
 
 struct nouveau_encoder {
 	struct drm_encoder_slave base;
 
 	struct dcb_output *dcb;
 	int or;
-
-	struct i2c_adapter *i2c;
-	struct nvkm_i2c_aux *aux;
+	struct nouveau_i2c_port *i2c;
 
 	/* different to drm_encoder.crtc, this reflects what's
 	 * actually programmed on the hw, not the proposed crtc */
 	struct drm_crtc *crtc;
-	u32 ctrl;
 
 	struct drm_display_mode mode;
 	int last_dpms;
@@ -87,7 +84,9 @@ get_slave_funcs(struct drm_encoder *enc)
 }
 
 /* nouveau_dp.c */
-int nouveau_dp_detect(struct nouveau_encoder *);
+bool nouveau_dp_detect(struct drm_encoder *);
+void nouveau_dp_dpms(struct drm_encoder *, int mode, u32 datarate,
+		     struct nouveau_object *);
 
 struct nouveau_connector *
 nouveau_encoder_connector_get(struct nouveau_encoder *encoder);

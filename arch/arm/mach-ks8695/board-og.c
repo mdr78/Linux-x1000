@@ -44,8 +44,7 @@ static void __init og_register_pci(void)
 	if (machine_is_im4004())
 		ks8695_gpio_interrupt(KS8695_GPIO_1, IRQ_TYPE_LEVEL_LOW);
 
-	if (IS_ENABLED(CONFIG_PCI))
-		ks8695_init_pci(&og_pci);
+	ks8695_init_pci(&og_pci);
 }
 
 /*

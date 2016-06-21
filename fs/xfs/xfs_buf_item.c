@@ -17,11 +17,11 @@
  */
 #include "xfs.h"
 #include "xfs_fs.h"
-#include "xfs_format.h"
 #include "xfs_log_format.h"
 #include "xfs_trans_resv.h"
 #include "xfs_bit.h"
 #include "xfs_sb.h"
+#include "xfs_ag.h"
 #include "xfs_mount.h"
 #include "xfs_trans.h"
 #include "xfs_buf_item.h"
@@ -319,10 +319,6 @@ xfs_buf_item_format(
 	ASSERT(atomic_read(&bip->bli_refcount) > 0);
 	ASSERT((bip->bli_flags & XFS_BLI_LOGGED) ||
 	       (bip->bli_flags & XFS_BLI_STALE));
-	ASSERT((bip->bli_flags & XFS_BLI_STALE) ||
-	       (xfs_blft_from_flags(&bip->__bli_format) > XFS_BLFT_UNKNOWN_BUF
-	        && xfs_blft_from_flags(&bip->__bli_format) < XFS_BLFT_MAX_BUF));
-
 
 	/*
 	 * If it is an inode buffer, transfer the in-memory state to the
@@ -492,10 +488,10 @@ xfs_buf_item_unpin(
 		xfs_buf_lock(bp);
 		xfs_buf_hold(bp);
 		bp->b_flags |= XBF_ASYNC;
-		xfs_buf_ioerror(bp, -EIO);
+		xfs_buf_ioerror(bp, EIO);
 		XFS_BUF_UNDONE(bp);
 		xfs_buf_stale(bp);
-		xfs_buf_ioend(bp);
+		xfs_buf_ioend(bp, 0);
 	}
 }
 
@@ -505,7 +501,7 @@ xfs_buf_item_unpin(
  * buffer being bad..
  */
 
-static DEFINE_RATELIMIT_STATE(xfs_buf_write_fail_rl_state, 30 * HZ, 10);
+DEFINE_RATELIMIT_STATE(xfs_buf_write_fail_rl_state, 30 * HZ, 10);
 
 STATIC uint
 xfs_buf_item_push(
@@ -537,9 +533,9 @@ xfs_buf_item_push(
 
 	/* has a previous flush failed due to IO errors? */
 	if ((bp->b_flags & XBF_WRITE_FAIL) &&
-	    ___ratelimit(&xfs_buf_write_fail_rl_state, "XFS: Failing async write")) {
+	    ___ratelimit(&xfs_buf_write_fail_rl_state, "XFS:")) {
 		xfs_warn(bp->b_target->bt_mount,
-"Failing async write on buffer block 0x%llx. Retrying async write.",
+"Detected failing async write on buffer block 0x%llx. Retrying async write.\n",
 			 (long long)bp->b_bn);
 	}
 
@@ -647,7 +643,11 @@ xfs_buf_item_unlock(
 			xfs_buf_item_relse(bp);
 		else if (aborted) {
 			ASSERT(XFS_FORCED_SHUTDOWN(lip->li_mountp));
-			xfs_trans_ail_remove(lip, SHUTDOWN_LOG_IO_ERROR);
+			if (lip->li_flags & XFS_LI_IN_AIL) {
+				spin_lock(&lip->li_ailp->xa_lock);
+				xfs_trans_ail_delete(lip->li_ailp, lip,
+						     SHUTDOWN_LOG_IO_ERROR);
+			}
 			xfs_buf_item_relse(bp);
 		}
 	}
@@ -725,7 +725,7 @@ xfs_buf_item_get_format(
 	bip->bli_formats = kmem_zalloc(count * sizeof(struct xfs_buf_log_format),
 				KM_SLEEP);
 	if (!bip->bli_formats)
-		return -ENOMEM;
+		return ENOMEM;
 	return 0;
 }
 
@@ -746,13 +746,13 @@ xfs_buf_item_free_format(
  * buffer (see xfs_buf_attach_iodone() below), then put the
  * buf log item at the front.
  */
-int
+void
 xfs_buf_item_init(
-	struct xfs_buf	*bp,
-	struct xfs_mount *mp)
+	xfs_buf_t	*bp,
+	xfs_mount_t	*mp)
 {
-	struct xfs_log_item	*lip = bp->b_fspriv;
-	struct xfs_buf_log_item	*bip;
+	xfs_log_item_t		*lip = bp->b_fspriv;
+	xfs_buf_log_item_t	*bip;
 	int			chunks;
 	int			map_size;
 	int			error;
@@ -766,11 +766,12 @@ xfs_buf_item_init(
 	 */
 	ASSERT(bp->b_target->bt_mount == mp);
 	if (lip != NULL && lip->li_type == XFS_LI_BUF)
-		return 0;
+		return;
 
 	bip = kmem_zone_zalloc(xfs_buf_item_zone, KM_SLEEP);
 	xfs_log_item_init(mp, &bip->bli_item, XFS_LI_BUF, &xfs_buf_item_ops);
 	bip->bli_buf = bp;
+	xfs_buf_hold(bp);
 
 	/*
 	 * chunks is the number of XFS_BLF_CHUNK size pieces the buffer
@@ -783,11 +784,6 @@ xfs_buf_item_init(
 	 */
 	error = xfs_buf_item_get_format(bip, bp->b_map_count);
 	ASSERT(error == 0);
-	if (error) {	/* to stop gcc throwing set-but-unused warnings */
-		kmem_zone_free(xfs_buf_item_zone, bip);
-		return error;
-	}
-
 
 	for (i = 0; i < bip->bli_format_count; i++) {
 		chunks = DIV_ROUND_UP(BBTOB(bp->b_maps[i].bm_len),
@@ -800,6 +796,20 @@ xfs_buf_item_init(
 		bip->bli_formats[i].blf_map_size = map_size;
 	}
 
+#ifdef XFS_TRANS_DEBUG
+	/*
+	 * Allocate the arrays for tracking what needs to be logged
+	 * and what our callers request to be logged.  bli_orig
+	 * holds a copy of the original, clean buffer for comparison
+	 * against, and bli_logged keeps a 1 bit flag per byte in
+	 * the buffer to indicate which bytes the callers have asked
+	 * to have logged.
+	 */
+	bip->bli_orig = kmem_alloc(BBTOB(bp->b_length), KM_SLEEP);
+	memcpy(bip->bli_orig, bp->b_addr, BBTOB(bp->b_length));
+	bip->bli_logged = kmem_zalloc(BBTOB(bp->b_length) / NBBY, KM_SLEEP);
+#endif
+
 	/*
 	 * Put the buf item into the list of items attached to the
 	 * buffer at the front.
@@ -807,8 +817,6 @@ xfs_buf_item_init(
 	if (bp->b_fspriv)
 		bip->bli_item.li_bio_list = bp->b_fspriv;
 	bp->b_fspriv = bip;
-	xfs_buf_hold(bp);
-	return 0;
 }
 
 
@@ -818,6 +826,7 @@ xfs_buf_item_init(
  */
 static void
 xfs_buf_item_log_segment(
+	struct xfs_buf_log_item	*bip,
 	uint			first,
 	uint			last,
 	uint			*map)
@@ -925,7 +934,7 @@ xfs_buf_item_log(
 		if (end > last)
 			end = last;
 
-		xfs_buf_item_log_segment(first, end,
+		xfs_buf_item_log_segment(bip, first, end,
 					 &bip->bli_formats[i].blf_data_map[0]);
 
 		start += bp->b_maps[i].bm_len;
@@ -948,6 +957,11 @@ STATIC void
 xfs_buf_item_free(
 	xfs_buf_log_item_t	*bip)
 {
+#ifdef XFS_TRANS_DEBUG
+	kmem_free(bip->bli_orig);
+	kmem_free(bip->bli_logged);
+#endif /* XFS_TRANS_DEBUG */
+
 	xfs_buf_item_free_format(bip);
 	kmem_zone_free(xfs_buf_item_zone, bip);
 }
@@ -1058,7 +1072,7 @@ xfs_buf_iodone_callbacks(
 	static ulong		lasttime;
 	static xfs_buftarg_t	*lasttarg;
 
-	if (likely(!bp->b_error))
+	if (likely(!xfs_buf_geterror(bp)))
 		goto do_callbacks;
 
 	/*
@@ -1087,7 +1101,7 @@ xfs_buf_iodone_callbacks(
 	 * a way to shut the filesystem down if the writes keep failing.
 	 *
 	 * In practice we'll shut the filesystem down soon as non-transient
-	 * errors tend to affect the whole device and a failing log write
+	 * erorrs tend to affect the whole device and a failing log write
 	 * will make us give up.  But we really ought to do better here.
 	 */
 	if (XFS_BUF_ISASYNC(bp)) {
@@ -1100,7 +1114,7 @@ xfs_buf_iodone_callbacks(
 		if (!(bp->b_flags & (XBF_STALE|XBF_WRITE_FAIL))) {
 			bp->b_flags |= XBF_WRITE | XBF_ASYNC |
 				       XBF_DONE | XBF_WRITE_FAIL;
-			xfs_buf_submit(bp);
+			xfs_buf_iorequest(bp);
 		} else {
 			xfs_buf_relse(bp);
 		}
@@ -1121,7 +1135,7 @@ do_callbacks:
 	xfs_buf_do_callbacks(bp);
 	bp->b_fspriv = NULL;
 	bp->b_iodone = NULL;
-	xfs_buf_ioend(bp);
+	xfs_buf_ioend(bp, 0);
 }
 
 /*

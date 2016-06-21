@@ -46,6 +46,7 @@ static struct nouveau_dsm_priv {
 	bool dsm_detected;
 	bool optimus_detected;
 	acpi_handle dhandle;
+	acpi_handle other_handle;
 	acpi_handle rom_handle;
 } nouveau_dsm_priv;
 
@@ -206,7 +207,7 @@ static int nouveau_dsm_get_client_id(struct pci_dev *pdev)
 	return VGA_SWITCHEROO_DIS;
 }
 
-static const struct vga_switcheroo_handler nouveau_dsm_handler = {
+static struct vga_switcheroo_handler nouveau_dsm_handler = {
 	.switchto = nouveau_dsm_switchto,
 	.power_state = nouveau_dsm_power_state,
 	.get_client_id = nouveau_dsm_get_client_id,
@@ -221,9 +222,10 @@ static int nouveau_dsm_pci_probe(struct pci_dev *pdev)
 	if (!dhandle)
 		return false;
 
-	if (!acpi_has_method(dhandle, "_DSM"))
+	if (!acpi_has_method(dhandle, "_DSM")) {
+		nouveau_dsm_priv.other_handle = dhandle;
 		return false;
-
+	}
 	if (acpi_check_dsm(dhandle, nouveau_dsm_muid, 0x00000102,
 			   1 << NOUVEAU_DSM_POWER))
 		retval |= NOUVEAU_DSM_HAS_MUX;
@@ -299,6 +301,16 @@ static bool nouveau_dsm_detect(void)
 		printk(KERN_INFO "VGA switcheroo: detected DSM switching method %s handle\n",
 			acpi_method_name);
 		nouveau_dsm_priv.dsm_detected = true;
+		/*
+		 * On some systems hotplug events are generated for the device
+		 * being switched off when _DSM is executed.  They cause ACPI
+		 * hotplug to trigger and attempt to remove the device from
+		 * the system, which causes it to break down.  Prevent that from
+		 * happening by setting the no_hotplug flag for the involved
+		 * ACPI device objects.
+		 */
+		acpi_bus_no_hotplug(nouveau_dsm_priv.dhandle);
+		acpi_bus_no_hotplug(nouveau_dsm_priv.other_handle);
 		ret = true;
 	}
 
@@ -367,18 +379,17 @@ static int nouveau_rom_call(acpi_handle rom_handle, uint8_t *bios,
 		return -ENODEV;
 	}
 	obj = (union acpi_object *)buffer.pointer;
-	len = min(len, (int)obj->buffer.length);
 	memcpy(bios+offset, obj->buffer.pointer, len);
 	kfree(buffer.pointer);
 	return len;
 }
 
-bool nouveau_acpi_rom_supported(struct device *dev)
+bool nouveau_acpi_rom_supported(struct pci_dev *pdev)
 {
 	acpi_status status;
 	acpi_handle dhandle, rom_handle;
 
-	dhandle = ACPI_HANDLE(dev);
+	dhandle = ACPI_HANDLE(&pdev->dev);
 	if (!dhandle)
 		return false;
 

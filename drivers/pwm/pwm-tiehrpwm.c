@@ -138,12 +138,12 @@ static inline struct ehrpwm_pwm_chip *to_ehrpwm_pwm_chip(struct pwm_chip *chip)
 	return container_of(chip, struct ehrpwm_pwm_chip, chip);
 }
 
-static inline u16 ehrpwm_read(void __iomem *base, int offset)
+static u16 ehrpwm_read(void __iomem *base, int offset)
 {
 	return readw(base + offset);
 }
 
-static inline void ehrpwm_write(void __iomem *base, int offset, unsigned int val)
+static void ehrpwm_write(void __iomem *base, int offset, unsigned int val)
 {
 	writew(val & 0xFFFF, base + offset);
 }
@@ -407,7 +407,7 @@ static void ehrpwm_pwm_free(struct pwm_chip *chip, struct pwm_device *pwm)
 {
 	struct ehrpwm_pwm_chip *pc = to_ehrpwm_pwm_chip(chip);
 
-	if (pwm_is_enabled(pwm)) {
+	if (test_bit(PWMF_ENABLED, &pwm->flags)) {
 		dev_warn(chip->dev, "Removing PWM device without disabling\n");
 		pm_runtime_put_sync(chip->dev);
 	}
@@ -440,8 +440,10 @@ static int ehrpwm_pwm_probe(struct platform_device *pdev)
 	u16 status;
 
 	pc = devm_kzalloc(&pdev->dev, sizeof(*pc), GFP_KERNEL);
-	if (!pc)
+	if (!pc) {
+		dev_err(&pdev->dev, "failed to allocate memory\n");
 		return -ENOMEM;
+	}
 
 	clk = devm_clk_get(&pdev->dev, "fck");
 	if (IS_ERR(clk)) {
@@ -529,7 +531,6 @@ static int ehrpwm_pwm_remove(struct platform_device *pdev)
 	return pwmchip_remove(&pc->chip);
 }
 
-#ifdef CONFIG_PM_SLEEP
 static void ehrpwm_pwm_save_context(struct ehrpwm_pwm_chip *pc)
 {
 	pm_runtime_get_sync(pc->chip.dev);
@@ -556,6 +557,7 @@ static void ehrpwm_pwm_restore_context(struct ehrpwm_pwm_chip *pc)
 	ehrpwm_write(pc->mmio_base, TBCTL, pc->ctx.tbctl);
 }
 
+#ifdef CONFIG_PM_SLEEP
 static int ehrpwm_pwm_suspend(struct device *dev)
 {
 	struct ehrpwm_pwm_chip *pc = dev_get_drvdata(dev);
@@ -565,7 +567,7 @@ static int ehrpwm_pwm_suspend(struct device *dev)
 	for (i = 0; i < pc->chip.npwm; i++) {
 		struct pwm_device *pwm = &pc->chip.pwms[i];
 
-		if (!pwm_is_enabled(pwm))
+		if (!test_bit(PWMF_ENABLED, &pwm->flags))
 			continue;
 
 		/* Disable explicitly if PWM is running */
@@ -582,7 +584,7 @@ static int ehrpwm_pwm_resume(struct device *dev)
 	for (i = 0; i < pc->chip.npwm; i++) {
 		struct pwm_device *pwm = &pc->chip.pwms[i];
 
-		if (!pwm_is_enabled(pwm))
+		if (!test_bit(PWMF_ENABLED, &pwm->flags))
 			continue;
 
 		/* Enable explicitly if PWM was running */
@@ -599,6 +601,7 @@ static SIMPLE_DEV_PM_OPS(ehrpwm_pwm_pm_ops, ehrpwm_pwm_suspend,
 static struct platform_driver ehrpwm_pwm_driver = {
 	.driver = {
 		.name	= "ehrpwm",
+		.owner	= THIS_MODULE,
 		.of_match_table = ehrpwm_of_match,
 		.pm	= &ehrpwm_pwm_pm_ops,
 	},

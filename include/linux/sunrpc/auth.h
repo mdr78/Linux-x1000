@@ -18,13 +18,9 @@
 #include <linux/atomic.h>
 #include <linux/rcupdate.h>
 #include <linux/uidgid.h>
-#include <linux/utsname.h>
 
-/*
- * Size of the nodename buffer. RFC1831 specifies a hard limit of 255 bytes,
- * but Linux hostnames are actually limited to __NEW_UTS_LEN bytes.
- */
-#define UNX_MAXNODENAME	__NEW_UTS_LEN
+/* size of the nodename buffer */
+#define UNX_MAXNODENAME	32
 
 struct rpcsec_gss_info;
 
@@ -57,7 +53,7 @@ struct rpc_cred {
 	struct rcu_head		cr_rcu;
 	struct rpc_auth *	cr_auth;
 	const struct rpc_credops *cr_ops;
-#if IS_ENABLED(CONFIG_SUNRPC_DEBUG)
+#ifdef RPC_DEBUG
 	unsigned long		cr_magic;	/* 0x0f4aa4f0 */
 #endif
 	unsigned long		cr_expire;	/* when to gc */
@@ -107,7 +103,6 @@ struct rpc_auth_create_args {
 
 /* Flags for rpcauth_lookupcred() */
 #define RPCAUTH_LOOKUP_NEW		0x01	/* Accept an uninitialised cred */
-#define RPCAUTH_LOOKUP_RCU		0x02	/* lock-less lookup */
 
 /*
  * Client authentication ops
@@ -145,7 +140,6 @@ struct rpc_credops {
 						void *, __be32 *, void *);
 	int			(*crkey_timeout)(struct rpc_cred *);
 	bool			(*crkey_to_expire)(struct rpc_cred *);
-	char *			(*crstringify_acceptor)(struct rpc_cred *);
 };
 
 extern const struct rpc_authops	authunix_ops;
@@ -159,7 +153,6 @@ void			rpc_destroy_generic_auth(void);
 void 			rpc_destroy_authunix(void);
 
 struct rpc_cred *	rpc_lookup_cred(void);
-struct rpc_cred *	rpc_lookup_cred_nonblock(void);
 struct rpc_cred *	rpc_lookup_machine_cred(const char *service_name);
 int			rpcauth_register(const struct rpc_authops *);
 int			rpcauth_unregister(const struct rpc_authops *);
@@ -189,7 +182,6 @@ void			rpcauth_clear_credcache(struct rpc_cred_cache *);
 int			rpcauth_key_timeout_notify(struct rpc_auth *,
 						struct rpc_cred *);
 bool			rpcauth_cred_key_to_expire(struct rpc_cred *);
-char *			rpcauth_stringify_acceptor(struct rpc_cred *);
 
 static inline
 struct rpc_cred *	get_rpccred(struct rpc_cred *cred)

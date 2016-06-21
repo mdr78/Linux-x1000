@@ -91,6 +91,15 @@ MODULE_PARM_DESC(krcvqs, "number of kernel receive queues per IB port");
 unsigned qib_cc_table_size;
 module_param_named(cc_table_size, qib_cc_table_size, uint, S_IRUGO);
 MODULE_PARM_DESC(cc_table_size, "Congestion control table entries 0 (CCA disabled - default), min = 128, max = 1984");
+/*
+ * qib_wc_pat parameter:
+ *      0 is WC via MTRR
+ *      1 is WC via PAT
+ *      If PAT initialization fails, code reverts back to MTRR
+ */
+unsigned qib_wc_pat = 1; /* default (1) is to use PAT, not MTRR */
+module_param_named(wc_pat, qib_wc_pat, uint, S_IRUGO);
+MODULE_PARM_DESC(wc_pat, "enable write-combining via PAT mechanism");
 
 static void verify_interrupt(unsigned long);
 
@@ -121,6 +130,7 @@ void qib_set_ctxtcnt(struct qib_devdata *dd)
 int qib_create_ctxts(struct qib_devdata *dd)
 {
 	unsigned i;
+	int ret;
 	int local_node_id = pcibus_to_node(dd->pcidev->bus);
 
 	if (local_node_id < 0)
@@ -131,11 +141,12 @@ int qib_create_ctxts(struct qib_devdata *dd)
 	 * Allocate full ctxtcnt array, rather than just cfgctxts, because
 	 * cleanup iterates across all possible ctxts.
 	 */
-	dd->rcd = kcalloc(dd->ctxtcnt, sizeof(*dd->rcd), GFP_KERNEL);
+	dd->rcd = kzalloc(sizeof(*dd->rcd) * dd->ctxtcnt, GFP_KERNEL);
 	if (!dd->rcd) {
 		qib_dev_err(dd,
 			"Unable to allocate ctxtdata array, failing\n");
-		return -ENOMEM;
+		ret = -ENOMEM;
+		goto done;
 	}
 
 	/* create (one or more) kctxt */
@@ -152,14 +163,15 @@ int qib_create_ctxts(struct qib_devdata *dd)
 		if (!rcd) {
 			qib_dev_err(dd,
 				"Unable to allocate ctxtdata for Kernel ctxt, failing\n");
-			kfree(dd->rcd);
-			dd->rcd = NULL;
-			return -ENOMEM;
+			ret = -ENOMEM;
+			goto done;
 		}
 		rcd->pkeys[0] = QIB_DEFAULT_P_KEY;
 		rcd->seq_cnt = 1;
 	}
-	return 0;
+	ret = 0;
+done:
+	return ret;
 }
 
 /*
@@ -221,18 +233,16 @@ struct qib_ctxtdata *qib_create_ctxtdata(struct qib_pportdata *ppd, u32 ctxt,
 /*
  * Common code for initializing the physical port structure.
  */
-int qib_init_pportdata(struct qib_pportdata *ppd, struct qib_devdata *dd,
+void qib_init_pportdata(struct qib_pportdata *ppd, struct qib_devdata *dd,
 			u8 hw_pidx, u8 port)
 {
 	int size;
-
 	ppd->dd = dd;
 	ppd->hw_pidx = hw_pidx;
 	ppd->port = port; /* IB port number, not index */
 
 	spin_lock_init(&ppd->sdma_lock);
 	spin_lock_init(&ppd->lflags_lock);
-	spin_lock_init(&ppd->cc_shadow_lock);
 	init_waitqueue_head(&ppd->state_wait);
 
 	init_timer(&ppd->symerr_clear_timer);
@@ -240,10 +250,8 @@ int qib_init_pportdata(struct qib_pportdata *ppd, struct qib_devdata *dd,
 	ppd->symerr_clear_timer.data = (unsigned long)ppd;
 
 	ppd->qib_wq = NULL;
-	ppd->ibport_data.pmastats =
-		alloc_percpu(struct qib_pma_counters);
-	if (!ppd->ibport_data.pmastats)
-		return -ENOMEM;
+
+	spin_lock_init(&ppd->cc_shadow_lock);
 
 	if (qib_cc_table_size < IB_CCT_MIN_ENTRIES)
 		goto bail;
@@ -291,7 +299,7 @@ int qib_init_pportdata(struct qib_pportdata *ppd, struct qib_devdata *dd,
 		goto bail_3;
 	}
 
-	return 0;
+	return;
 
 bail_3:
 	kfree(ppd->ccti_entries_shadow);
@@ -305,7 +313,7 @@ bail_1:
 bail:
 	/* User is intentionally disabling the congestion control agent */
 	if (!qib_cc_table_size)
-		return 0;
+		return;
 
 	if (qib_cc_table_size < IB_CCT_MIN_ENTRIES) {
 		qib_cc_table_size = 0;
@@ -316,7 +324,7 @@ bail:
 
 	qib_dev_err(dd, "Congestion Control Agent disabled for port %d\n",
 		port);
-	return 0;
+	return;
 }
 
 static int init_pioavailregs(struct qib_devdata *dd)
@@ -517,7 +525,6 @@ static void enable_chip(struct qib_devdata *dd)
 static void verify_interrupt(unsigned long opaque)
 {
 	struct qib_devdata *dd = (struct qib_devdata *) opaque;
-	u64 int_counter;
 
 	if (!dd)
 		return; /* being torn down */
@@ -526,8 +533,7 @@ static void verify_interrupt(unsigned long opaque)
 	 * If we don't have a lid or any interrupts, let the user know and
 	 * don't bother checking again.
 	 */
-	int_counter = qib_int_counter(dd) - dd->z_int_counter;
-	if (int_counter == 0) {
+	if (dd->int_counter == 0) {
 		if (!dd->f_intr_fallback(dd))
 			dev_err(&dd->pcidev->dev,
 				"No interrupts detected, not usable.\n");
@@ -605,7 +611,6 @@ static int qib_create_workqueues(struct qib_devdata *dd)
 		ppd = dd->pport + pidx;
 		if (!ppd->qib_wq) {
 			char wq_name[8]; /* 3 + 2 + 1 + 1 + 1 */
-
 			snprintf(wq_name, sizeof(wq_name), "qib%d_%d",
 				dd->unit, pidx);
 			ppd->qib_wq =
@@ -626,12 +631,6 @@ wq_error:
 		}
 	}
 	return -ENOMEM;
-}
-
-static void qib_free_pportdata(struct qib_pportdata *ppd)
-{
-	free_percpu(ppd->ibport_data.pmastats);
-	ppd->ibport_data.pmastats = NULL;
 }
 
 /**
@@ -707,7 +706,6 @@ int qib_init(struct qib_devdata *dd, int reinit)
 
 	for (pidx = 0; pidx < dd->num_pports; ++pidx) {
 		int mtu;
-
 		if (lastfail)
 			ret = lastfail;
 		ppd = dd->pport + pidx;
@@ -922,9 +920,9 @@ static void qib_shutdown_device(struct qib_devdata *dd)
 			destroy_workqueue(ppd->qib_wq);
 			ppd->qib_wq = NULL;
 		}
-		qib_free_pportdata(ppd);
 	}
 
+	qib_update_eeprom_log(dd);
 }
 
 /**
@@ -1019,7 +1017,8 @@ static void qib_verify_pioperf(struct qib_devdata *dd)
 	addr = vmalloc(cnt);
 	if (!addr) {
 		qib_devinfo(dd->pcidev,
-			 "Couldn't get memory for checking PIO perf, skipping\n");
+			 "Couldn't get memory for checking PIO perf,"
+			 " skipping\n");
 		goto done;
 	}
 
@@ -1080,32 +1079,7 @@ void qib_free_devdata(struct qib_devdata *dd)
 #ifdef CONFIG_DEBUG_FS
 	qib_dbg_ibdev_exit(&dd->verbs_dev);
 #endif
-	free_percpu(dd->int_counter);
 	ib_dealloc_device(&dd->verbs_dev.ibdev);
-}
-
-u64 qib_int_counter(struct qib_devdata *dd)
-{
-	int cpu;
-	u64 int_counter = 0;
-
-	for_each_possible_cpu(cpu)
-		int_counter += *per_cpu_ptr(dd->int_counter, cpu);
-	return int_counter;
-}
-
-u64 qib_sps_ints(void)
-{
-	unsigned long flags;
-	struct qib_devdata *dd;
-	u64 sps_ints = 0;
-
-	spin_lock_irqsave(&qib_devs_lock, flags);
-	list_for_each_entry(dd, &qib_dev_list, list) {
-		sps_ints += qib_int_counter(dd);
-	}
-	spin_unlock_irqrestore(&qib_devs_lock, flags);
-	return sps_ints;
 }
 
 /*
@@ -1145,17 +1119,9 @@ struct qib_devdata *qib_alloc_devdata(struct pci_dev *pdev, size_t extra)
 			      "Could not allocate unit ID: error %d\n", -ret);
 		goto bail;
 	}
-	dd->int_counter = alloc_percpu(u64);
-	if (!dd->int_counter) {
-		ret = -ENOMEM;
-		qib_early_err(&pdev->dev,
-			      "Could not allocate per-cpu int_counter\n");
-		goto bail;
-	}
 
 	if (!qib_cpulist_count) {
 		u32 count = num_online_cpus();
-
 		qib_cpulist = kzalloc(BITS_TO_LONGS(count) *
 				      sizeof(long), GFP_KERNEL);
 		if (qib_cpulist)
@@ -1172,7 +1138,7 @@ bail:
 	if (!list_empty(&dd->list))
 		list_del_init(&dd->list);
 	ib_dealloc_device(&dd->verbs_dev.ibdev);
-	return ERR_PTR(ret);
+	return ERR_PTR(ret);;
 }
 
 /*
@@ -1215,7 +1181,7 @@ static int qib_init_one(struct pci_dev *, const struct pci_device_id *);
 #define DRIVER_LOAD_MSG "Intel " QIB_DRV_NAME " loaded: "
 #define PFX QIB_DRV_NAME ": "
 
-static const struct pci_device_id qib_pci_tbl[] = {
+static DEFINE_PCI_DEVICE_TABLE(qib_pci_tbl) = {
 	{ PCI_DEVICE(PCI_VENDOR_ID_PATHSCALE, PCI_DEVICE_ID_QLOGIC_IB_6120) },
 	{ PCI_DEVICE(PCI_VENDOR_ID_QLOGIC, PCI_DEVICE_ID_QLOGIC_IB_7220) },
 	{ PCI_DEVICE(PCI_VENDOR_ID_QLOGIC, PCI_DEVICE_ID_QLOGIC_IB_7322) },
@@ -1265,7 +1231,7 @@ static int qib_notify_dca(struct notifier_block *nb, unsigned long event,
  * Do all the generic driver unit- and chip-independent memory
  * allocation and initialization.
  */
-static int __init qib_ib_init(void)
+static int __init qlogic_ib_init(void)
 {
 	int ret;
 
@@ -1309,12 +1275,12 @@ bail:
 	return ret;
 }
 
-module_init(qib_ib_init);
+module_init(qlogic_ib_init);
 
 /*
  * Do the non-unit driver cleanup, memory free, etc. at unload.
  */
-static void __exit qib_ib_cleanup(void)
+static void __exit qlogic_ib_cleanup(void)
 {
 	int ret;
 
@@ -1339,7 +1305,7 @@ static void __exit qib_ib_cleanup(void)
 	qib_dev_cleanup();
 }
 
-module_exit(qib_ib_cleanup);
+module_exit(qlogic_ib_cleanup);
 
 /* this can only be called after a successful initialization */
 static void cleanup_device_data(struct qib_devdata *dd)
@@ -1368,7 +1334,8 @@ static void cleanup_device_data(struct qib_devdata *dd)
 		spin_unlock(&dd->pport[pidx].cc_shadow_lock);
 	}
 
-	qib_disable_wc(dd);
+	if (!qib_wc_pat)
+		qib_disable_wc(dd);
 
 	if (dd->pioavailregs_dma) {
 		dma_free_coherent(&dd->pcidev->dev, PAGE_SIZE,
@@ -1537,12 +1504,14 @@ static int qib_init_one(struct pci_dev *pdev, const struct pci_device_id *ent)
 		goto bail;
 	}
 
-	ret = qib_enable_wc(dd);
-	if (ret) {
-		qib_dev_err(dd,
-			"Write combining not enabled (err %d): performance may be poor\n",
-			-ret);
-		ret = 0;
+	if (!qib_wc_pat) {
+		ret = qib_enable_wc(dd);
+		if (ret) {
+			qib_dev_err(dd,
+				"Write combining not enabled (err %d): performance may be poor\n",
+				-ret);
+			ret = 0;
+		}
 	}
 
 	qib_verify_pioperf(dd);
@@ -1680,7 +1649,7 @@ int qib_setup_eagerbufs(struct qib_ctxtdata *rcd)
 	 * heavy filesystem activity makes these fail, and we can
 	 * use compound pages.
 	 */
-	gfp_flags = __GFP_RECLAIM | __GFP_IO | __GFP_COMP;
+	gfp_flags = __GFP_WAIT | __GFP_IO | __GFP_COMP;
 
 	egrcnt = rcd->rcvegrcnt;
 	egroff = rcd->rcvegr_tid_base;

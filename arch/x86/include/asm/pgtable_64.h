@@ -116,8 +116,7 @@ static inline void native_pgd_clear(pgd_t *pgd)
 	native_set_pgd(pgd, native_make_pgd(0));
 }
 
-extern void sync_global_pgds(unsigned long start, unsigned long end,
-			     int removed);
+extern void sync_global_pgds(unsigned long start, unsigned long end);
 
 /*
  * Conversion functions: convert a page and protection to a page entry,
@@ -133,6 +132,10 @@ static inline int pgd_large(pgd_t pgd) { return 0; }
 /* PUD - Level3 access */
 
 /* PMD  - Level 2 access */
+#define pte_to_pgoff(pte) ((pte_val((pte)) & PHYSICAL_PAGE_MASK) >> PAGE_SHIFT)
+#define pgoff_to_pte(off) ((pte_t) { .pte = ((off) << PAGE_SHIFT) |	\
+					    _PAGE_FILE })
+#define PTE_FILE_MAX_BITS __PHYSICAL_MASK_SHIFT
 
 /* PTE - Level 1 access. */
 
@@ -141,8 +144,13 @@ static inline int pgd_large(pgd_t pgd) { return 0; }
 #define pte_unmap(pte) ((void)(pte))/* NOP */
 
 /* Encode and de-code a swap entry */
-#define SWP_TYPE_BITS 5
+#if _PAGE_BIT_FILE < _PAGE_BIT_PROTNONE
+#define SWP_TYPE_BITS (_PAGE_BIT_FILE - _PAGE_BIT_PRESENT - 1)
 #define SWP_OFFSET_SHIFT (_PAGE_BIT_PROTNONE + 1)
+#else
+#define SWP_TYPE_BITS (_PAGE_BIT_PROTNONE - _PAGE_BIT_PRESENT - 1)
+#define SWP_OFFSET_SHIFT (_PAGE_BIT_FILE + 1)
+#endif
 
 #define MAX_SWAPFILES_CHECK() BUILD_BUG_ON(MAX_SWAPFILES_SHIFT > SWP_TYPE_BITS)
 

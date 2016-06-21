@@ -21,8 +21,6 @@
 
 #include "hw.h"
 
-struct ath_softc;
-
 /**
  * struct ath_dfs_stats - DFS Statistics per wiphy
  * @pulses_total:     pulses reported by HW

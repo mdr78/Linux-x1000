@@ -149,10 +149,6 @@ static int __open_session(struct ceph_mon_client *monc)
 			      CEPH_ENTITY_TYPE_MON, monc->cur_mon,
 			      &monc->monmap->mon_inst[monc->cur_mon].addr);
 
-		/* send an initial keepalive to ensure our timestamp is
-		 * valid by the time we are in an OPENED state */
-		ceph_con_keepalive(&monc->con);
-
 		/* initiatiate authentication handshake */
 		ret = ceph_auth_build_hello(monc->auth,
 					    monc->m_auth->front.iov_base,
@@ -174,19 +170,14 @@ static bool __sub_expired(struct ceph_mon_client *monc)
  */
 static void __schedule_delayed(struct ceph_mon_client *monc)
 {
-	struct ceph_options *opt = monc->client->options;
-	unsigned long delay;
+	unsigned int delay;
 
-	if (monc->cur_mon < 0 || __sub_expired(monc)) {
+	if (monc->cur_mon < 0 || __sub_expired(monc))
 		delay = 10 * HZ;
-	} else {
+	else
 		delay = 20 * HZ;
-		if (opt->monc_ping_timeout > 0)
-			delay = min(delay, opt->monc_ping_timeout / 3);
-	}
-	dout("__schedule_delayed after %lu\n", delay);
-	schedule_delayed_work(&monc->delayed_work,
-			      round_jiffies_relative(delay));
+	dout("__schedule_delayed after %u\n", delay);
+	schedule_delayed_work(&monc->delayed_work, delay);
 }
 
 /*
@@ -305,40 +296,6 @@ void ceph_monc_request_next_osdmap(struct ceph_mon_client *monc)
 		__send_subscribe(monc);
 	mutex_unlock(&monc->mutex);
 }
-EXPORT_SYMBOL(ceph_monc_request_next_osdmap);
-
-/*
- * Wait for an osdmap with a given epoch.
- *
- * @epoch: epoch to wait for
- * @timeout: in jiffies, 0 means "wait forever"
- */
-int ceph_monc_wait_osdmap(struct ceph_mon_client *monc, u32 epoch,
-			  unsigned long timeout)
-{
-	unsigned long started = jiffies;
-	long ret;
-
-	mutex_lock(&monc->mutex);
-	while (monc->have_osdmap < epoch) {
-		mutex_unlock(&monc->mutex);
-
-		if (timeout && time_after_eq(jiffies, started + timeout))
-			return -ETIMEDOUT;
-
-		ret = wait_event_interruptible_timeout(monc->client->auth_wq,
-						monc->have_osdmap >= epoch,
-						ceph_timeout_jiffies(timeout));
-		if (ret < 0)
-			return ret;
-
-		mutex_lock(&monc->mutex);
-	}
-
-	mutex_unlock(&monc->mutex);
-	return 0;
-}
-EXPORT_SYMBOL(ceph_monc_wait_osdmap);
 
 /*
  *
@@ -426,7 +383,7 @@ out_unlocked:
 }
 
 /*
- * generic requests (currently statfs, mon_get_version)
+ * generic requests (e.g., statfs, poolop)
  */
 static struct ceph_mon_generic_request *__lookup_generic_req(
 	struct ceph_mon_client *monc, u64 tid)
@@ -520,13 +477,14 @@ static struct ceph_msg *get_generic_reply(struct ceph_connection *con,
 	return m;
 }
 
-static int __do_generic_request(struct ceph_mon_client *monc, u64 tid,
-				struct ceph_mon_generic_request *req)
+static int do_generic_request(struct ceph_mon_client *monc,
+			      struct ceph_mon_generic_request *req)
 {
 	int err;
 
 	/* register request */
-	req->tid = tid != 0 ? tid : ++monc->last_tid;
+	mutex_lock(&monc->mutex);
+	req->tid = ++monc->last_tid;
 	req->request->hdr.tid = cpu_to_le64(req->tid);
 	__insert_generic_request(monc, req);
 	monc->num_generic_requests++;
@@ -538,21 +496,10 @@ static int __do_generic_request(struct ceph_mon_client *monc, u64 tid,
 	mutex_lock(&monc->mutex);
 	rb_erase(&req->node, &monc->generic_request_tree);
 	monc->num_generic_requests--;
+	mutex_unlock(&monc->mutex);
 
 	if (!err)
 		err = req->result;
-	return err;
-}
-
-static int do_generic_request(struct ceph_mon_client *monc,
-			      struct ceph_mon_generic_request *req)
-{
-	int err;
-
-	mutex_lock(&monc->mutex);
-	err = __do_generic_request(monc, 0, req);
-	mutex_unlock(&monc->mutex);
-
 	return err;
 }
 
@@ -585,7 +532,7 @@ static void handle_statfs_reply(struct ceph_mon_client *monc,
 	return;
 
 bad:
-	pr_err("corrupt statfs reply, tid %llu\n", tid);
+	pr_err("corrupt generic reply, tid %llu\n", tid);
 	ceph_msg_dump(msg);
 }
 
@@ -604,6 +551,7 @@ int ceph_monc_do_statfs(struct ceph_mon_client *monc, struct ceph_statfs *buf)
 
 	kref_init(&req->kref);
 	req->buf = buf;
+	req->buf_len = sizeof(*buf);
 	init_completion(&req->completion);
 
 	err = -ENOMEM;
@@ -626,57 +574,75 @@ int ceph_monc_do_statfs(struct ceph_mon_client *monc, struct ceph_statfs *buf)
 	err = do_generic_request(monc, req);
 
 out:
-	put_generic_request(req);
+	kref_put(&req->kref, release_generic_request);
 	return err;
 }
 EXPORT_SYMBOL(ceph_monc_do_statfs);
 
-static void handle_get_version_reply(struct ceph_mon_client *monc,
-				     struct ceph_msg *msg)
+/*
+ * pool ops
+ */
+static int get_poolop_reply_buf(const char *src, size_t src_len,
+				char *dst, size_t dst_len)
+{
+	u32 buf_len;
+
+	if (src_len != sizeof(u32) + dst_len)
+		return -EINVAL;
+
+	buf_len = le32_to_cpu(*(u32 *)src);
+	if (buf_len != dst_len)
+		return -EINVAL;
+
+	memcpy(dst, src + sizeof(u32), dst_len);
+	return 0;
+}
+
+static void handle_poolop_reply(struct ceph_mon_client *monc,
+				struct ceph_msg *msg)
 {
 	struct ceph_mon_generic_request *req;
+	struct ceph_mon_poolop_reply *reply = msg->front.iov_base;
 	u64 tid = le64_to_cpu(msg->hdr.tid);
-	void *p = msg->front.iov_base;
-	void *end = p + msg->front_alloc_len;
-	u64 handle;
 
-	dout("%s %p tid %llu\n", __func__, msg, tid);
-
-	ceph_decode_need(&p, end, 2*sizeof(u64), bad);
-	handle = ceph_decode_64(&p);
-	if (tid != 0 && tid != handle)
+	if (msg->front.iov_len < sizeof(*reply))
 		goto bad;
+	dout("handle_poolop_reply %p tid %llu\n", msg, tid);
 
 	mutex_lock(&monc->mutex);
-	req = __lookup_generic_req(monc, handle);
+	req = __lookup_generic_req(monc, tid);
 	if (req) {
-		*(u64 *)req->buf = ceph_decode_64(&p);
-		req->result = 0;
+		if (req->buf_len &&
+		    get_poolop_reply_buf(msg->front.iov_base + sizeof(*reply),
+				     msg->front.iov_len - sizeof(*reply),
+				     req->buf, req->buf_len) < 0) {
+			mutex_unlock(&monc->mutex);
+			goto bad;
+		}
+		req->result = le32_to_cpu(reply->reply_code);
 		get_generic_request(req);
 	}
 	mutex_unlock(&monc->mutex);
 	if (req) {
-		complete_all(&req->completion);
+		complete(&req->completion);
 		put_generic_request(req);
 	}
-
 	return;
+
 bad:
-	pr_err("corrupt mon_get_version reply, tid %llu\n", tid);
+	pr_err("corrupt generic reply, tid %llu\n", tid);
 	ceph_msg_dump(msg);
 }
 
 /*
- * Send MMonGetVersion and wait for the reply.
- *
- * @what: one of "mdsmap", "osdmap" or "monmap"
+ * Do a synchronous pool op.
  */
-int ceph_monc_do_get_version(struct ceph_mon_client *monc, const char *what,
-			     u64 *newest)
+static int do_poolop(struct ceph_mon_client *monc, u32 op,
+			u32 pool, u64 snapid,
+			char *buf, int len)
 {
 	struct ceph_mon_generic_request *req;
-	void *p, *end;
-	u64 tid;
+	struct ceph_mon_poolop *h;
 	int err;
 
 	req = kzalloc(sizeof(*req), GFP_NOFS);
@@ -684,41 +650,56 @@ int ceph_monc_do_get_version(struct ceph_mon_client *monc, const char *what,
 		return -ENOMEM;
 
 	kref_init(&req->kref);
-	req->buf = newest;
+	req->buf = buf;
+	req->buf_len = len;
 	init_completion(&req->completion);
 
-	req->request = ceph_msg_new(CEPH_MSG_MON_GET_VERSION,
-				    sizeof(u64) + sizeof(u32) + strlen(what),
-				    GFP_NOFS, true);
-	if (!req->request) {
-		err = -ENOMEM;
+	err = -ENOMEM;
+	req->request = ceph_msg_new(CEPH_MSG_POOLOP, sizeof(*h), GFP_NOFS,
+				    true);
+	if (!req->request)
 		goto out;
-	}
-
-	req->reply = ceph_msg_new(CEPH_MSG_MON_GET_VERSION_REPLY, 1024,
-				  GFP_NOFS, true);
-	if (!req->reply) {
-		err = -ENOMEM;
+	req->reply = ceph_msg_new(CEPH_MSG_POOLOP_REPLY, 1024, GFP_NOFS,
+				  true);
+	if (!req->reply)
 		goto out;
-	}
-
-	p = req->request->front.iov_base;
-	end = p + req->request->front_alloc_len;
 
 	/* fill out request */
-	mutex_lock(&monc->mutex);
-	tid = ++monc->last_tid;
-	ceph_encode_64(&p, tid); /* handle */
-	ceph_encode_string(&p, end, what, strlen(what));
+	req->request->hdr.version = cpu_to_le16(2);
+	h = req->request->front.iov_base;
+	h->monhdr.have_version = 0;
+	h->monhdr.session_mon = cpu_to_le16(-1);
+	h->monhdr.session_mon_tid = 0;
+	h->fsid = monc->monmap->fsid;
+	h->pool = cpu_to_le32(pool);
+	h->op = cpu_to_le32(op);
+	h->auid = 0;
+	h->snapid = cpu_to_le64(snapid);
+	h->name_len = 0;
 
-	err = __do_generic_request(monc, tid, req);
+	err = do_generic_request(monc, req);
 
-	mutex_unlock(&monc->mutex);
 out:
-	put_generic_request(req);
+	kref_put(&req->kref, release_generic_request);
 	return err;
 }
-EXPORT_SYMBOL(ceph_monc_do_get_version);
+
+int ceph_monc_create_snapid(struct ceph_mon_client *monc,
+			    u32 pool, u64 *snapid)
+{
+	return do_poolop(monc,  POOL_OP_CREATE_UNMANAGED_SNAP,
+				   pool, 0, (char *)snapid, sizeof(*snapid));
+
+}
+EXPORT_SYMBOL(ceph_monc_create_snapid);
+
+int ceph_monc_delete_snapid(struct ceph_mon_client *monc,
+			    u32 pool, u64 snapid)
+{
+	return do_poolop(monc,  POOL_OP_CREATE_UNMANAGED_SNAP,
+				   pool, snapid, NULL, 0);
+
+}
 
 /*
  * Resend pending generic requests.
@@ -752,23 +733,11 @@ static void delayed_work(struct work_struct *work)
 		__close_session(monc);
 		__open_session(monc);  /* continue hunting */
 	} else {
-		struct ceph_options *opt = monc->client->options;
-		int is_auth = ceph_auth_is_authenticated(monc->auth);
-		if (ceph_con_keepalive_expired(&monc->con,
-					       opt->monc_ping_timeout)) {
-			dout("monc keepalive timeout\n");
-			is_auth = 0;
-			__close_session(monc);
-			monc->hunting = true;
-			__open_session(monc);
-		}
+		ceph_con_keepalive(&monc->con);
 
-		if (!monc->hunting) {
-			ceph_con_keepalive(&monc->con);
-			__validate_auth(monc);
-		}
+		__validate_auth(monc);
 
-		if (is_auth)
+		if (ceph_auth_is_authenticated(monc->auth))
 			__send_subscribe(monc);
 	}
 	__schedule_delayed(monc);
@@ -1012,8 +981,8 @@ static void dispatch(struct ceph_connection *con, struct ceph_msg *msg)
 		handle_statfs_reply(monc, msg);
 		break;
 
-	case CEPH_MSG_MON_GET_VERSION_REPLY:
-		handle_get_version_reply(monc, msg);
+	case CEPH_MSG_POOLOP_REPLY:
+		handle_poolop_reply(monc, msg);
 		break;
 
 	case CEPH_MSG_MON_MAP:
@@ -1054,20 +1023,12 @@ static struct ceph_msg *mon_alloc_msg(struct ceph_connection *con,
 	case CEPH_MSG_MON_SUBSCRIBE_ACK:
 		m = ceph_msg_get(monc->m_subscribe_ack);
 		break;
+	case CEPH_MSG_POOLOP_REPLY:
 	case CEPH_MSG_STATFS_REPLY:
 		return get_generic_reply(con, hdr, skip);
 	case CEPH_MSG_AUTH_REPLY:
 		m = ceph_msg_get(monc->m_auth_reply);
 		break;
-	case CEPH_MSG_MON_GET_VERSION_REPLY:
-		if (le64_to_cpu(hdr->tid) != 0)
-			return get_generic_reply(con, hdr, skip);
-
-		/*
-		 * Older OSDs don't set reply tid even if the orignal
-		 * request had a non-zero tid.  Workaround this weirdness
-		 * by falling through to the allocate case.
-		 */
 	case CEPH_MSG_MON_MAP:
 	case CEPH_MSG_MDS_MAP:
 	case CEPH_MSG_OSD_MAP:
@@ -1081,10 +1042,10 @@ static struct ceph_msg *mon_alloc_msg(struct ceph_connection *con,
 		pr_info("alloc_msg unknown type %d\n", type);
 		*skip = 1;
 	} else if (front_len > m->front_alloc_len) {
-		pr_warn("mon_alloc_msg front %d > prealloc %d (%u#%llu)\n",
-			front_len, m->front_alloc_len,
-			(unsigned int)con->peer_name.type,
-			le64_to_cpu(con->peer_name.num));
+		pr_warning("mon_alloc_msg front %d > prealloc %d (%u#%llu)\n",
+			   front_len, m->front_alloc_len,
+			   (unsigned int)con->peer_name.type,
+			   le64_to_cpu(con->peer_name.num));
 		ceph_msg_put(m);
 		m = ceph_msg_new(type, front_len, GFP_NOFS, false);
 	}

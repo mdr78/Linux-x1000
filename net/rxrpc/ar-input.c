@@ -25,10 +25,12 @@
 #include <net/net_namespace.h>
 #include "ar-internal.h"
 
+unsigned long rxrpc_ack_timeout = 1;
+
 const char *rxrpc_pkts[] = {
 	"?00",
 	"DATA", "ACK", "BUSY", "ABORT", "ACKALL", "CHALL", "RESP", "DEBUG",
-	"?09", "?10", "?11", "?12", "VERSION", "?14", "?15"
+	"?09", "?10", "?11", "?12", "?13", "?14", "?15"
 };
 
 /*
@@ -45,7 +47,7 @@ int rxrpc_queue_rcv_skb(struct rxrpc_call *call, struct sk_buff *skb,
 	struct rxrpc_skb_priv *sp;
 	struct rxrpc_sock *rx = call->socket;
 	struct sock *sk;
-	int ret;
+	int skb_len, ret;
 
 	_enter(",,%d,%d", force, terminal);
 
@@ -101,12 +103,19 @@ int rxrpc_queue_rcv_skb(struct rxrpc_call *call, struct sk_buff *skb,
 			rx->interceptor(sk, call->user_call_ID, skb);
 			spin_unlock_bh(&sk->sk_receive_queue.lock);
 		} else {
+
+			/* Cache the SKB length before we tack it onto the
+			 * receive queue.  Once it is added it no longer
+			 * belongs to us and may be freed by other threads of
+			 * control pulling packets from the queue */
+			skb_len = skb->len;
+
 			_net("post skb %p", skb);
 			__skb_queue_tail(&sk->sk_receive_queue, skb);
 			spin_unlock_bh(&sk->sk_receive_queue.lock);
 
 			if (!sock_flag(sk, SOCK_DEAD))
-				sk->sk_data_ready(sk);
+				sk->sk_data_ready(sk, skb_len);
 		}
 		skb = NULL;
 	} else {
@@ -340,7 +349,8 @@ void rxrpc_fast_process_packet(struct rxrpc_call *call, struct sk_buff *skb)
 	 * it */
 	if (sp->hdr.flags & RXRPC_REQUEST_ACK) {
 		_proto("ACK Requested on %%%u", serial);
-		rxrpc_propose_ACK(call, RXRPC_ACK_REQUESTED, sp->hdr.serial, false);
+		rxrpc_propose_ACK(call, RXRPC_ACK_REQUESTED, sp->hdr.serial,
+				  !(sp->hdr.flags & RXRPC_MORE_PACKETS));
 	}
 
 	switch (sp->hdr.type) {
@@ -516,38 +526,36 @@ protocol_error:
  * post an incoming packet to the appropriate call/socket to deal with
  * - must get rid of the sk_buff, either by freeing it or by queuing it
  */
-static void rxrpc_post_packet_to_call(struct rxrpc_call *call,
+static void rxrpc_post_packet_to_call(struct rxrpc_connection *conn,
 				      struct sk_buff *skb)
 {
 	struct rxrpc_skb_priv *sp;
+	struct rxrpc_call *call;
+	struct rb_node *p;
+	__be32 call_id;
 
-	_enter("%p,%p", call, skb);
+	_enter("%p,%p", conn, skb);
+
+	read_lock_bh(&conn->lock);
 
 	sp = rxrpc_skb(skb);
 
+	/* look at extant calls by channel number first */
+	call = conn->channels[ntohl(sp->hdr.cid) & RXRPC_CHANNELMASK];
+	if (!call || call->call_id != sp->hdr.callNumber)
+		goto call_not_extant;
+
 	_debug("extant call [%d]", call->state);
+	ASSERTCMP(call->conn, ==, conn);
 
 	read_lock(&call->state_lock);
 	switch (call->state) {
 	case RXRPC_CALL_LOCALLY_ABORTED:
-		if (!test_and_set_bit(RXRPC_CALL_ABORT, &call->events)) {
+		if (!test_and_set_bit(RXRPC_CALL_ABORT, &call->events))
 			rxrpc_queue_call(call);
-			goto free_unlock;
-		}
 	case RXRPC_CALL_REMOTELY_ABORTED:
 	case RXRPC_CALL_NETWORK_ERROR:
 	case RXRPC_CALL_DEAD:
-		goto dead_call;
-	case RXRPC_CALL_COMPLETE:
-	case RXRPC_CALL_CLIENT_FINAL_ACK:
-		/* complete server call */
-		if (call->conn->in_clientflag)
-			goto dead_call;
-		/* resend last packet of a completed call */
-		_debug("final ack again");
-		rxrpc_get_call(call);
-		set_bit(RXRPC_CALL_ACK_FINAL, &call->events);
-		rxrpc_queue_call(call);
 		goto free_unlock;
 	default:
 		break;
@@ -555,6 +563,7 @@ static void rxrpc_post_packet_to_call(struct rxrpc_call *call,
 
 	read_unlock(&call->state_lock);
 	rxrpc_get_call(call);
+	read_unlock_bh(&conn->lock);
 
 	if (sp->hdr.type == RXRPC_PACKET_TYPE_DATA &&
 	    sp->hdr.flags & RXRPC_JUMBO_PACKET)
@@ -565,16 +574,78 @@ static void rxrpc_post_packet_to_call(struct rxrpc_call *call,
 	rxrpc_put_call(call);
 	goto done;
 
-dead_call:
-	if (sp->hdr.type != RXRPC_PACKET_TYPE_ABORT) {
-		skb->priority = RX_CALL_DEAD;
-		rxrpc_reject_packet(call->conn->trans->local, skb);
-		goto unlock;
+call_not_extant:
+	/* search the completed calls in case what we're dealing with is
+	 * there */
+	_debug("call not extant");
+
+	call_id = sp->hdr.callNumber;
+	p = conn->calls.rb_node;
+	while (p) {
+		call = rb_entry(p, struct rxrpc_call, conn_node);
+
+		if (call_id < call->call_id)
+			p = p->rb_left;
+		else if (call_id > call->call_id)
+			p = p->rb_right;
+		else
+			goto found_completed_call;
 	}
+
+dead_call:
+	/* it's a either a really old call that we no longer remember or its a
+	 * new incoming call */
+	read_unlock_bh(&conn->lock);
+
+	if (sp->hdr.flags & RXRPC_CLIENT_INITIATED &&
+	    sp->hdr.seq == cpu_to_be32(1)) {
+		_debug("incoming call");
+		skb_queue_tail(&conn->trans->local->accept_queue, skb);
+		rxrpc_queue_work(&conn->trans->local->acceptor);
+		goto done;
+	}
+
+	_debug("dead call");
+	skb->priority = RX_CALL_DEAD;
+	rxrpc_reject_packet(conn->trans->local, skb);
+	goto done;
+
+	/* resend last packet of a completed call
+	 * - client calls may have been aborted or ACK'd
+	 * - server calls may have been aborted
+	 */
+found_completed_call:
+	_debug("completed call");
+
+	if (atomic_read(&call->usage) == 0)
+		goto dead_call;
+
+	/* synchronise any state changes */
+	read_lock(&call->state_lock);
+	ASSERTIFCMP(call->state != RXRPC_CALL_CLIENT_FINAL_ACK,
+		    call->state, >=, RXRPC_CALL_COMPLETE);
+
+	if (call->state == RXRPC_CALL_LOCALLY_ABORTED ||
+	    call->state == RXRPC_CALL_REMOTELY_ABORTED ||
+	    call->state == RXRPC_CALL_DEAD) {
+		read_unlock(&call->state_lock);
+		goto dead_call;
+	}
+
+	if (call->conn->in_clientflag) {
+		read_unlock(&call->state_lock);
+		goto dead_call; /* complete server call */
+	}
+
+	_debug("final ack again");
+	rxrpc_get_call(call);
+	set_bit(RXRPC_CALL_ACK_FINAL, &call->events);
+	rxrpc_queue_call(call);
+
 free_unlock:
-	rxrpc_free_skb(skb);
-unlock:
 	read_unlock(&call->state_lock);
+	read_unlock_bh(&conn->lock);
+	rxrpc_free_skb(skb);
 done:
 	_leave("");
 }
@@ -594,59 +665,20 @@ static void rxrpc_post_packet_to_conn(struct rxrpc_connection *conn,
 }
 
 /*
- * post endpoint-level events to the local endpoint
- * - this includes debug and version messages
- */
-static void rxrpc_post_packet_to_local(struct rxrpc_local *local,
-				       struct sk_buff *skb)
-{
-	_enter("%p,%p", local, skb);
-
-	atomic_inc(&local->usage);
-	skb_queue_tail(&local->event_queue, skb);
-	rxrpc_queue_work(&local->event_processor);
-}
-
-static struct rxrpc_connection *rxrpc_conn_from_local(struct rxrpc_local *local,
-					       struct sk_buff *skb,
-					       struct rxrpc_skb_priv *sp)
-{
-	struct rxrpc_peer *peer;
-	struct rxrpc_transport *trans;
-	struct rxrpc_connection *conn;
-
-	peer = rxrpc_find_peer(local, ip_hdr(skb)->saddr,
-				udp_hdr(skb)->source);
-	if (IS_ERR(peer))
-		goto cant_find_conn;
-
-	trans = rxrpc_find_transport(local, peer);
-	rxrpc_put_peer(peer);
-	if (!trans)
-		goto cant_find_conn;
-
-	conn = rxrpc_find_connection(trans, &sp->hdr);
-	rxrpc_put_transport(trans);
-	if (!conn)
-		goto cant_find_conn;
-
-	return conn;
-cant_find_conn:
-	return NULL;
-}
-
-/*
  * handle data received on the local endpoint
  * - may be called in interrupt context
  */
-void rxrpc_data_ready(struct sock *sk)
+void rxrpc_data_ready(struct sock *sk, int count)
 {
+	struct rxrpc_connection *conn;
+	struct rxrpc_transport *trans;
 	struct rxrpc_skb_priv *sp;
 	struct rxrpc_local *local;
+	struct rxrpc_peer *peer;
 	struct sk_buff *skb;
 	int ret;
 
-	_enter("%p", sk);
+	_enter("%p, %d", sk, count);
 
 	ASSERT(!irqs_disabled());
 
@@ -713,45 +745,31 @@ void rxrpc_data_ready(struct sock *sk)
 		goto bad_message;
 	}
 
-	if (sp->hdr.type == RXRPC_PACKET_TYPE_VERSION) {
-		rxrpc_post_packet_to_local(local, skb);
-		goto out;
-	}
-	
 	if (sp->hdr.type == RXRPC_PACKET_TYPE_DATA &&
 	    (sp->hdr.callNumber == 0 || sp->hdr.seq == 0))
 		goto bad_message;
 
-	if (sp->hdr.callNumber == 0) {
-		/* This is a connection-level packet. These should be
-		 * fairly rare, so the extra overhead of looking them up the
-		 * old-fashioned way doesn't really hurt */
-		struct rxrpc_connection *conn;
+	peer = rxrpc_find_peer(local, ip_hdr(skb)->saddr, udp_hdr(skb)->source);
+	if (IS_ERR(peer))
+		goto cant_route_call;
 
-		conn = rxrpc_conn_from_local(local, skb, sp);
-		if (!conn)
-			goto cant_route_call;
+	trans = rxrpc_find_transport(local, peer);
+	rxrpc_put_peer(peer);
+	if (!trans)
+		goto cant_route_call;
 
-		_debug("CONN %p {%d}", conn, conn->debug_id);
+	conn = rxrpc_find_connection(trans, &sp->hdr);
+	rxrpc_put_transport(trans);
+	if (!conn)
+		goto cant_route_call;
+
+	_debug("CONN %p {%d}", conn, conn->debug_id);
+
+	if (sp->hdr.callNumber == 0)
 		rxrpc_post_packet_to_conn(conn, skb);
-		rxrpc_put_connection(conn);
-	} else {
-		struct rxrpc_call *call;
-		u8 in_clientflag = 0;
-
-		if (sp->hdr.flags & RXRPC_CLIENT_INITIATED)
-			in_clientflag = RXRPC_CLIENT_INITIATED;
-		call = rxrpc_find_call_hash(in_clientflag, sp->hdr.cid,
-					    sp->hdr.callNumber, sp->hdr.epoch,
-					    sp->hdr.serviceId, local, AF_INET,
-					    (u8 *)&ip_hdr(skb)->saddr);
-		if (call)
-			rxrpc_post_packet_to_call(call, skb);
-		else
-			goto cant_route_call;
-	}
-
-out:
+	else
+		rxrpc_post_packet_to_call(conn, skb);
+	rxrpc_put_connection(conn);
 	rxrpc_put_local(local);
 	return;
 
@@ -772,10 +790,8 @@ cant_route_call:
 		skb->priority = RX_CALL_DEAD;
 	}
 
-	if (sp->hdr.type != RXRPC_PACKET_TYPE_ABORT) {
-		_debug("reject type %d",sp->hdr.type);
-		rxrpc_reject_packet(local, skb);
-	}
+	_debug("reject");
+	rxrpc_reject_packet(local, skb);
 	rxrpc_put_local(local);
 	_leave(" [no call]");
 	return;

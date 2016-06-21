@@ -5,10 +5,8 @@
 #include <linux/mod_devicetable.h>
 #include <linux/errno.h>
 #include <linux/irq.h>
-#include <linux/of_platform.h>
-#include <linux/of_address.h>
 #include <linux/of_device.h>
-#include <linux/of_irq.h>
+#include <linux/of_platform.h>
 
 #include "of_device_common.h"
 

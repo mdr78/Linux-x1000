@@ -1,6 +1,7 @@
 /*
  *  AMD K7 Powernow driver.
  *  (C) 2003 Dave Jones on behalf of SuSE Labs.
+ *  (C) 2003-2004 Dave Jones <davej@redhat.com>
  *
  *  Licensed under the terms of the GNU GPL License version 2.
  *  Based upon datasheets & sample CPUs kindly provided by AMD.
@@ -268,6 +269,8 @@ static int powernow_target(struct cpufreq_policy *policy, unsigned int index)
 
 	freqs.new = powernow_table[index].frequency;
 
+	cpufreq_notify_transition(policy, &freqs, CPUFREQ_PRECHANGE);
+
 	/* Now do the magic poking into the MSRs.  */
 
 	if (have_a0 == 1)	/* A0 errata 5 */
@@ -286,6 +289,8 @@ static int powernow_target(struct cpufreq_policy *policy, unsigned int index)
 
 	if (have_a0 == 1)
 		local_irq_enable();
+
+	cpufreq_notify_transition(policy, &freqs, CPUFREQ_POSTCHANGE);
 
 	return 0;
 }
@@ -421,7 +426,7 @@ static int powernow_acpi_init(void)
 	return 0;
 
 err2:
-	acpi_processor_unregister_performance(0);
+	acpi_processor_unregister_performance(acpi_processor_perf, 0);
 err1:
 	free_cpumask_var(acpi_processor_perf->shared_cpu_map);
 err05:
@@ -659,9 +664,11 @@ static int powernow_cpu_init(struct cpufreq_policy *policy)
 
 static int powernow_cpu_exit(struct cpufreq_policy *policy)
 {
+	cpufreq_frequency_table_put_attr(policy->cpu);
+
 #ifdef CONFIG_X86_POWERNOW_K7_ACPI
 	if (acpi_processor_perf) {
-		acpi_processor_unregister_performance(0);
+		acpi_processor_unregister_performance(acpi_processor_perf, 0);
 		free_cpumask_var(acpi_processor_perf->shared_cpu_map);
 		kfree(acpi_processor_perf);
 	}
@@ -700,7 +707,7 @@ static void __exit powernow_exit(void)
 module_param(acpi_force,  int, 0444);
 MODULE_PARM_DESC(acpi_force, "Force ACPI to be used.");
 
-MODULE_AUTHOR("Dave Jones");
+MODULE_AUTHOR("Dave Jones <davej@redhat.com>");
 MODULE_DESCRIPTION("Powernow driver for AMD K7 processors.");
 MODULE_LICENSE("GPL");
 

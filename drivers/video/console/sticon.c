@@ -46,7 +46,7 @@
 
 #include <asm/io.h>
 
-#include "../fbdev/sticore.h"
+#include "../sticore.h"
 
 /* switching to graphics mode */
 #define BLANK 0

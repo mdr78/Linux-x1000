@@ -28,14 +28,14 @@
  * Code originally extracted from quota directory
  */
 
-#include "../include/obd_class.h"
+#include <obd_ost.h>
 #include "osc_internal.h"
 
-static inline struct osc_quota_info *osc_oqi_alloc(u32 id)
+static inline struct osc_quota_info *osc_oqi_alloc(obd_uid id)
 {
 	struct osc_quota_info *oqi;
 
-	oqi = kmem_cache_alloc(osc_quota_kmem, GFP_NOFS | __GFP_ZERO);
+	OBD_SLAB_ALLOC_PTR(oqi, osc_quota_kmem);
 	if (oqi != NULL)
 		oqi->oqi_id = id;
 
@@ -51,8 +51,11 @@ int osc_quota_chkdq(struct client_obd *cli, const unsigned int qid[])
 
 		oqi = cfs_hash_lookup(cli->cl_quota_hash[type], &qid[type]);
 		if (oqi) {
-			/* do not try to access oqi here, it could have been
-			 * freed by osc_quota_setdq() */
+			obd_uid id = oqi->oqi_id;
+
+			LASSERTF(id == qid[type],
+				 "The ids don't match %u != %u\n",
+				 id, qid[type]);
 
 			/* the slot is busy, the user is about to run out of
 			 * quota space on this OST */
@@ -71,7 +74,7 @@ int osc_quota_chkdq(struct client_obd *cli, const unsigned int qid[])
 						: OBD_FL_NO_GRPQUOTA)
 
 int osc_quota_setdq(struct client_obd *cli, const unsigned int qid[],
-		    u32 valid, u32 flags)
+		    obd_flag valid, obd_flag flags)
 {
 	int type;
 	int rc = 0;
@@ -104,7 +107,7 @@ int osc_quota_setdq(struct client_obd *cli, const unsigned int qid[],
 			/* race with others? */
 			if (rc == -EALREADY) {
 				rc = 0;
-				kmem_cache_free(osc_quota_kmem, oqi);
+				OBD_SLAB_FREE_PTR(oqi, osc_quota_kmem);
 			}
 
 			CDEBUG(D_QUOTA, "%s: setdq to insert for %s %d (%d)\n",
@@ -120,7 +123,7 @@ int osc_quota_setdq(struct client_obd *cli, const unsigned int qid[],
 			oqi = cfs_hash_del_key(cli->cl_quota_hash[type],
 					       &qid[type]);
 			if (oqi)
-				kmem_cache_free(osc_quota_kmem, oqi);
+				OBD_SLAB_FREE_PTR(oqi, osc_quota_kmem);
 
 			CDEBUG(D_QUOTA, "%s: setdq to remove for %s %d (%p)\n",
 			       cli->cl_import->imp_obd->obd_name,
@@ -138,17 +141,17 @@ int osc_quota_setdq(struct client_obd *cli, const unsigned int qid[],
 static unsigned
 oqi_hashfn(struct cfs_hash *hs, const void *key, unsigned mask)
 {
-	return cfs_hash_u32_hash(*((__u32 *)key), mask);
+	return cfs_hash_u32_hash(*((__u32*)key), mask);
 }
 
 static int
 oqi_keycmp(const void *key, struct hlist_node *hnode)
 {
 	struct osc_quota_info *oqi;
-	u32 uid;
+	obd_uid uid;
 
 	LASSERT(key != NULL);
-	uid = *((u32 *)key);
+	uid = *((obd_uid*)key);
 	oqi = hlist_entry(hnode, struct osc_quota_info, oqi_hash);
 
 	return uid == oqi->oqi_id;
@@ -158,7 +161,6 @@ static void *
 oqi_key(struct hlist_node *hnode)
 {
 	struct osc_quota_info *oqi;
-
 	oqi = hlist_entry(hnode, struct osc_quota_info, oqi_hash);
 	return &oqi->oqi_id;
 }
@@ -186,14 +188,14 @@ oqi_exit(struct cfs_hash *hs, struct hlist_node *hnode)
 
 	oqi = hlist_entry(hnode, struct osc_quota_info, oqi_hash);
 
-	kmem_cache_free(osc_quota_kmem, oqi);
+	OBD_SLAB_FREE_PTR(oqi, osc_quota_kmem);
 }
 
 #define HASH_QUOTA_BKT_BITS 5
 #define HASH_QUOTA_CUR_BITS 5
 #define HASH_QUOTA_MAX_BITS 15
 
-static struct cfs_hash_ops quota_hash_ops = {
+static cfs_hash_ops_t quota_hash_ops = {
 	.hs_hash	= oqi_hashfn,
 	.hs_keycmp	= oqi_keycmp,
 	.hs_key		= oqi_key,
@@ -233,7 +235,7 @@ int osc_quota_setup(struct obd_device *obd)
 
 int osc_quota_cleanup(struct obd_device *obd)
 {
-	struct client_obd *cli = &obd->u.cli;
+	struct client_obd     *cli = &obd->u.cli;
 	int type;
 
 	for (type = 0; type < MAXQUOTAS; type++)
@@ -246,8 +248,8 @@ int osc_quotactl(struct obd_device *unused, struct obd_export *exp,
 		 struct obd_quotactl *oqctl)
 {
 	struct ptlrpc_request *req;
-	struct obd_quotactl *oqc;
-	int rc;
+	struct obd_quotactl   *oqc;
+	int		    rc;
 
 	req = ptlrpc_request_alloc_pack(class_exp2cliimp(exp),
 					&RQF_OST_QUOTACTL, LUSTRE_OST_VERSION,
@@ -266,16 +268,11 @@ int osc_quotactl(struct obd_device *unused, struct obd_export *exp,
 	if (rc)
 		CERROR("ptlrpc_queue_wait failed, rc: %d\n", rc);
 
-	if (req->rq_repmsg) {
-		oqc = req_capsule_server_get(&req->rq_pill, &RMF_OBD_QUOTACTL);
-		if (oqc) {
-			*oqctl = *oqc;
-		} else if (!rc) {
-			CERROR("Can't unpack obd_quotactl\n");
-			rc = -EPROTO;
-		}
+	if (req->rq_repmsg &&
+	    (oqc = req_capsule_server_get(&req->rq_pill, &RMF_OBD_QUOTACTL))) {
+		*oqctl = *oqc;
 	} else if (!rc) {
-		CERROR("Can't unpack obd_quotactl\n");
+		CERROR ("Can't unpack obd_quotactl\n");
 		rc = -EPROTO;
 	}
 	ptlrpc_req_finished(req);
@@ -286,10 +283,10 @@ int osc_quotactl(struct obd_device *unused, struct obd_export *exp,
 int osc_quotacheck(struct obd_device *unused, struct obd_export *exp,
 		   struct obd_quotactl *oqctl)
 {
-	struct client_obd *cli = &exp->exp_obd->u.cli;
-	struct ptlrpc_request *req;
-	struct obd_quotactl *body;
-	int rc;
+	struct client_obd       *cli = &exp->exp_obd->u.cli;
+	struct ptlrpc_request   *req;
+	struct obd_quotactl     *body;
+	int		      rc;
 
 	req = ptlrpc_request_alloc_pack(class_exp2cliimp(exp),
 					&RQF_OST_QUOTACHECK, LUSTRE_OST_VERSION,

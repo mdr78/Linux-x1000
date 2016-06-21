@@ -7,7 +7,7 @@
  * licenses.  You may choose to be licensed under the terms of the GNU
  * General Public License (GPL) Version 2, available from the file
  * COPYING in the main directory of this source tree, or the
- * BSD license below:
+ * OpenIB.org BSD license below:
  *
  *     Redistribution and use in source and binary forms, with or
  *     without modification, are permitted provided that the following
@@ -286,7 +286,7 @@ iter_chunk:
 				err = iommu_map(pd->domain, va_start, pa_start,
 							size, flags);
 				if (err) {
-					usnic_err("Failed to map va 0x%lx pa %pa size 0x%zx with err %d\n",
+					usnic_err("Failed to map va 0x%lx pa 0x%pa size 0x%zx with err %d\n",
 						va_start, &pa_start, size, err);
 					goto err_out;
 				}
@@ -472,10 +472,11 @@ struct usnic_uiom_pd *usnic_uiom_alloc_pd(void)
 		return ERR_PTR(-ENOMEM);
 
 	pd->domain = domain = iommu_domain_alloc(&pci_bus_type);
-	if (!domain) {
-		usnic_err("Failed to allocate IOMMU domain");
+	if (IS_ERR_OR_NULL(domain)) {
+		usnic_err("Failed to allocate IOMMU domain with err %ld\n",
+				PTR_ERR(pd->domain));
 		kfree(pd);
-		return ERR_PTR(-ENOMEM);
+		return ERR_PTR(domain ? PTR_ERR(domain) : -ENOMEM);
 	}
 
 	iommu_set_fault_handler(pd->domain, usnic_uiom_dma_fault, NULL);
@@ -506,7 +507,7 @@ int usnic_uiom_attach_dev_to_pd(struct usnic_uiom_pd *pd, struct device *dev)
 	if (err)
 		goto out_free_dev;
 
-	if (!iommu_capable(dev->bus, IOMMU_CAP_CACHE_COHERENCY)) {
+	if (!iommu_domain_has_cap(pd->domain, IOMMU_CAP_CACHE_COHERENCY)) {
 		usnic_err("IOMMU of %s does not support cache coherency\n",
 				dev_name(dev));
 		err = -EINVAL;

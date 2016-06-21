@@ -12,6 +12,7 @@
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/clk.h>
+#include <linux/clk-provider.h>
 #include <linux/cpufreq.h>
 #include <linux/of_device.h>
 #include <linux/platform_device.h>
@@ -38,17 +39,20 @@ static struct priv
  * - cpu clk
  * - ddr clk
  *
- * The frequencies are set at runtime before registering this table.
+ * The frequencies are set at runtime before registering this *
+ * table.
  */
 static struct cpufreq_frequency_table kirkwood_freq_table[] = {
-	{0, STATE_CPU_FREQ,	0}, /* CPU uses cpuclk */
-	{0, STATE_DDR_FREQ,	0}, /* CPU uses ddrclk */
-	{0, 0,			CPUFREQ_TABLE_END},
+	{STATE_CPU_FREQ,	0}, /* CPU uses cpuclk */
+	{STATE_DDR_FREQ,	0}, /* CPU uses ddrclk */
+	{0,			CPUFREQ_TABLE_END},
 };
 
 static unsigned int kirkwood_cpufreq_get_cpu_frequency(unsigned int cpu)
 {
-	return clk_get_rate(priv.powersave_clk) / 1000;
+	if (__clk_is_enabled(priv.powersave_clk))
+		return kirkwood_freq_table[1].frequency;
+	return kirkwood_freq_table[0].frequency;
 }
 
 static int kirkwood_cpufreq_target(struct cpufreq_policy *policy,
@@ -66,10 +70,10 @@ static int kirkwood_cpufreq_target(struct cpufreq_policy *policy,
 
 	switch (state) {
 	case STATE_CPU_FREQ:
-		clk_set_parent(priv.powersave_clk, priv.cpu_clk);
+		clk_disable(priv.powersave_clk);
 		break;
 	case STATE_DDR_FREQ:
-		clk_set_parent(priv.powersave_clk, priv.ddr_clk);
+		clk_enable(priv.powersave_clk);
 		break;
 	}
 
@@ -98,6 +102,7 @@ static struct cpufreq_driver kirkwood_cpufreq_driver = {
 	.verify	= cpufreq_generic_frequency_table_verify,
 	.target_index = kirkwood_cpufreq_target,
 	.init	= kirkwood_cpufreq_cpu_init,
+	.exit	= cpufreq_generic_exit,
 	.name	= "kirkwood-cpufreq",
 	.attr	= cpufreq_generic_attr,
 };
@@ -146,7 +151,7 @@ static int kirkwood_cpufreq_probe(struct platform_device *pdev)
 		err = PTR_ERR(priv.powersave_clk);
 		goto out_ddr;
 	}
-	clk_prepare_enable(priv.powersave_clk);
+	clk_prepare(priv.powersave_clk);
 
 	of_node_put(np);
 	np = NULL;
@@ -183,6 +188,7 @@ static struct platform_driver kirkwood_cpufreq_platform_driver = {
 	.remove = kirkwood_cpufreq_remove,
 	.driver = {
 		.name = "kirkwood-cpufreq",
+		.owner = THIS_MODULE,
 	},
 };
 

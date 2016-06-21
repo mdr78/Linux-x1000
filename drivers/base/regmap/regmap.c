@@ -15,13 +15,11 @@
 #include <linux/export.h>
 #include <linux/mutex.h>
 #include <linux/err.h>
-#include <linux/of.h>
 #include <linux/rbtree.h>
 #include <linux/sched.h>
-#include <linux/delay.h>
 
 #define CREATE_TRACE_POINTS
-#include "trace.h"
+#include <trace/events/regmap.h>
 
 #include "internal.h"
 
@@ -35,16 +33,12 @@
 
 static int _regmap_update_bits(struct regmap *map, unsigned int reg,
 			       unsigned int mask, unsigned int val,
-			       bool *change, bool force_write);
+			       bool *change);
 
-static int _regmap_bus_reg_read(void *context, unsigned int reg,
-				unsigned int *val);
 static int _regmap_bus_read(void *context, unsigned int reg,
 			    unsigned int *val);
 static int _regmap_bus_formatted_write(void *context, unsigned int reg,
 				       unsigned int val);
-static int _regmap_bus_reg_write(void *context, unsigned int reg,
-				 unsigned int val);
 static int _regmap_bus_raw_write(void *context, unsigned int reg,
 				 unsigned int val);
 
@@ -94,9 +88,6 @@ bool regmap_writeable(struct regmap *map, unsigned int reg)
 
 bool regmap_readable(struct regmap *map, unsigned int reg)
 {
-	if (!map->reg_read)
-		return false;
-
 	if (map->max_register && reg > map->max_register)
 		return false;
 
@@ -201,13 +192,6 @@ static void regmap_format_16_be(void *buf, unsigned int val, unsigned int shift)
 	b[0] = cpu_to_be16(val << shift);
 }
 
-static void regmap_format_16_le(void *buf, unsigned int val, unsigned int shift)
-{
-	__le16 *b = buf;
-
-	b[0] = cpu_to_le16(val << shift);
-}
-
 static void regmap_format_16_native(void *buf, unsigned int val,
 				    unsigned int shift)
 {
@@ -230,13 +214,6 @@ static void regmap_format_32_be(void *buf, unsigned int val, unsigned int shift)
 	__be32 *b = buf;
 
 	b[0] = cpu_to_be32(val << shift);
-}
-
-static void regmap_format_32_le(void *buf, unsigned int val, unsigned int shift)
-{
-	__le32 *b = buf;
-
-	b[0] = cpu_to_le32(val << shift);
 }
 
 static void regmap_format_32_native(void *buf, unsigned int val,
@@ -263,25 +240,11 @@ static unsigned int regmap_parse_16_be(const void *buf)
 	return be16_to_cpu(b[0]);
 }
 
-static unsigned int regmap_parse_16_le(const void *buf)
-{
-	const __le16 *b = buf;
-
-	return le16_to_cpu(b[0]);
-}
-
 static void regmap_parse_16_be_inplace(void *buf)
 {
 	__be16 *b = buf;
 
 	b[0] = be16_to_cpu(b[0]);
-}
-
-static void regmap_parse_16_le_inplace(void *buf)
-{
-	__le16 *b = buf;
-
-	b[0] = le16_to_cpu(b[0]);
 }
 
 static unsigned int regmap_parse_16_native(const void *buf)
@@ -306,25 +269,11 @@ static unsigned int regmap_parse_32_be(const void *buf)
 	return be32_to_cpu(b[0]);
 }
 
-static unsigned int regmap_parse_32_le(const void *buf)
-{
-	const __le32 *b = buf;
-
-	return le32_to_cpu(b[0]);
-}
-
 static void regmap_parse_32_be_inplace(void *buf)
 {
 	__be32 *b = buf;
 
 	b[0] = be32_to_cpu(b[0]);
-}
-
-static void regmap_parse_32_le_inplace(void *buf)
-{
-	__le32 *b = buf;
-
-	b[0] = le32_to_cpu(b[0]);
 }
 
 static unsigned int regmap_parse_32_native(const void *buf)
@@ -431,102 +380,24 @@ static void regmap_range_exit(struct regmap *map)
 	kfree(map->selector_work_buf);
 }
 
-int regmap_attach_dev(struct device *dev, struct regmap *map,
-		      const struct regmap_config *config)
+/**
+ * regmap_init(): Initialise register map
+ *
+ * @dev: Device that will be interacted with
+ * @bus: Bus-specific callbacks to use with device
+ * @bus_context: Data passed to bus-specific callbacks
+ * @config: Configuration for register map
+ *
+ * The return value will be an ERR_PTR() on error or a valid pointer to
+ * a struct regmap.  This function should generally not be called
+ * directly, it should be called by bus-specific init functions.
+ */
+struct regmap *regmap_init(struct device *dev,
+			   const struct regmap_bus *bus,
+			   void *bus_context,
+			   const struct regmap_config *config)
 {
-	struct regmap **m;
-
-	map->dev = dev;
-
-	regmap_debugfs_init(map, config->name);
-
-	/* Add a devres resource for dev_get_regmap() */
-	m = devres_alloc(dev_get_regmap_release, sizeof(*m), GFP_KERNEL);
-	if (!m) {
-		regmap_debugfs_exit(map);
-		return -ENOMEM;
-	}
-	*m = map;
-	devres_add(dev, m);
-
-	return 0;
-}
-EXPORT_SYMBOL_GPL(regmap_attach_dev);
-
-static enum regmap_endian regmap_get_reg_endian(const struct regmap_bus *bus,
-					const struct regmap_config *config)
-{
-	enum regmap_endian endian;
-
-	/* Retrieve the endianness specification from the regmap config */
-	endian = config->reg_format_endian;
-
-	/* If the regmap config specified a non-default value, use that */
-	if (endian != REGMAP_ENDIAN_DEFAULT)
-		return endian;
-
-	/* Retrieve the endianness specification from the bus config */
-	if (bus && bus->reg_format_endian_default)
-		endian = bus->reg_format_endian_default;
-
-	/* If the bus specified a non-default value, use that */
-	if (endian != REGMAP_ENDIAN_DEFAULT)
-		return endian;
-
-	/* Use this if no other value was found */
-	return REGMAP_ENDIAN_BIG;
-}
-
-enum regmap_endian regmap_get_val_endian(struct device *dev,
-					 const struct regmap_bus *bus,
-					 const struct regmap_config *config)
-{
-	struct device_node *np;
-	enum regmap_endian endian;
-
-	/* Retrieve the endianness specification from the regmap config */
-	endian = config->val_format_endian;
-
-	/* If the regmap config specified a non-default value, use that */
-	if (endian != REGMAP_ENDIAN_DEFAULT)
-		return endian;
-
-	/* If the dev and dev->of_node exist try to get endianness from DT */
-	if (dev && dev->of_node) {
-		np = dev->of_node;
-
-		/* Parse the device's DT node for an endianness specification */
-		if (of_property_read_bool(np, "big-endian"))
-			endian = REGMAP_ENDIAN_BIG;
-		else if (of_property_read_bool(np, "little-endian"))
-			endian = REGMAP_ENDIAN_LITTLE;
-
-		/* If the endianness was specified in DT, use that */
-		if (endian != REGMAP_ENDIAN_DEFAULT)
-			return endian;
-	}
-
-	/* Retrieve the endianness specification from the bus config */
-	if (bus && bus->val_format_endian_default)
-		endian = bus->val_format_endian_default;
-
-	/* If the bus specified a non-default value, use that */
-	if (endian != REGMAP_ENDIAN_DEFAULT)
-		return endian;
-
-	/* Use this if no other value was found */
-	return REGMAP_ENDIAN_BIG;
-}
-EXPORT_SYMBOL_GPL(regmap_get_val_endian);
-
-struct regmap *__regmap_init(struct device *dev,
-			     const struct regmap_bus *bus,
-			     void *bus_context,
-			     const struct regmap_config *config,
-			     struct lock_class_key *lock_key,
-			     const char *lock_name)
-{
-	struct regmap *map;
+	struct regmap *map, **m;
 	int ret = -EINVAL;
 	enum regmap_endian reg_endian, val_endian;
 	int i, j;
@@ -550,27 +421,13 @@ struct regmap *__regmap_init(struct device *dev,
 			spin_lock_init(&map->spinlock);
 			map->lock = regmap_lock_spinlock;
 			map->unlock = regmap_unlock_spinlock;
-			lockdep_set_class_and_name(&map->spinlock,
-						   lock_key, lock_name);
 		} else {
 			mutex_init(&map->mutex);
 			map->lock = regmap_lock_mutex;
 			map->unlock = regmap_unlock_mutex;
-			lockdep_set_class_and_name(&map->mutex,
-						   lock_key, lock_name);
 		}
 		map->lock_arg = map;
 	}
-
-	/*
-	 * When we write in fast-paths with regmap_bulk_write() don't allocate
-	 * scratch buffers with sleeping allocations.
-	 */
-	if ((bus && bus->fast_io) || config->fast_io)
-		map->alloc_flags = GFP_ATOMIC;
-	else
-		map->alloc_flags = GFP_KERNEL;
-
 	map->format.reg_bytes = DIV_ROUND_UP(config->reg_bits, 8);
 	map->format.pad_bytes = config->pad_bits / 8;
 	map->format.val_bytes = DIV_ROUND_UP(config->val_bits, 8);
@@ -581,13 +438,7 @@ struct regmap *__regmap_init(struct device *dev,
 		map->reg_stride = config->reg_stride;
 	else
 		map->reg_stride = 1;
-	map->use_single_read = config->use_single_rw || !bus || !bus->read;
-	map->use_single_write = config->use_single_rw || !bus || !bus->write;
-	map->can_multi_write = config->can_multi_write && bus && bus->write;
-	if (bus) {
-		map->max_raw_read = bus->max_raw_read;
-		map->max_raw_write = bus->max_raw_write;
-	}
+	map->use_single_rw = config->use_single_rw;
 	map->dev = dev;
 	map->bus = bus;
 	map->bus_context = bus_context;
@@ -621,19 +472,21 @@ struct regmap *__regmap_init(struct device *dev,
 
 		map->defer_caching = false;
 		goto skip_format_initialization;
-	} else if (!bus->read || !bus->write) {
-		map->reg_read = _regmap_bus_reg_read;
-		map->reg_write = _regmap_bus_reg_write;
-
-		map->defer_caching = false;
-		goto skip_format_initialization;
 	} else {
 		map->reg_read  = _regmap_bus_read;
-		map->reg_update_bits = bus->reg_update_bits;
 	}
 
-	reg_endian = regmap_get_reg_endian(bus, config);
-	val_endian = regmap_get_val_endian(dev, bus, config);
+	reg_endian = config->reg_format_endian;
+	if (reg_endian == REGMAP_ENDIAN_DEFAULT)
+		reg_endian = bus->reg_format_endian_default;
+	if (reg_endian == REGMAP_ENDIAN_DEFAULT)
+		reg_endian = REGMAP_ENDIAN_BIG;
+
+	val_endian = config->val_format_endian;
+	if (val_endian == REGMAP_ENDIAN_DEFAULT)
+		val_endian = bus->val_format_endian_default;
+	if (val_endian == REGMAP_ENDIAN_DEFAULT)
+		val_endian = REGMAP_ENDIAN_BIG;
 
 	switch (config->reg_bits + map->reg_shift) {
 	case 2:
@@ -732,11 +585,6 @@ struct regmap *__regmap_init(struct device *dev,
 			map->format.parse_val = regmap_parse_16_be;
 			map->format.parse_inplace = regmap_parse_16_be_inplace;
 			break;
-		case REGMAP_ENDIAN_LITTLE:
-			map->format.format_val = regmap_format_16_le;
-			map->format.parse_val = regmap_parse_16_le;
-			map->format.parse_inplace = regmap_parse_16_le_inplace;
-			break;
 		case REGMAP_ENDIAN_NATIVE:
 			map->format.format_val = regmap_format_16_native;
 			map->format.parse_val = regmap_parse_16_native;
@@ -758,11 +606,6 @@ struct regmap *__regmap_init(struct device *dev,
 			map->format.parse_val = regmap_parse_32_be;
 			map->format.parse_inplace = regmap_parse_32_be_inplace;
 			break;
-		case REGMAP_ENDIAN_LITTLE:
-			map->format.format_val = regmap_format_32_le;
-			map->format.parse_val = regmap_parse_32_le;
-			map->format.parse_inplace = regmap_parse_32_le_inplace;
-			break;
 		case REGMAP_ENDIAN_NATIVE:
 			map->format.format_val = regmap_format_32_native;
 			map->format.parse_val = regmap_parse_32_native;
@@ -777,7 +620,7 @@ struct regmap *__regmap_init(struct device *dev,
 		if ((reg_endian != REGMAP_ENDIAN_BIG) ||
 		    (val_endian != REGMAP_ENDIAN_BIG))
 			goto err_map;
-		map->use_single_write = true;
+		map->use_single_rw = true;
 	}
 
 	if (!map->format.format_write &&
@@ -875,7 +718,7 @@ skip_format_initialization:
 		new->window_start = range_cfg->window_start;
 		new->window_len = range_cfg->window_len;
 
-		if (!_regmap_range_add(map, new)) {
+		if (_regmap_range_add(map, new) == false) {
 			dev_err(map->dev, "Failed to add range %d\n", i);
 			kfree(new);
 			goto err_range;
@@ -891,19 +734,25 @@ skip_format_initialization:
 		}
 	}
 
+	regmap_debugfs_init(map, config->name);
+
 	ret = regcache_init(map, config);
 	if (ret != 0)
 		goto err_range;
 
-	if (dev) {
-		ret = regmap_attach_dev(dev, map, config);
-		if (ret != 0)
-			goto err_regcache;
+	/* Add a devres resource for dev_get_regmap() */
+	m = devres_alloc(dev_get_regmap_release, sizeof(*m), GFP_KERNEL);
+	if (!m) {
+		ret = -ENOMEM;
+		goto err_debugfs;
 	}
+	*m = map;
+	devres_add(dev, m);
 
 	return map;
 
-err_regcache:
+err_debugfs:
+	regmap_debugfs_exit(map);
 	regcache_exit(map);
 err_range:
 	regmap_range_exit(map);
@@ -913,19 +762,30 @@ err_map:
 err:
 	return ERR_PTR(ret);
 }
-EXPORT_SYMBOL_GPL(__regmap_init);
+EXPORT_SYMBOL_GPL(regmap_init);
 
 static void devm_regmap_release(struct device *dev, void *res)
 {
 	regmap_exit(*(struct regmap **)res);
 }
 
-struct regmap *__devm_regmap_init(struct device *dev,
-				  const struct regmap_bus *bus,
-				  void *bus_context,
-				  const struct regmap_config *config,
-				  struct lock_class_key *lock_key,
-				  const char *lock_name)
+/**
+ * devm_regmap_init(): Initialise managed register map
+ *
+ * @dev: Device that will be interacted with
+ * @bus: Bus-specific callbacks to use with device
+ * @bus_context: Data passed to bus-specific callbacks
+ * @config: Configuration for register map
+ *
+ * The return value will be an ERR_PTR() on error or a valid pointer
+ * to a struct regmap.  This function should generally not be called
+ * directly, it should be called by bus-specific init functions.  The
+ * map will be automatically freed by the device management code.
+ */
+struct regmap *devm_regmap_init(struct device *dev,
+				const struct regmap_bus *bus,
+				void *bus_context,
+				const struct regmap_config *config)
 {
 	struct regmap **ptr, *regmap;
 
@@ -933,8 +793,7 @@ struct regmap *__devm_regmap_init(struct device *dev,
 	if (!ptr)
 		return ERR_PTR(-ENOMEM);
 
-	regmap = __regmap_init(dev, bus, bus_context, config,
-			       lock_key, lock_name);
+	regmap = regmap_init(dev, bus, bus_context, config);
 	if (!IS_ERR(regmap)) {
 		*ptr = regmap;
 		devres_add(dev, ptr);
@@ -944,15 +803,16 @@ struct regmap *__devm_regmap_init(struct device *dev,
 
 	return regmap;
 }
-EXPORT_SYMBOL_GPL(__devm_regmap_init);
+EXPORT_SYMBOL_GPL(devm_regmap_init);
 
 static void regmap_field_init(struct regmap_field *rm_field,
 	struct regmap *regmap, struct reg_field reg_field)
 {
+	int field_bits = reg_field.msb - reg_field.lsb + 1;
 	rm_field->regmap = regmap;
 	rm_field->reg = reg_field.reg;
 	rm_field->shift = reg_field.lsb;
-	rm_field->mask = GENMASK(reg_field.msb, reg_field.lsb);
+	rm_field->mask = ((BIT(field_bits) - 1) << reg_field.lsb);
 	rm_field->id_size = reg_field.id_size;
 	rm_field->id_offset = reg_field.id_offset;
 }
@@ -1134,19 +994,6 @@ struct regmap *dev_get_regmap(struct device *dev, const char *name)
 }
 EXPORT_SYMBOL_GPL(dev_get_regmap);
 
-/**
- * regmap_get_device(): Obtain the device from a regmap
- *
- * @map: Register map to operate on.
- *
- * Returns the underlying device that the regmap has been created for.
- */
-struct device *regmap_get_device(struct regmap *map)
-{
-	return map->dev;
-}
-EXPORT_SYMBOL_GPL(regmap_get_device);
-
 static int _regmap_select_page(struct regmap *map, unsigned int *reg,
 			       struct regmap_range_node *range,
 			       unsigned int val_num)
@@ -1182,7 +1029,7 @@ static int _regmap_select_page(struct regmap *map, unsigned int *reg,
 		ret = _regmap_update_bits(map, range->selector_reg,
 					  range->selector_mask,
 					  win_page << range->selector_shift,
-					  &page_chg, false);
+					  &page_chg);
 
 		map->work_buf = orig_work_buf;
 
@@ -1284,7 +1131,7 @@ int _regmap_raw_write(struct regmap *map, unsigned int reg,
 	if (map->async && map->bus->async_write) {
 		struct regmap_async *async;
 
-		trace_regmap_async_write_start(map, reg, val_len);
+		trace_regmap_async_write_start(map->dev, reg, val_len);
 
 		spin_lock_irqsave(&map->async_lock, flags);
 		async = list_first_entry_or_null(&map->async_free,
@@ -1342,7 +1189,8 @@ int _regmap_raw_write(struct regmap *map, unsigned int reg,
 		return ret;
 	}
 
-	trace_regmap_hw_write_start(map, reg, val_len / map->format.val_bytes);
+	trace_regmap_hw_write_start(map->dev, reg,
+				    val_len / map->format.val_bytes);
 
 	/* If we're doing a single register write we can probably just
 	 * send the work_buf directly, otherwise try to do a gather
@@ -1374,7 +1222,8 @@ int _regmap_raw_write(struct regmap *map, unsigned int reg,
 		kfree(buf);
 	}
 
-	trace_regmap_hw_write_done(map, reg, val_len / map->format.val_bytes);
+	trace_regmap_hw_write_done(map->dev, reg,
+				   val_len / map->format.val_bytes);
 
 	return ret;
 }
@@ -1386,32 +1235,9 @@ int _regmap_raw_write(struct regmap *map, unsigned int reg,
  */
 bool regmap_can_raw_write(struct regmap *map)
 {
-	return map->bus && map->bus->write && map->format.format_val &&
-		map->format.format_reg;
+	return map->bus && map->format.format_val && map->format.format_reg;
 }
 EXPORT_SYMBOL_GPL(regmap_can_raw_write);
-
-/**
- * regmap_get_raw_read_max - Get the maximum size we can read
- *
- * @map: Map to check.
- */
-size_t regmap_get_raw_read_max(struct regmap *map)
-{
-	return map->max_raw_read;
-}
-EXPORT_SYMBOL_GPL(regmap_get_raw_read_max);
-
-/**
- * regmap_get_raw_write_max - Get the maximum size we can read
- *
- * @map: Map to check.
- */
-size_t regmap_get_raw_write_max(struct regmap *map)
-{
-	return map->max_raw_write;
-}
-EXPORT_SYMBOL_GPL(regmap_get_raw_write_max);
 
 static int _regmap_bus_formatted_write(void *context, unsigned int reg,
 				       unsigned int val)
@@ -1431,22 +1257,14 @@ static int _regmap_bus_formatted_write(void *context, unsigned int reg,
 
 	map->format.format_write(map, reg, val);
 
-	trace_regmap_hw_write_start(map, reg, 1);
+	trace_regmap_hw_write_start(map->dev, reg, 1);
 
 	ret = map->bus->write(map->bus_context, map->work_buf,
 			      map->format.buf_size);
 
-	trace_regmap_hw_write_done(map, reg, 1);
+	trace_regmap_hw_write_done(map->dev, reg, 1);
 
 	return ret;
-}
-
-static int _regmap_bus_reg_write(void *context, unsigned int reg,
-				 unsigned int val)
-{
-	struct regmap *map = context;
-
-	return map->bus->reg_write(map->bus_context, reg, val);
 }
 
 static int _regmap_bus_raw_write(void *context, unsigned int reg,
@@ -1494,7 +1312,7 @@ int _regmap_write(struct regmap *map, unsigned int reg,
 		dev_info(map->dev, "%x <= %x\n", reg, val);
 #endif
 
-	trace_regmap_reg_write(map, reg, val);
+	trace_regmap_reg_write(map->dev, reg, val);
 
 	return map->reg_write(context, reg, val);
 }
@@ -1582,8 +1400,6 @@ int regmap_raw_write(struct regmap *map, unsigned int reg,
 		return -EINVAL;
 	if (val_len % map->format.val_bytes)
 		return -EINVAL;
-	if (map->max_raw_write && map->max_raw_write > val_len)
-		return -E2BIG;
 
 	map->lock(map->lock_arg);
 
@@ -1653,18 +1469,6 @@ int regmap_fields_write(struct regmap_field *field, unsigned int id,
 }
 EXPORT_SYMBOL_GPL(regmap_fields_write);
 
-int regmap_fields_force_write(struct regmap_field *field, unsigned int id,
-			unsigned int val)
-{
-	if (id >= field->id_size)
-		return -EINVAL;
-
-	return regmap_write_bits(field->regmap,
-				  field->reg + (field->id_offset * id),
-				  field->mask, val << field->shift);
-}
-EXPORT_SYMBOL_GPL(regmap_fields_force_write);
-
 /**
  * regmap_fields_update_bits():	Perform a read/modify/write cycle
  *                              on the register field
@@ -1710,25 +1514,18 @@ int regmap_bulk_write(struct regmap *map, unsigned int reg, const void *val,
 {
 	int ret = 0, i;
 	size_t val_bytes = map->format.val_bytes;
-	size_t total_size = val_bytes * val_count;
 
 	if (map->bus && !map->format.parse_inplace)
 		return -EINVAL;
 	if (reg % map->reg_stride)
 		return -EINVAL;
 
+	map->lock(map->lock_arg);
 	/*
 	 * Some devices don't support bulk write, for
-	 * them we have a series of single write operations in the first two if
-	 * blocks.
-	 *
-	 * The first if block is used for memory mapped io. It does not allow
-	 * val_bytes of 3 for example.
-	 * The second one is used for busses which do not have this limitation
-	 * and can write arbitrary value lengths.
+	 * them we have a series of single write operations.
 	 */
-	if (!map->bus) {
-		map->lock(map->lock_arg);
+	if (!map->bus || map->use_single_rw) {
 		for (i = 0; i < val_count; i++) {
 			unsigned int ival;
 
@@ -1757,317 +1554,35 @@ int regmap_bulk_write(struct regmap *map, unsigned int reg, const void *val,
 			if (ret != 0)
 				goto out;
 		}
-out:
-		map->unlock(map->lock_arg);
-	} else if (map->use_single_write ||
-		   (map->max_raw_write && map->max_raw_write < total_size)) {
-		int chunk_stride = map->reg_stride;
-		size_t chunk_size = val_bytes;
-		size_t chunk_count = val_count;
-
-		if (!map->use_single_write) {
-			chunk_size = map->max_raw_write;
-			if (chunk_size % val_bytes)
-				chunk_size -= chunk_size % val_bytes;
-			chunk_count = total_size / chunk_size;
-			chunk_stride *= chunk_size / val_bytes;
-		}
-
-		map->lock(map->lock_arg);
-		/* Write as many bytes as possible with chunk_size */
-		for (i = 0; i < chunk_count; i++) {
-			ret = _regmap_raw_write(map,
-						reg + (i * chunk_stride),
-						val + (i * chunk_size),
-						chunk_size);
-			if (ret)
-				break;
-		}
-
-		/* Write remaining bytes */
-		if (!ret && chunk_size * i < total_size) {
-			ret = _regmap_raw_write(map, reg + (i * chunk_stride),
-						val + (i * chunk_size),
-						total_size - i * chunk_size);
-		}
-		map->unlock(map->lock_arg);
 	} else {
 		void *wval;
 
-		if (!val_count)
-			return -EINVAL;
+		if (!val_count) {
+			ret = -EINVAL;
+			goto out;
+		}
 
-		wval = kmemdup(val, val_count * val_bytes, map->alloc_flags);
+		wval = kmemdup(val, val_count * val_bytes, GFP_KERNEL);
 		if (!wval) {
+			ret = -ENOMEM;
 			dev_err(map->dev, "Error in memory allocation\n");
-			return -ENOMEM;
+			goto out;
 		}
 		for (i = 0; i < val_count * val_bytes; i += val_bytes)
 			map->format.parse_inplace(wval + i);
 
-		map->lock(map->lock_arg);
 		ret = _regmap_raw_write(map, reg, wval, val_bytes * val_count);
-		map->unlock(map->lock_arg);
 
 		kfree(wval);
 	}
+out:
+	map->unlock(map->lock_arg);
 	return ret;
 }
 EXPORT_SYMBOL_GPL(regmap_bulk_write);
 
 /*
- * _regmap_raw_multi_reg_write()
- *
- * the (register,newvalue) pairs in regs have not been formatted, but
- * they are all in the same page and have been changed to being page
- * relative. The page register has been written if that was necessary.
- */
-static int _regmap_raw_multi_reg_write(struct regmap *map,
-				       const struct reg_sequence *regs,
-				       size_t num_regs)
-{
-	int ret;
-	void *buf;
-	int i;
-	u8 *u8;
-	size_t val_bytes = map->format.val_bytes;
-	size_t reg_bytes = map->format.reg_bytes;
-	size_t pad_bytes = map->format.pad_bytes;
-	size_t pair_size = reg_bytes + pad_bytes + val_bytes;
-	size_t len = pair_size * num_regs;
-
-	if (!len)
-		return -EINVAL;
-
-	buf = kzalloc(len, GFP_KERNEL);
-	if (!buf)
-		return -ENOMEM;
-
-	/* We have to linearise by hand. */
-
-	u8 = buf;
-
-	for (i = 0; i < num_regs; i++) {
-		unsigned int reg = regs[i].reg;
-		unsigned int val = regs[i].def;
-		trace_regmap_hw_write_start(map, reg, 1);
-		map->format.format_reg(u8, reg, map->reg_shift);
-		u8 += reg_bytes + pad_bytes;
-		map->format.format_val(u8, val, 0);
-		u8 += val_bytes;
-	}
-	u8 = buf;
-	*u8 |= map->write_flag_mask;
-
-	ret = map->bus->write(map->bus_context, buf, len);
-
-	kfree(buf);
-
-	for (i = 0; i < num_regs; i++) {
-		int reg = regs[i].reg;
-		trace_regmap_hw_write_done(map, reg, 1);
-	}
-	return ret;
-}
-
-static unsigned int _regmap_register_page(struct regmap *map,
-					  unsigned int reg,
-					  struct regmap_range_node *range)
-{
-	unsigned int win_page = (reg - range->range_min) / range->window_len;
-
-	return win_page;
-}
-
-static int _regmap_range_multi_paged_reg_write(struct regmap *map,
-					       struct reg_sequence *regs,
-					       size_t num_regs)
-{
-	int ret;
-	int i, n;
-	struct reg_sequence *base;
-	unsigned int this_page = 0;
-	unsigned int page_change = 0;
-	/*
-	 * the set of registers are not neccessarily in order, but
-	 * since the order of write must be preserved this algorithm
-	 * chops the set each time the page changes. This also applies
-	 * if there is a delay required at any point in the sequence.
-	 */
-	base = regs;
-	for (i = 0, n = 0; i < num_regs; i++, n++) {
-		unsigned int reg = regs[i].reg;
-		struct regmap_range_node *range;
-
-		range = _regmap_range_lookup(map, reg);
-		if (range) {
-			unsigned int win_page = _regmap_register_page(map, reg,
-								      range);
-
-			if (i == 0)
-				this_page = win_page;
-			if (win_page != this_page) {
-				this_page = win_page;
-				page_change = 1;
-			}
-		}
-
-		/* If we have both a page change and a delay make sure to
-		 * write the regs and apply the delay before we change the
-		 * page.
-		 */
-
-		if (page_change || regs[i].delay_us) {
-
-				/* For situations where the first write requires
-				 * a delay we need to make sure we don't call
-				 * raw_multi_reg_write with n=0
-				 * This can't occur with page breaks as we
-				 * never write on the first iteration
-				 */
-				if (regs[i].delay_us && i == 0)
-					n = 1;
-
-				ret = _regmap_raw_multi_reg_write(map, base, n);
-				if (ret != 0)
-					return ret;
-
-				if (regs[i].delay_us)
-					udelay(regs[i].delay_us);
-
-				base += n;
-				n = 0;
-
-				if (page_change) {
-					ret = _regmap_select_page(map,
-								  &base[n].reg,
-								  range, 1);
-					if (ret != 0)
-						return ret;
-
-					page_change = 0;
-				}
-
-		}
-
-	}
-	if (n > 0)
-		return _regmap_raw_multi_reg_write(map, base, n);
-	return 0;
-}
-
-static int _regmap_multi_reg_write(struct regmap *map,
-				   const struct reg_sequence *regs,
-				   size_t num_regs)
-{
-	int i;
-	int ret;
-
-	if (!map->can_multi_write) {
-		for (i = 0; i < num_regs; i++) {
-			ret = _regmap_write(map, regs[i].reg, regs[i].def);
-			if (ret != 0)
-				return ret;
-
-			if (regs[i].delay_us)
-				udelay(regs[i].delay_us);
-		}
-		return 0;
-	}
-
-	if (!map->format.parse_inplace)
-		return -EINVAL;
-
-	if (map->writeable_reg)
-		for (i = 0; i < num_regs; i++) {
-			int reg = regs[i].reg;
-			if (!map->writeable_reg(map->dev, reg))
-				return -EINVAL;
-			if (reg % map->reg_stride)
-				return -EINVAL;
-		}
-
-	if (!map->cache_bypass) {
-		for (i = 0; i < num_regs; i++) {
-			unsigned int val = regs[i].def;
-			unsigned int reg = regs[i].reg;
-			ret = regcache_write(map, reg, val);
-			if (ret) {
-				dev_err(map->dev,
-				"Error in caching of register: %x ret: %d\n",
-								reg, ret);
-				return ret;
-			}
-		}
-		if (map->cache_only) {
-			map->cache_dirty = true;
-			return 0;
-		}
-	}
-
-	WARN_ON(!map->bus);
-
-	for (i = 0; i < num_regs; i++) {
-		unsigned int reg = regs[i].reg;
-		struct regmap_range_node *range;
-
-		/* Coalesce all the writes between a page break or a delay
-		 * in a sequence
-		 */
-		range = _regmap_range_lookup(map, reg);
-		if (range || regs[i].delay_us) {
-			size_t len = sizeof(struct reg_sequence)*num_regs;
-			struct reg_sequence *base = kmemdup(regs, len,
-							   GFP_KERNEL);
-			if (!base)
-				return -ENOMEM;
-			ret = _regmap_range_multi_paged_reg_write(map, base,
-								  num_regs);
-			kfree(base);
-
-			return ret;
-		}
-	}
-	return _regmap_raw_multi_reg_write(map, regs, num_regs);
-}
-
-/*
  * regmap_multi_reg_write(): Write multiple registers to the device
- *
- * where the set of register,value pairs are supplied in any order,
- * possibly not all in a single range.
- *
- * @map: Register map to write to
- * @regs: Array of structures containing register,value to be written
- * @num_regs: Number of registers to write
- *
- * The 'normal' block write mode will send ultimately send data on the
- * target bus as R,V1,V2,V3,..,Vn where successively higer registers are
- * addressed. However, this alternative block multi write mode will send
- * the data as R1,V1,R2,V2,..,Rn,Vn on the target bus. The target device
- * must of course support the mode.
- *
- * A value of zero will be returned on success, a negative errno will be
- * returned in error cases.
- */
-int regmap_multi_reg_write(struct regmap *map, const struct reg_sequence *regs,
-			   int num_regs)
-{
-	int ret;
-
-	map->lock(map->lock_arg);
-
-	ret = _regmap_multi_reg_write(map, regs, num_regs);
-
-	map->unlock(map->lock_arg);
-
-	return ret;
-}
-EXPORT_SYMBOL_GPL(regmap_multi_reg_write);
-
-/*
- * regmap_multi_reg_write_bypassed(): Write multiple registers to the
- *                                    device but not the cache
  *
  * where the set of register are supplied in any order
  *
@@ -2082,27 +1597,30 @@ EXPORT_SYMBOL_GPL(regmap_multi_reg_write);
  * A value of zero will be returned on success, a negative errno will
  * be returned in error cases.
  */
-int regmap_multi_reg_write_bypassed(struct regmap *map,
-				    const struct reg_sequence *regs,
-				    int num_regs)
+int regmap_multi_reg_write(struct regmap *map, struct reg_default *regs,
+				int num_regs)
 {
-	int ret;
-	bool bypass;
+	int ret = 0, i;
+
+	for (i = 0; i < num_regs; i++) {
+		int reg = regs[i].reg;
+		if (reg % map->reg_stride)
+			return -EINVAL;
+	}
 
 	map->lock(map->lock_arg);
 
-	bypass = map->cache_bypass;
-	map->cache_bypass = true;
-
-	ret = _regmap_multi_reg_write(map, regs, num_regs);
-
-	map->cache_bypass = bypass;
-
+	for (i = 0; i < num_regs; i++) {
+		ret = _regmap_write(map, regs[i].reg, regs[i].def);
+		if (ret != 0)
+			goto out;
+	}
+out:
 	map->unlock(map->lock_arg);
 
 	return ret;
 }
-EXPORT_SYMBOL_GPL(regmap_multi_reg_write_bypassed);
+EXPORT_SYMBOL_GPL(regmap_multi_reg_write);
 
 /**
  * regmap_raw_write_async(): Write raw values to one or more registers
@@ -2171,29 +1689,23 @@ static int _regmap_raw_read(struct regmap *map, unsigned int reg, void *val,
 
 	/*
 	 * Some buses or devices flag reads by setting the high bits in the
-	 * register address; since it's always the high bits for all
+	 * register addresss; since it's always the high bits for all
 	 * current formats we can do this here rather than in
 	 * formatting.  This may break if we get interesting formats.
 	 */
 	u8[0] |= map->read_flag_mask;
 
-	trace_regmap_hw_read_start(map, reg, val_len / map->format.val_bytes);
+	trace_regmap_hw_read_start(map->dev, reg,
+				   val_len / map->format.val_bytes);
 
 	ret = map->bus->read(map->bus_context, map->work_buf,
 			     map->format.reg_bytes + map->format.pad_bytes,
 			     val, val_len);
 
-	trace_regmap_hw_read_done(map, reg, val_len / map->format.val_bytes);
+	trace_regmap_hw_read_done(map->dev, reg,
+				  val_len / map->format.val_bytes);
 
 	return ret;
-}
-
-static int _regmap_bus_reg_read(void *context, unsigned int reg,
-				unsigned int *val)
-{
-	struct regmap *map = context;
-
-	return map->bus->reg_read(map->bus_context, reg, val);
 }
 
 static int _regmap_bus_read(void *context, unsigned int reg,
@@ -2218,6 +1730,8 @@ static int _regmap_read(struct regmap *map, unsigned int reg,
 	int ret;
 	void *context = _regmap_map_get_context(map);
 
+	WARN_ON(!map->reg_read);
+
 	if (!map->cache_bypass) {
 		ret = regcache_read(map, reg, val);
 		if (ret == 0)
@@ -2227,9 +1741,6 @@ static int _regmap_read(struct regmap *map, unsigned int reg,
 	if (map->cache_only)
 		return -EBUSY;
 
-	if (!regmap_readable(map, reg))
-		return -EIO;
-
 	ret = map->reg_read(context, reg, val);
 	if (ret == 0) {
 #ifdef LOG_DEVICE
@@ -2237,7 +1748,7 @@ static int _regmap_read(struct regmap *map, unsigned int reg,
 			dev_info(map->dev, "%x => %x\n", reg, *val);
 #endif
 
-		trace_regmap_reg_read(map, reg, *val);
+		trace_regmap_reg_read(map->dev, reg, *val);
 
 		if (!map->cache_bypass)
 			regcache_write(map, reg, *val);
@@ -2298,22 +1809,11 @@ int regmap_raw_read(struct regmap *map, unsigned int reg, void *val,
 		return -EINVAL;
 	if (reg % map->reg_stride)
 		return -EINVAL;
-	if (val_count == 0)
-		return -EINVAL;
 
 	map->lock(map->lock_arg);
 
 	if (regmap_volatile_range(map, reg, val_count) || map->cache_bypass ||
 	    map->cache_type == REGCACHE_NONE) {
-		if (!map->bus->read) {
-			ret = -ENOTSUPP;
-			goto out;
-		}
-		if (map->max_raw_read && map->max_raw_read < val_len) {
-			ret = -E2BIG;
-			goto out;
-		}
-
 		/* Physical block read if there's no cache involved */
 		ret = _regmap_raw_read(map, reg, val, val_len);
 
@@ -2422,51 +1922,20 @@ int regmap_bulk_read(struct regmap *map, unsigned int reg, void *val,
 		 * Some devices does not support bulk read, for
 		 * them we have a series of single read operations.
 		 */
-		size_t total_size = val_bytes * val_count;
-
-		if (!map->use_single_read &&
-		    (!map->max_raw_read || map->max_raw_read > total_size)) {
+		if (map->use_single_rw) {
+			for (i = 0; i < val_count; i++) {
+				ret = regmap_raw_read(map,
+						reg + (i * map->reg_stride),
+						val + (i * val_bytes),
+						val_bytes);
+				if (ret != 0)
+					return ret;
+			}
+		} else {
 			ret = regmap_raw_read(map, reg, val,
 					      val_bytes * val_count);
 			if (ret != 0)
 				return ret;
-		} else {
-			/*
-			 * Some devices do not support bulk read or do not
-			 * support large bulk reads, for them we have a series
-			 * of read operations.
-			 */
-			int chunk_stride = map->reg_stride;
-			size_t chunk_size = val_bytes;
-			size_t chunk_count = val_count;
-
-			if (!map->use_single_read) {
-				chunk_size = map->max_raw_read;
-				if (chunk_size % val_bytes)
-					chunk_size -= chunk_size % val_bytes;
-				chunk_count = total_size / chunk_size;
-				chunk_stride *= chunk_size / val_bytes;
-			}
-
-			/* Read bytes that fit into a multiple of chunk_size */
-			for (i = 0; i < chunk_count; i++) {
-				ret = regmap_raw_read(map,
-						      reg + (i * chunk_stride),
-						      val + (i * chunk_size),
-						      chunk_size);
-				if (ret != 0)
-					return ret;
-			}
-
-			/* Read remaining bytes */
-			if (chunk_size * i < total_size) {
-				ret = regmap_raw_read(map,
-						      reg + (i * chunk_stride),
-						      val + (i * chunk_size),
-						      total_size - i * chunk_size);
-				if (ret != 0)
-					return ret;
-			}
 		}
 
 		for (i = 0; i < val_count * val_bytes; i += val_bytes)
@@ -2478,34 +1947,7 @@ int regmap_bulk_read(struct regmap *map, unsigned int reg, void *val,
 					  &ival);
 			if (ret != 0)
 				return ret;
-
-			if (map->format.format_val) {
-				map->format.format_val(val + (i * val_bytes), ival, 0);
-			} else {
-				/* Devices providing read and write
-				 * operations can use the bulk I/O
-				 * functions if they define a val_bytes,
-				 * we assume that the values are native
-				 * endian.
-				 */
-				u32 *u32 = val;
-				u16 *u16 = val;
-				u8 *u8 = val;
-
-				switch (map->format.val_bytes) {
-				case 4:
-					u32[i] = ival;
-					break;
-				case 2:
-					u16[i] = ival;
-					break;
-				case 1:
-					u8[i] = ival;
-					break;
-				default:
-					return -EINVAL;
-				}
-			}
+			memcpy(val + (i * val_bytes), &ival, val_bytes);
 		}
 	}
 
@@ -2515,31 +1957,23 @@ EXPORT_SYMBOL_GPL(regmap_bulk_read);
 
 static int _regmap_update_bits(struct regmap *map, unsigned int reg,
 			       unsigned int mask, unsigned int val,
-			       bool *change, bool force_write)
+			       bool *change)
 {
 	int ret;
 	unsigned int tmp, orig;
 
-	if (change)
-		*change = false;
+	ret = _regmap_read(map, reg, &orig);
+	if (ret != 0)
+		return ret;
 
-	if (regmap_volatile(map, reg) && map->reg_update_bits) {
-		ret = map->reg_update_bits(map->bus_context, reg, mask, val);
-		if (ret == 0 && change)
-			*change = true;
+	tmp = orig & ~mask;
+	tmp |= val & mask;
+
+	if (tmp != orig) {
+		ret = _regmap_write(map, reg, tmp);
+		*change = true;
 	} else {
-		ret = _regmap_read(map, reg, &orig);
-		if (ret != 0)
-			return ret;
-
-		tmp = orig & ~mask;
-		tmp |= val & mask;
-
-		if (force_write || (tmp != orig)) {
-			ret = _regmap_write(map, reg, tmp);
-			if (ret == 0 && change)
-				*change = true;
-		}
+		*change = false;
 	}
 
 	return ret;
@@ -2558,38 +1992,16 @@ static int _regmap_update_bits(struct regmap *map, unsigned int reg,
 int regmap_update_bits(struct regmap *map, unsigned int reg,
 		       unsigned int mask, unsigned int val)
 {
+	bool change;
 	int ret;
 
 	map->lock(map->lock_arg);
-	ret = _regmap_update_bits(map, reg, mask, val, NULL, false);
+	ret = _regmap_update_bits(map, reg, mask, val, &change);
 	map->unlock(map->lock_arg);
 
 	return ret;
 }
 EXPORT_SYMBOL_GPL(regmap_update_bits);
-
-/**
- * regmap_write_bits: Perform a read/modify/write cycle on the register map
- *
- * @map: Register map to update
- * @reg: Register to update
- * @mask: Bitmask to change
- * @val: New value for bitmask
- *
- * Returns zero for success, a negative number on error.
- */
-int regmap_write_bits(struct regmap *map, unsigned int reg,
-		      unsigned int mask, unsigned int val)
-{
-	int ret;
-
-	map->lock(map->lock_arg);
-	ret = _regmap_update_bits(map, reg, mask, val, NULL, true);
-	map->unlock(map->lock_arg);
-
-	return ret;
-}
-EXPORT_SYMBOL_GPL(regmap_write_bits);
 
 /**
  * regmap_update_bits_async: Perform a read/modify/write cycle on the register
@@ -2609,13 +2021,14 @@ EXPORT_SYMBOL_GPL(regmap_write_bits);
 int regmap_update_bits_async(struct regmap *map, unsigned int reg,
 			     unsigned int mask, unsigned int val)
 {
+	bool change;
 	int ret;
 
 	map->lock(map->lock_arg);
 
 	map->async = true;
 
-	ret = _regmap_update_bits(map, reg, mask, val, NULL, false);
+	ret = _regmap_update_bits(map, reg, mask, val, &change);
 
 	map->async = false;
 
@@ -2644,7 +2057,7 @@ int regmap_update_bits_check(struct regmap *map, unsigned int reg,
 	int ret;
 
 	map->lock(map->lock_arg);
-	ret = _regmap_update_bits(map, reg, mask, val, change, false);
+	ret = _regmap_update_bits(map, reg, mask, val, change);
 	map->unlock(map->lock_arg);
 	return ret;
 }
@@ -2677,7 +2090,7 @@ int regmap_update_bits_check_async(struct regmap *map, unsigned int reg,
 
 	map->async = true;
 
-	ret = _regmap_update_bits(map, reg, mask, val, change, false);
+	ret = _regmap_update_bits(map, reg, mask, val, change);
 
 	map->async = false;
 
@@ -2692,7 +2105,7 @@ void regmap_async_complete_cb(struct regmap_async *async, int ret)
 	struct regmap *map = async->map;
 	bool wake;
 
-	trace_regmap_async_io_complete(map);
+	trace_regmap_async_io_complete(map->dev);
 
 	spin_lock(&map->async_lock);
 	list_move(&async->list, &map->async_free);
@@ -2737,7 +2150,7 @@ int regmap_async_complete(struct regmap *map)
 	if (!map->bus || !map->bus->async_write)
 		return 0;
 
-	trace_regmap_async_complete_start(map);
+	trace_regmap_async_complete_start(map->dev);
 
 	wait_event(map->async_waitq, regmap_async_is_done(map));
 
@@ -2746,7 +2159,7 @@ int regmap_async_complete(struct regmap *map)
 	map->async_ret = 0;
 	spin_unlock_irqrestore(&map->async_lock, flags);
 
-	trace_regmap_async_complete_done(map);
+	trace_regmap_async_complete_done(map->dev);
 
 	return ret;
 }
@@ -2765,31 +2178,17 @@ EXPORT_SYMBOL_GPL(regmap_async_complete);
  * apply them immediately.  Typically this is used to apply
  * corrections to be applied to the device defaults on startup, such
  * as the updates some vendors provide to undocumented registers.
- *
- * The caller must ensure that this function cannot be called
- * concurrently with either itself or regcache_sync().
  */
-int regmap_register_patch(struct regmap *map, const struct reg_sequence *regs,
+int regmap_register_patch(struct regmap *map, const struct reg_default *regs,
 			  int num_regs)
 {
-	struct reg_sequence *p;
-	int ret;
+	struct reg_default *p;
+	int i, ret;
 	bool bypass;
 
 	if (WARN_ONCE(num_regs <= 0, "invalid registers number (%d)\n",
 	    num_regs))
 		return 0;
-
-	p = krealloc(map->patch,
-		     sizeof(struct reg_sequence) * (map->patch_regs + num_regs),
-		     GFP_KERNEL);
-	if (p) {
-		memcpy(p + map->patch_regs, regs, num_regs * sizeof(*regs));
-		map->patch = p;
-		map->patch_regs += num_regs;
-	} else {
-		return -ENOMEM;
-	}
 
 	map->lock(map->lock_arg);
 
@@ -2798,8 +2197,28 @@ int regmap_register_patch(struct regmap *map, const struct reg_sequence *regs,
 	map->cache_bypass = true;
 	map->async = true;
 
-	ret = _regmap_multi_reg_write(map, regs, num_regs);
+	/* Write out first; it's useful to apply even if we fail later. */
+	for (i = 0; i < num_regs; i++) {
+		ret = _regmap_write(map, regs[i].reg, regs[i].def);
+		if (ret != 0) {
+			dev_err(map->dev, "Failed to write %x = %x: %d\n",
+				regs[i].reg, regs[i].def, ret);
+			goto out;
+		}
+	}
 
+	p = krealloc(map->patch,
+		     sizeof(struct reg_default) * (map->patch_regs + num_regs),
+		     GFP_KERNEL);
+	if (p) {
+		memcpy(p + map->patch_regs, regs, num_regs * sizeof(*regs));
+		map->patch = p;
+		map->patch_regs += num_regs;
+	} else {
+		ret = -ENOMEM;
+	}
+
+out:
 	map->async = false;
 	map->cache_bypass = bypass;
 
@@ -2825,42 +2244,6 @@ int regmap_get_val_bytes(struct regmap *map)
 	return map->format.val_bytes;
 }
 EXPORT_SYMBOL_GPL(regmap_get_val_bytes);
-
-/**
- * regmap_get_max_register(): Report the max register value
- *
- * Report the max register value, mainly intended to for use by
- * generic infrastructure built on top of regmap.
- */
-int regmap_get_max_register(struct regmap *map)
-{
-	return map->max_register ? map->max_register : -EINVAL;
-}
-EXPORT_SYMBOL_GPL(regmap_get_max_register);
-
-/**
- * regmap_get_reg_stride(): Report the register address stride
- *
- * Report the register address stride, mainly intended to for use by
- * generic infrastructure built on top of regmap.
- */
-int regmap_get_reg_stride(struct regmap *map)
-{
-	return map->reg_stride;
-}
-EXPORT_SYMBOL_GPL(regmap_get_reg_stride);
-
-int regmap_parse_val(struct regmap *map, const void *buf,
-			unsigned int *val)
-{
-	if (!map->format.parse_val)
-		return -EINVAL;
-
-	*val = map->format.parse_val(buf);
-
-	return 0;
-}
-EXPORT_SYMBOL_GPL(regmap_parse_val);
 
 static int __init regmap_initcall(void)
 {

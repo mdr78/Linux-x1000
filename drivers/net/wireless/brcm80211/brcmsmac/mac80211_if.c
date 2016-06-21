@@ -41,7 +41,8 @@
 #define BRCMS_FLUSH_TIMEOUT	500 /* msec */
 
 /* Flags we support */
-#define MAC_FILTERS (FIF_ALLMULTI | \
+#define MAC_FILTERS (FIF_PROMISC_IN_BSS | \
+	FIF_ALLMULTI | \
 	FIF_FCSFAIL | \
 	FIF_CONTROL | \
 	FIF_OTHER_BSS | \
@@ -98,7 +99,7 @@ static struct bcma_device_id brcms_coreid_table[] = {
 	BCMA_CORE(BCMA_MANUF_BCM, BCMA_CORE_80211, 17, BCMA_ANY_CLASS),
 	BCMA_CORE(BCMA_MANUF_BCM, BCMA_CORE_80211, 23, BCMA_ANY_CLASS),
 	BCMA_CORE(BCMA_MANUF_BCM, BCMA_CORE_80211, 24, BCMA_ANY_CLASS),
-	{},
+	BCMA_CORETABLE_END
 };
 MODULE_DEVICE_TABLE(bcma, brcms_coreid_table);
 
@@ -742,6 +743,8 @@ brcms_ops_configure_filter(struct ieee80211_hw *hw,
 	changed_flags &= MAC_FILTERS;
 	*total_flags &= MAC_FILTERS;
 
+	if (changed_flags & FIF_PROMISC_IN_BSS)
+		brcms_dbg_info(core, "FIF_PROMISC_IN_BSS\n");
 	if (changed_flags & FIF_ALLMULTI)
 		brcms_dbg_info(core, "FIF_ALLMULTI\n");
 	if (changed_flags & FIF_FCSFAIL)
@@ -761,9 +764,7 @@ brcms_ops_configure_filter(struct ieee80211_hw *hw,
 	return;
 }
 
-static void brcms_ops_sw_scan_start(struct ieee80211_hw *hw,
-				    struct ieee80211_vif *vif,
-				    const u8 *mac_addr)
+static void brcms_ops_sw_scan_start(struct ieee80211_hw *hw)
 {
 	struct brcms_info *wl = hw->priv;
 	spin_lock_bh(&wl->lock);
@@ -772,8 +773,7 @@ static void brcms_ops_sw_scan_start(struct ieee80211_hw *hw,
 	return;
 }
 
-static void brcms_ops_sw_scan_complete(struct ieee80211_hw *hw,
-				       struct ieee80211_vif *vif)
+static void brcms_ops_sw_scan_complete(struct ieee80211_hw *hw)
 {
 	struct brcms_info *wl = hw->priv;
 	spin_lock_bh(&wl->lock);
@@ -820,7 +820,7 @@ brcms_ops_ampdu_action(struct ieee80211_hw *hw,
 		    struct ieee80211_vif *vif,
 		    enum ieee80211_ampdu_mlme_action action,
 		    struct ieee80211_sta *sta, u16 tid, u16 *ssn,
-		    u8 buf_size, bool amsdu)
+		    u8 buf_size)
 {
 	struct brcms_info *wl = hw->priv;
 	struct scb *scb = &wl->wlc->pri_scb;
@@ -897,8 +897,7 @@ static bool brcms_tx_flush_completed(struct brcms_info *wl)
 	return result;
 }
 
-static void brcms_ops_flush(struct ieee80211_hw *hw, struct ieee80211_vif *vif,
-			    u32 queues, bool drop)
+static void brcms_ops_flush(struct ieee80211_hw *hw, u32 queues, bool drop)
 {
 	struct brcms_info *wl = hw->priv;
 	int ret;
@@ -1060,9 +1059,10 @@ static int ieee_hw_rate_init(struct ieee80211_hw *hw)
  */
 static int ieee_hw_init(struct ieee80211_hw *hw)
 {
-	ieee80211_hw_set(hw, AMPDU_AGGREGATION);
-	ieee80211_hw_set(hw, SIGNAL_DBM);
-	ieee80211_hw_set(hw, REPORTS_TX_ACK_STATUS);
+	hw->flags = IEEE80211_HW_SIGNAL_DBM
+	    /* | IEEE80211_HW_CONNECTION_MONITOR  What is this? */
+	    | IEEE80211_HW_REPORTS_TX_ACK_STATUS
+	    | IEEE80211_HW_AMPDU_AGGREGATION;
 
 	hw->extra_tx_headroom = brcms_c_get_header_len();
 	hw->queues = N_TX_QUEUES;
@@ -1091,6 +1091,12 @@ static int ieee_hw_init(struct ieee80211_hw *hw)
  *
  * Attach to the WL device identified by vendor and device parameters.
  * regs is a host accessible memory address pointing to WL device registers.
+ *
+ * brcms_attach is not defined as static because in the case where no bus
+ * is defined, wl_attach will never be called, and thus, gcc will issue
+ * a warning that this function is defined but not used if we declare
+ * it as static.
+ *
  *
  * is called in brcms_bcma_probe() context, therefore no locking required.
  */
@@ -1472,7 +1478,9 @@ struct brcms_timer *brcms_init_timer(struct brcms_info *wl,
 	wl->timers = t;
 
 #ifdef DEBUG
-	t->name = kstrdup(name, GFP_ATOMIC);
+	t->name = kmalloc(strlen(name) + 1, GFP_ATOMIC);
+	if (t->name)
+		strcpy(t->name, name);
 #endif
 
 	return t;

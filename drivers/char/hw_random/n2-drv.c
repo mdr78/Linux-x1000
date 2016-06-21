@@ -7,6 +7,7 @@
 #include <linux/module.h>
 #include <linux/types.h>
 #include <linux/delay.h>
+#include <linux/init.h>
 #include <linux/slab.h>
 #include <linux/workqueue.h>
 #include <linux/preempt.h>
@@ -632,7 +633,7 @@ static int n2rng_probe(struct platform_device *op)
 	multi_capable = (match->data != NULL);
 
 	n2rng_driver_version();
-	np = devm_kzalloc(&op->dev, sizeof(*np), GFP_KERNEL);
+	np = kzalloc(sizeof(*np), GFP_KERNEL);
 	if (!np)
 		goto out;
 	np->op = op;
@@ -653,7 +654,7 @@ static int n2rng_probe(struct platform_device *op)
 					 &np->hvapi_minor)) {
 			dev_err(&op->dev, "Cannot register suitable "
 				"HVAPI version.\n");
-			goto out;
+			goto out_free;
 		}
 	}
 
@@ -676,16 +677,15 @@ static int n2rng_probe(struct platform_device *op)
 	dev_info(&op->dev, "Registered RNG HVAPI major %lu minor %lu\n",
 		 np->hvapi_major, np->hvapi_minor);
 
-	np->units = devm_kzalloc(&op->dev,
-				 sizeof(struct n2rng_unit) * np->num_units,
-				 GFP_KERNEL);
+	np->units = kzalloc(sizeof(struct n2rng_unit) * np->num_units,
+			    GFP_KERNEL);
 	err = -ENOMEM;
 	if (!np->units)
 		goto out_hvapi_unregister;
 
 	err = n2rng_init_control(np);
 	if (err)
-		goto out_hvapi_unregister;
+		goto out_free_units;
 
 	dev_info(&op->dev, "Found %s RNG, units: %d\n",
 		 ((np->flags & N2RNG_FLAG_MULTI) ?
@@ -698,7 +698,7 @@ static int n2rng_probe(struct platform_device *op)
 
 	err = hwrng_register(&np->hwrng);
 	if (err)
-		goto out_hvapi_unregister;
+		goto out_free_units;
 
 	platform_set_drvdata(op, np);
 
@@ -706,9 +706,15 @@ static int n2rng_probe(struct platform_device *op)
 
 	return 0;
 
+out_free_units:
+	kfree(np->units);
+	np->units = NULL;
+
 out_hvapi_unregister:
 	sun4v_hvapi_unregister(HV_GRP_RNG);
 
+out_free:
+	kfree(np);
 out:
 	return err;
 }
@@ -724,6 +730,11 @@ static int n2rng_remove(struct platform_device *op)
 	hwrng_unregister(&np->hwrng);
 
 	sun4v_hvapi_unregister(HV_GRP_RNG);
+
+	kfree(np->units);
+	np->units = NULL;
+
+	kfree(np);
 
 	return 0;
 }
@@ -750,6 +761,7 @@ MODULE_DEVICE_TABLE(of, n2rng_match);
 static struct platform_driver n2rng_driver = {
 	.driver = {
 		.name = "n2rng",
+		.owner = THIS_MODULE,
 		.of_match_table = n2rng_match,
 	},
 	.probe		= n2rng_probe,

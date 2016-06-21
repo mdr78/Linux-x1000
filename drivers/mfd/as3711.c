@@ -114,7 +114,7 @@ static const struct regmap_config as3711_regmap_config = {
 };
 
 #ifdef CONFIG_OF
-static const struct of_device_id as3711_of_match[] = {
+static struct of_device_id as3711_of_match[] = {
 	{.compatible = "ams,as3711",},
 	{}
 };
@@ -211,6 +211,7 @@ MODULE_DEVICE_TABLE(i2c, as3711_i2c_id);
 static struct i2c_driver as3711_i2c_driver = {
 	.driver = {
 		   .name = "as3711",
+		   .owner = THIS_MODULE,
 		   .of_match_table = of_match_ptr(as3711_of_match),
 	},
 	.probe = as3711_i2c_probe,

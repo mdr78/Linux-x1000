@@ -47,6 +47,7 @@
 #error Do not #include this file directly. #include <linux/libcfs/libcfs.h> instead
 #endif
 
+
 /* KUC message header.
  * All current and future KUC messages should use this header.
  * To avoid having to include Lustre headers from libcfs, define this here.
@@ -58,7 +59,7 @@ struct kuc_hdr {
 	__u8  kuc_flags;
 	__u16 kuc_msgtype;    /* Message type or opcode, transport-specific */
 	__u16 kuc_msglen;     /* Including header */
-} __aligned(sizeof(__u64));
+} __attribute__((aligned(sizeof(__u64))));
 
 #define KUC_CHANGELOG_MSG_MAXSIZE (sizeof(struct kuc_hdr)+CR_MAXSIZE)
 
@@ -89,12 +90,12 @@ typedef int (*libcfs_kkuc_cb_t)(__u32 data, void *cb_arg);
 #define KUC_GRP_MAX	   KUC_GRP_HSM
 
 /* Kernel methods */
-int libcfs_kkuc_msg_put(struct file *fp, void *payload);
-int libcfs_kkuc_group_put(int group, void *payload);
-int libcfs_kkuc_group_add(struct file *fp, int uid, int group,
+extern int libcfs_kkuc_msg_put(struct file *fp, void *payload);
+extern int libcfs_kkuc_group_put(int group, void *payload);
+extern int libcfs_kkuc_group_add(struct file *fp, int uid, int group,
 				 __u32 data);
-int libcfs_kkuc_group_rem(int uid, int group);
-int libcfs_kkuc_group_foreach(int group, libcfs_kkuc_cb_t cb_func,
+extern int libcfs_kkuc_group_rem(int uid, int group);
+extern int libcfs_kkuc_group_foreach(int group, libcfs_kkuc_cb_t cb_func,
 				     void *cb_arg);
 
 #define LK_FLG_STOP 0x01
@@ -107,12 +108,12 @@ typedef struct lustre_kernelcomm {
 	__u32 lk_group;
 	__u32 lk_data;
 	__u32 lk_flags;
-} __packed lustre_kernelcomm;
+} __attribute__((packed)) lustre_kernelcomm;
 
 /* Userspace methods */
-int libcfs_ukuc_start(lustre_kernelcomm *l, int groups);
-int libcfs_ukuc_stop(lustre_kernelcomm *l);
-int libcfs_ukuc_msg_get(lustre_kernelcomm *l, char *buf, int maxsize,
+extern int libcfs_ukuc_start(lustre_kernelcomm *l, int groups);
+extern int libcfs_ukuc_stop(lustre_kernelcomm *l);
+extern int libcfs_ukuc_msg_get(lustre_kernelcomm *l, char *buf, int maxsize,
 			       int transport);
 
 #endif /* __LIBCFS_KERNELCOMM_H__ */

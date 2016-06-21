@@ -51,14 +51,12 @@
 #define	TMP102_THIGH_REG		0x03
 
 struct tmp102 {
-	struct i2c_client *client;
 	struct device *hwmon_dev;
 	struct thermal_zone_device *tz;
 	struct mutex lock;
 	u16 config_orig;
 	unsigned long last_update;
 	int temp[3];
-	bool first_time;
 };
 
 /* convert left adjusted 13-bit TMP102 register value to milliCelsius */
@@ -79,10 +77,9 @@ static const u8 tmp102_reg[] = {
 	TMP102_THIGH_REG,
 };
 
-static struct tmp102 *tmp102_update_device(struct device *dev)
+static struct tmp102 *tmp102_update_device(struct i2c_client *client)
 {
-	struct tmp102 *tmp102 = dev_get_drvdata(dev);
-	struct i2c_client *client = tmp102->client;
+	struct tmp102 *tmp102 = i2c_get_clientdata(client);
 
 	mutex_lock(&tmp102->lock);
 	if (time_after(jiffies, tmp102->last_update + HZ / 3)) {
@@ -94,21 +91,14 @@ static struct tmp102 *tmp102_update_device(struct device *dev)
 				tmp102->temp[i] = tmp102_reg_to_mC(status);
 		}
 		tmp102->last_update = jiffies;
-		tmp102->first_time = false;
 	}
 	mutex_unlock(&tmp102->lock);
 	return tmp102;
 }
 
-static int tmp102_read_temp(void *dev, int *temp)
+static int tmp102_read_temp(void *dev, long *temp)
 {
-	struct tmp102 *tmp102 = tmp102_update_device(dev);
-
-	/* Is it too early even to return a conversion? */
-	if (tmp102->first_time) {
-		dev_dbg(dev, "%s: Conversion not ready yet..\n", __func__);
-		return -EAGAIN;
-	}
+	struct tmp102 *tmp102 = tmp102_update_device(to_i2c_client(dev));
 
 	*temp = tmp102->temp[0];
 
@@ -120,11 +110,7 @@ static ssize_t tmp102_show_temp(struct device *dev,
 				char *buf)
 {
 	struct sensor_device_attribute *sda = to_sensor_dev_attr(attr);
-	struct tmp102 *tmp102 = tmp102_update_device(dev);
-
-	/* Is it too early even to return a read? */
-	if (tmp102->first_time)
-		return -EAGAIN;
+	struct tmp102 *tmp102 = tmp102_update_device(to_i2c_client(dev));
 
 	return sprintf(buf, "%d\n", tmp102->temp[sda->index]);
 }
@@ -134,8 +120,8 @@ static ssize_t tmp102_set_temp(struct device *dev,
 			       const char *buf, size_t count)
 {
 	struct sensor_device_attribute *sda = to_sensor_dev_attr(attr);
-	struct tmp102 *tmp102 = dev_get_drvdata(dev);
-	struct i2c_client *client = tmp102->client;
+	struct i2c_client *client = to_i2c_client(dev);
+	struct tmp102 *tmp102 = i2c_get_clientdata(client);
 	long val;
 	int status;
 
@@ -159,88 +145,89 @@ static SENSOR_DEVICE_ATTR(temp1_max_hyst, S_IWUSR | S_IRUGO, tmp102_show_temp,
 static SENSOR_DEVICE_ATTR(temp1_max, S_IWUSR | S_IRUGO, tmp102_show_temp,
 			  tmp102_set_temp, 2);
 
-static struct attribute *tmp102_attrs[] = {
+static struct attribute *tmp102_attributes[] = {
 	&sensor_dev_attr_temp1_input.dev_attr.attr,
 	&sensor_dev_attr_temp1_max_hyst.dev_attr.attr,
 	&sensor_dev_attr_temp1_max.dev_attr.attr,
 	NULL
 };
-ATTRIBUTE_GROUPS(tmp102);
+
+static const struct attribute_group tmp102_attr_group = {
+	.attrs = tmp102_attributes,
+};
 
 #define TMP102_CONFIG  (TMP102_CONF_TM | TMP102_CONF_EM | TMP102_CONF_CR1)
 #define TMP102_CONFIG_RD_ONLY (TMP102_CONF_R0 | TMP102_CONF_R1 | TMP102_CONF_AL)
 
-static const struct thermal_zone_of_device_ops tmp102_of_thermal_ops = {
-	.get_temp = tmp102_read_temp,
-};
-
 static int tmp102_probe(struct i2c_client *client,
 				  const struct i2c_device_id *id)
 {
-	struct device *dev = &client->dev;
-	struct device *hwmon_dev;
 	struct tmp102 *tmp102;
 	int status;
 
 	if (!i2c_check_functionality(client->adapter,
 				     I2C_FUNC_SMBUS_WORD_DATA)) {
-		dev_err(dev,
+		dev_err(&client->dev,
 			"adapter doesn't support SMBus word transactions\n");
 		return -ENODEV;
 	}
 
-	tmp102 = devm_kzalloc(dev, sizeof(*tmp102), GFP_KERNEL);
+	tmp102 = devm_kzalloc(&client->dev, sizeof(*tmp102), GFP_KERNEL);
 	if (!tmp102)
 		return -ENOMEM;
 
 	i2c_set_clientdata(client, tmp102);
-	tmp102->client = client;
 
 	status = i2c_smbus_read_word_swapped(client, TMP102_CONF_REG);
 	if (status < 0) {
-		dev_err(dev, "error reading config register\n");
+		dev_err(&client->dev, "error reading config register\n");
 		return status;
 	}
 	tmp102->config_orig = status;
 	status = i2c_smbus_write_word_swapped(client, TMP102_CONF_REG,
 					      TMP102_CONFIG);
 	if (status < 0) {
-		dev_err(dev, "error writing config register\n");
+		dev_err(&client->dev, "error writing config register\n");
 		goto fail_restore_config;
 	}
 	status = i2c_smbus_read_word_swapped(client, TMP102_CONF_REG);
 	if (status < 0) {
-		dev_err(dev, "error reading config register\n");
+		dev_err(&client->dev, "error reading config register\n");
 		goto fail_restore_config;
 	}
 	status &= ~TMP102_CONFIG_RD_ONLY;
 	if (status != TMP102_CONFIG) {
-		dev_err(dev, "config settings did not stick\n");
+		dev_err(&client->dev, "config settings did not stick\n");
 		status = -ENODEV;
 		goto fail_restore_config;
 	}
-	tmp102->last_update = jiffies;
-	/* Mark that we are not ready with data until conversion is complete */
-	tmp102->first_time = true;
+	tmp102->last_update = jiffies - HZ;
 	mutex_init(&tmp102->lock);
 
-	hwmon_dev = hwmon_device_register_with_groups(dev, client->name,
-						      tmp102, tmp102_groups);
-	if (IS_ERR(hwmon_dev)) {
-		dev_dbg(dev, "unable to register hwmon device\n");
-		status = PTR_ERR(hwmon_dev);
+	status = sysfs_create_group(&client->dev.kobj, &tmp102_attr_group);
+	if (status) {
+		dev_dbg(&client->dev, "could not create sysfs files\n");
 		goto fail_restore_config;
 	}
-	tmp102->hwmon_dev = hwmon_dev;
-	tmp102->tz = thermal_zone_of_sensor_register(hwmon_dev, 0, hwmon_dev,
-						     &tmp102_of_thermal_ops);
+	tmp102->hwmon_dev = hwmon_device_register(&client->dev);
+	if (IS_ERR(tmp102->hwmon_dev)) {
+		dev_dbg(&client->dev, "unable to register hwmon device\n");
+		status = PTR_ERR(tmp102->hwmon_dev);
+		goto fail_remove_sysfs;
+	}
+
+	tmp102->tz = thermal_zone_of_sensor_register(&client->dev, 0,
+						     &client->dev,
+						     tmp102_read_temp, NULL);
 	if (IS_ERR(tmp102->tz))
 		tmp102->tz = NULL;
 
-	dev_info(dev, "initialized\n");
+	dev_info(&client->dev, "initialized\n");
 
 	return 0;
 
+fail_remove_sysfs:
+	sysfs_remove_group(&client->dev.kobj, &tmp102_attr_group);
 fail_restore_config:
 	i2c_smbus_write_word_swapped(client, TMP102_CONF_REG,
 				     tmp102->config_orig);
@@ -251,8 +238,9 @@ static int tmp102_remove(struct i2c_client *client)
 {
 	struct tmp102 *tmp102 = i2c_get_clientdata(client);
 
-	thermal_zone_of_sensor_unregister(tmp102->hwmon_dev, tmp102->tz);
+	thermal_zone_of_sensor_unregister(&client->dev, tmp102->tz);
 	hwmon_device_unregister(tmp102->hwmon_dev);
+	sysfs_remove_group(&client->dev.kobj, &tmp102_attr_group);
 
 	/* Stop monitoring if device was stopped originally */
 	if (tmp102->config_orig & TMP102_CONF_SD) {
@@ -267,7 +255,7 @@ static int tmp102_remove(struct i2c_client *client)
 	return 0;
 }
 
-#ifdef CONFIG_PM_SLEEP
+#ifdef CONFIG_PM
 static int tmp102_suspend(struct device *dev)
 {
 	struct i2c_client *client = to_i2c_client(dev);
@@ -293,9 +281,16 @@ static int tmp102_resume(struct device *dev)
 	config &= ~TMP102_CONF_SD;
 	return i2c_smbus_write_word_swapped(client, TMP102_CONF_REG, config);
 }
-#endif /* CONFIG_PM */
 
-static SIMPLE_DEV_PM_OPS(tmp102_dev_pm_ops, tmp102_suspend, tmp102_resume);
+static const struct dev_pm_ops tmp102_dev_pm_ops = {
+	.suspend	= tmp102_suspend,
+	.resume		= tmp102_resume,
+};
+
+#define TMP102_DEV_PM_OPS (&tmp102_dev_pm_ops)
+#else
+#define	TMP102_DEV_PM_OPS NULL
+#endif /* CONFIG_PM */
 
 static const struct i2c_device_id tmp102_id[] = {
 	{ "tmp102", 0 },
@@ -305,7 +300,7 @@ MODULE_DEVICE_TABLE(i2c, tmp102_id);
 
 static struct i2c_driver tmp102_driver = {
 	.driver.name	= DRIVER_NAME,
-	.driver.pm	= &tmp102_dev_pm_ops,
+	.driver.pm	= TMP102_DEV_PM_OPS,
 	.probe		= tmp102_probe,
 	.remove		= tmp102_remove,
 	.id_table	= tmp102_id,

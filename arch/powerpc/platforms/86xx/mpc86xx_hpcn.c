@@ -127,7 +127,7 @@ mpc86xx_time_init(void)
 	return 0;
 }
 
-static const struct of_device_id of_bus_ids[] __initconst = {
+static __initdata struct of_device_id of_bus_ids[] = {
 	{ .compatible = "simple-bus", },
 	{ .compatible = "fsl,srio", },
 	{ .compatible = "gianfar", },

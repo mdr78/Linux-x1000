@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/bin/sh
 #
 # Check the build output from an rcutorture run for goodness.
 # The "file" is a pathname on the local system, and "title" is
@@ -6,7 +6,8 @@
 #
 # The file must contain kernel build output.
 #
-# Usage: parse-build.sh file title
+# Usage:
+#	sh parse-build.sh file title
 #
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
@@ -26,15 +27,12 @@
 #
 # Authors: Paul E. McKenney <paulmck@linux.vnet.ibm.com>
 
-F=$1
+T=$1
 title=$2
-T=/tmp/parse-build.sh.$$
-trap 'rm -rf $T' 0
-mkdir $T
 
 . functions.sh
 
-if grep -q CC < $F
+if grep -q CC < $T
 then
 	:
 else
@@ -42,21 +40,18 @@ else
 	exit 1
 fi
 
-if grep -q "error:" < $F
+if grep -q "error:" < $T
 then
 	print_bug $title build errors:
-	grep "error:" < $F
+	grep "error:" < $T
 	exit 2
 fi
+exit 0
 
-grep warning: < $F > $T/warnings
-grep "include/linux/*rcu*\.h:" $T/warnings > $T/hwarnings
-grep "kernel/rcu/[^/]*:" $T/warnings > $T/cwarnings
-cat $T/hwarnings $T/cwarnings > $T/rcuwarnings
-if test -s $T/rcuwarnings
+if egrep -q "rcu[^/]*\.c.*warning:|rcu.*\.h.*warning:" < $T
 then
 	print_warning $title build errors:
-	cat $T/rcuwarnings
+	egrep "rcu[^/]*\.c.*warning:|rcu.*\.h.*warning:" < $T
 	exit 2
 fi
 exit 0

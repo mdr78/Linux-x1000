@@ -10,9 +10,9 @@
  *  -This is the more "natural" hand written assembler
  */
 
-#include <linux/linkage.h>
 #include <asm/entry.h>       /* For the SAVE_* macros */
 #include <asm/asm-offsets.h>
+#include <asm/linkage.h>
 
 #define KSP_WORD_OFF 	((TASK_THREAD + THREAD_KSP) / 4)
 
@@ -44,6 +44,9 @@ __switch_to:
 	* don't need to do anything special to return it
 	*/
 
+	/* hardware memory barrier */
+	sync
+
 	/*
 	 * switch to new task, contained in r1
 	 * Temp reg r3 is required to get the ptr to store val
@@ -59,4 +62,4 @@ __switch_to:
 	ld.ab   blink, [sp, 4]
 	j       [blink]
 
-END(__switch_to)
+ARC_EXIT __switch_to

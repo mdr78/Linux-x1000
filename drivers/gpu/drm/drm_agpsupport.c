@@ -34,7 +34,8 @@
 #include <drm/drmP.h>
 #include <linux/module.h>
 #include <linux/slab.h>
-#include "drm_legacy.h"
+
+#if __OS_HAS_AGP
 
 #include <asm/agp.h>
 
@@ -500,3 +501,5 @@ drm_agp_bind_pages(struct drm_device *dev,
 	return mem;
 }
 EXPORT_SYMBOL(drm_agp_bind_pages);
+
+#endif /* __OS_HAS_AGP */

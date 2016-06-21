@@ -11,7 +11,7 @@ static const struct qlcnic_mailbox_metadata qlcnic_mbx_tbl[] = {
 	{QLCNIC_CMD_CREATE_RX_CTX, 4, 1},
 	{QLCNIC_CMD_DESTROY_RX_CTX, 2, 1},
 	{QLCNIC_CMD_CREATE_TX_CTX, 4, 1},
-	{QLCNIC_CMD_DESTROY_TX_CTX, 3, 1},
+	{QLCNIC_CMD_DESTROY_TX_CTX, 2, 1},
 	{QLCNIC_CMD_INTRPT_TEST, 4, 1},
 	{QLCNIC_CMD_SET_MTU, 4, 1},
 	{QLCNIC_CMD_READ_PHY, 4, 2},
@@ -32,7 +32,7 @@ static const struct qlcnic_mailbox_metadata qlcnic_mbx_tbl[] = {
 	{QLCNIC_CMD_CONFIGURE_ESWITCH, 4, 1},
 	{QLCNIC_CMD_GET_MAC_STATS, 4, 1},
 	{QLCNIC_CMD_GET_ESWITCH_PORT_CONFIG, 4, 3},
-	{QLCNIC_CMD_GET_ESWITCH_STATS, 4, 1},
+	{QLCNIC_CMD_GET_ESWITCH_STATS, 5, 1},
 	{QLCNIC_CMD_CONFIG_PORT, 4, 1},
 	{QLCNIC_CMD_TEMP_SIZE, 4, 4},
 	{QLCNIC_CMD_GET_TEMP_HDR, 4, 1},
@@ -73,6 +73,8 @@ int qlcnic_82xx_alloc_mbx_args(struct qlcnic_cmd_args *mbx,
 				mbx->req.arg = NULL;
 				return -ENOMEM;
 			}
+			memset(mbx->req.arg, 0, sizeof(u32) * mbx->req.num);
+			memset(mbx->rsp.arg, 0, sizeof(u32) * mbx->rsp.num);
 			mbx->req.arg[0] = type;
 			break;
 		}
@@ -127,14 +129,14 @@ int qlcnic_82xx_issue_cmd(struct qlcnic_adapter *adapter,
 	}
 
 	QLCWR32(adapter, QLCNIC_SIGN_CRB_OFFSET, signature);
-	for (i = 1; i < cmd->req.num; i++)
+	for (i = 1; i < QLCNIC_CDRP_MAX_ARGS; i++)
 		QLCWR32(adapter, QLCNIC_CDRP_ARG(i), cmd->req.arg[i]);
 	QLCWR32(adapter, QLCNIC_CDRP_CRB_OFFSET,
 		QLCNIC_CDRP_FORM_CMD(cmd->req.arg[0]));
 	rsp = qlcnic_poll_rsp(adapter);
 
 	if (rsp == QLCNIC_CDRP_RSP_TIMEOUT) {
-		dev_err(&pdev->dev, "command timeout, response = 0x%x\n", rsp);
+		dev_err(&pdev->dev, "card response timeout.\n");
 		cmd->rsp.arg[0] = QLCNIC_RCODE_TIMEOUT;
 	} else if (rsp == QLCNIC_CDRP_RSP_FAIL) {
 		cmd->rsp.arg[0] = QLCRD32(adapter, QLCNIC_CDRP_ARG(1), &err);
@@ -772,10 +774,8 @@ int qlcnic_82xx_config_intrpt(struct qlcnic_adapter *adapter, u8 op_type)
 	int i, err = 0;
 
 	for (i = 0; i < ahw->num_msix; i++) {
-		err = qlcnic_alloc_mbx_args(&cmd, adapter,
-					    QLCNIC_CMD_MQ_TX_CONFIG_INTR);
-		if (err)
-			return err;
+		qlcnic_alloc_mbx_args(&cmd, adapter,
+				      QLCNIC_CMD_MQ_TX_CONFIG_INTR);
 		type = op_type ? QLCNIC_INTRPT_ADD : QLCNIC_INTRPT_DEL;
 		val = type | (ahw->intr_tbl[i].type << 4);
 		if (ahw->intr_tbl[i].type == QLCNIC_INTRPT_MSIX)
@@ -883,6 +883,8 @@ int qlcnic_82xx_get_nic_info(struct qlcnic_adapter *adapter,
 		npar_info->max_rx_ques = le16_to_cpu(nic_info->max_rx_ques);
 		npar_info->capabilities = le32_to_cpu(nic_info->capabilities);
 		npar_info->max_mtu = le16_to_cpu(nic_info->max_mtu);
+		adapter->max_tx_rings = npar_info->max_tx_ques;
+		adapter->max_sds_rings = npar_info->max_rx_ques;
 	}
 
 	qlcnic_free_mbx_args(&cmd);
@@ -1027,11 +1029,8 @@ int qlcnic_config_port_mirroring(struct qlcnic_adapter *adapter, u8 id,
 	u32 arg1;
 
 	if (adapter->ahw->op_mode != QLCNIC_MGMT_FUNC ||
-	    !(adapter->eswitch[id].flags & QLCNIC_SWITCH_ENABLE)) {
-		dev_err(&adapter->pdev->dev, "%s: Not a management function\n",
-			__func__);
+	    !(adapter->eswitch[id].flags & QLCNIC_SWITCH_ENABLE))
 		return err;
-	}
 
 	arg1 = id | (enable_mirroring ? BIT_4 : 0);
 	arg1 |= pci_func << 8;
@@ -1321,12 +1320,8 @@ int qlcnic_config_switch_port(struct qlcnic_adapter *adapter,
 	u32 arg1, arg2 = 0;
 	u8 pci_func;
 
-	if (adapter->ahw->op_mode != QLCNIC_MGMT_FUNC) {
-		dev_err(&adapter->pdev->dev, "%s: Not a management function\n",
-			__func__);
+	if (adapter->ahw->op_mode != QLCNIC_MGMT_FUNC)
 		return err;
-	}
-
 	pci_func = esw_cfg->pci_func;
 	index = qlcnic_is_valid_nic_func(adapter, pci_func);
 	if (index < 0)
@@ -1361,7 +1356,6 @@ int qlcnic_config_switch_port(struct qlcnic_adapter *adapter,
 			arg2 &= ~BIT_3;
 		break;
 	case QLCNIC_ADD_VLAN:
-			arg1 &= ~(0x0ffff << 16);
 			arg1 |= (BIT_2 | BIT_5);
 			arg1 |= (esw_cfg->vlan_id << 16);
 			break;
@@ -1370,8 +1364,6 @@ int qlcnic_config_switch_port(struct qlcnic_adapter *adapter,
 			arg1 &= ~(0x0ffff << 16);
 			break;
 	default:
-		dev_err(&adapter->pdev->dev, "%s: Invalid opmode 0x%x\n",
-			__func__, esw_cfg->op_mode);
 		return err;
 	}
 

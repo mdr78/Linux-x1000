@@ -53,7 +53,6 @@ struct irq_info {
 
 #define PIRQ_NEEDS_EOI	(1 << 0)
 #define PIRQ_SHAREABLE	(1 << 1)
-#define PIRQ_MSI_GROUP	(1 << 2)
 
 struct evtchn_ops {
 	unsigned (*max_channels)(void);

@@ -16,20 +16,19 @@
  */
 
 #include <linux/platform_device.h>
-#include <linux/usb/xhci_pdriver.h>
 
 #include "core.h"
 
 int dwc3_host_init(struct dwc3 *dwc)
 {
 	struct platform_device	*xhci;
-	struct usb_xhci_pdata	pdata;
 	int			ret;
 
 	xhci = platform_device_alloc("xhci-hcd", PLATFORM_DEVID_AUTO);
 	if (!xhci) {
 		dev_err(dwc->dev, "couldn't allocate xHCI device\n");
-		return -ENOMEM;
+		ret = -ENOMEM;
+		goto err0;
 	}
 
 	dma_set_coherent_mask(&xhci->dev, dwc->dev->coherent_dma_mask);
@@ -47,43 +46,22 @@ int dwc3_host_init(struct dwc3 *dwc)
 		goto err1;
 	}
 
-	memset(&pdata, 0, sizeof(pdata));
-
-	pdata.usb3_lpm_capable = dwc->usb3_lpm_capable;
-
-	ret = platform_device_add_data(xhci, &pdata, sizeof(pdata));
-	if (ret) {
-		dev_err(dwc->dev, "couldn't add platform data to xHCI device\n");
-		goto err1;
-	}
-
-	phy_create_lookup(dwc->usb2_generic_phy, "usb2-phy",
-			  dev_name(&xhci->dev));
-	phy_create_lookup(dwc->usb3_generic_phy, "usb3-phy",
-			  dev_name(&xhci->dev));
-
 	ret = platform_device_add(xhci);
 	if (ret) {
 		dev_err(dwc->dev, "failed to register xHCI device\n");
-		goto err2;
+		goto err1;
 	}
 
 	return 0;
-err2:
-	phy_remove_lookup(dwc->usb2_generic_phy, "usb2-phy",
-			  dev_name(&xhci->dev));
-	phy_remove_lookup(dwc->usb3_generic_phy, "usb3-phy",
-			  dev_name(&xhci->dev));
+
 err1:
 	platform_device_put(xhci);
+
+err0:
 	return ret;
 }
 
 void dwc3_host_exit(struct dwc3 *dwc)
 {
-	phy_remove_lookup(dwc->usb2_generic_phy, "usb2-phy",
-			  dev_name(&dwc->xhci->dev));
-	phy_remove_lookup(dwc->usb3_generic_phy, "usb3-phy",
-			  dev_name(&dwc->xhci->dev));
 	platform_device_unregister(dwc->xhci);
 }

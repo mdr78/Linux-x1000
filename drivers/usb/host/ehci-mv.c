@@ -153,6 +153,7 @@ static int mv_ehci_probe(struct platform_device *pdev)
 
 	ehci_mv = devm_kzalloc(&pdev->dev, sizeof(*ehci_mv), GFP_KERNEL);
 	if (ehci_mv == NULL) {
+		dev_err(&pdev->dev, "cannot allocate ehci_hcd_mv\n");
 		retval = -ENOMEM;
 		goto err_put_hcd;
 	}
@@ -169,16 +170,32 @@ static int mv_ehci_probe(struct platform_device *pdev)
 	}
 
 	r = platform_get_resource_byname(pdev, IORESOURCE_MEM, "phyregs");
-	ehci_mv->phy_regs = devm_ioremap_resource(&pdev->dev, r);
-	if (IS_ERR(ehci_mv->phy_regs)) {
-		retval = PTR_ERR(ehci_mv->phy_regs);
+	if (r == NULL) {
+		dev_err(&pdev->dev, "no phy I/O memory resource defined\n");
+		retval = -ENODEV;
+		goto err_put_hcd;
+	}
+
+	ehci_mv->phy_regs = devm_ioremap(&pdev->dev, r->start,
+					 resource_size(r));
+	if (!ehci_mv->phy_regs) {
+		dev_err(&pdev->dev, "failed to map phy I/O memory\n");
+		retval = -EFAULT;
 		goto err_put_hcd;
 	}
 
 	r = platform_get_resource_byname(pdev, IORESOURCE_MEM, "capregs");
-	ehci_mv->cap_regs = devm_ioremap_resource(&pdev->dev, r);
-	if (IS_ERR(ehci_mv->cap_regs)) {
-		retval = PTR_ERR(ehci_mv->cap_regs);
+	if (!r) {
+		dev_err(&pdev->dev, "no I/O memory resource defined\n");
+		retval = -ENODEV;
+		goto err_put_hcd;
+	}
+
+	ehci_mv->cap_regs = devm_ioremap(&pdev->dev, r->start,
+					 resource_size(r));
+	if (ehci_mv->cap_regs == NULL) {
+		dev_err(&pdev->dev, "failed to map I/O memory\n");
+		retval = -EFAULT;
 		goto err_put_hcd;
 	}
 

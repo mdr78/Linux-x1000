@@ -81,7 +81,6 @@ struct appledisplay {
 	struct delayed_work work;
 	int button_pressed;
 	spinlock_t lock;
-	struct mutex sysfslock;		/* concurrent read and write */
 };
 
 static atomic_t count_displays = ATOMIC_INIT(0);
@@ -111,7 +110,7 @@ static void appledisplay_complete(struct urb *urb)
 			__func__, status);
 		return;
 	default:
-		dev_dbg(dev, "%s - nonzero urb status received: %d\n",
+		dev_dbg(dev, "%s - nonzero urb status received: %d/n",
 			__func__, status);
 		goto exit;
 	}
@@ -145,7 +144,6 @@ static int appledisplay_bl_update_status(struct backlight_device *bd)
 	struct appledisplay *pdata = bl_get_data(bd);
 	int retval;
 
-	mutex_lock(&pdata->sysfslock);
 	pdata->msgdata[0] = 0x10;
 	pdata->msgdata[1] = bd->props.brightness;
 
@@ -158,17 +156,15 @@ static int appledisplay_bl_update_status(struct backlight_device *bd)
 		0,
 		pdata->msgdata, 2,
 		ACD_USB_TIMEOUT);
-	mutex_unlock(&pdata->sysfslock);
-	
+
 	return retval;
 }
 
 static int appledisplay_bl_get_brightness(struct backlight_device *bd)
 {
 	struct appledisplay *pdata = bl_get_data(bd);
-	int retval, brightness;
+	int retval;
 
-	mutex_lock(&pdata->sysfslock);
 	retval = usb_control_msg(
 		pdata->udev,
 		usb_rcvctrlpipe(pdata->udev, 0),
@@ -178,13 +174,11 @@ static int appledisplay_bl_get_brightness(struct backlight_device *bd)
 		0,
 		pdata->msgdata, 2,
 		ACD_USB_TIMEOUT);
-	brightness = pdata->msgdata[1];
-	mutex_unlock(&pdata->sysfslock);
 
 	if (retval < 0)
 		return retval;
 	else
-		return brightness;
+		return pdata->msgdata[1];
 }
 
 static const struct backlight_ops appledisplay_bl_data = {
@@ -247,7 +241,6 @@ static int appledisplay_probe(struct usb_interface *iface,
 
 	spin_lock_init(&pdata->lock);
 	INIT_DELAYED_WORK(&pdata->work, appledisplay_work);
-	mutex_init(&pdata->sysfslock);
 
 	/* Allocate buffer for control messages */
 	pdata->msgdata = kmalloc(ACD_MSG_BUFFER_LEN, GFP_KERNEL);
@@ -329,7 +322,7 @@ error:
 					pdata->urbdata, pdata->urb->transfer_dma);
 			usb_free_urb(pdata->urb);
 		}
-		if (!IS_ERR(pdata->bd))
+		if (pdata->bd && !IS_ERR(pdata->bd))
 			backlight_device_unregister(pdata->bd);
 		kfree(pdata->msgdata);
 	}

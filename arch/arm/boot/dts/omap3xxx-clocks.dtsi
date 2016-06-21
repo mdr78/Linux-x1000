@@ -79,14 +79,13 @@
 		clock-div = <1>;
 	};
 };
-
-&scm_clocks {
+&scrm_clocks {
 	mcbsp5_mux_fck: mcbsp5_mux_fck {
 		#clock-cells = <0>;
 		compatible = "ti,composite-mux-clock";
 		clocks = <&core_96m_fck>, <&mcbsp_clks>;
 		ti,bit-shift = <4>;
-		reg = <0x68>;
+		reg = <0x02d8>;
 	};
 
 	mcbsp5_fck: mcbsp5_fck {
@@ -100,7 +99,7 @@
 		compatible = "ti,composite-mux-clock";
 		clocks = <&core_96m_fck>, <&mcbsp_clks>;
 		ti,bit-shift = <2>;
-		reg = <0x04>;
+		reg = <0x0274>;
 	};
 
 	mcbsp1_fck: mcbsp1_fck {
@@ -114,7 +113,7 @@
 		compatible = "ti,composite-mux-clock";
 		clocks = <&per_96m_fck>, <&mcbsp_clks>;
 		ti,bit-shift = <6>;
-		reg = <0x04>;
+		reg = <0x0274>;
 	};
 
 	mcbsp2_fck: mcbsp2_fck {
@@ -127,7 +126,7 @@
 		#clock-cells = <0>;
 		compatible = "ti,composite-mux-clock";
 		clocks = <&per_96m_fck>, <&mcbsp_clks>;
-		reg = <0x68>;
+		reg = <0x02d8>;
 	};
 
 	mcbsp3_fck: mcbsp3_fck {
@@ -141,7 +140,7 @@
 		compatible = "ti,composite-mux-clock";
 		clocks = <&per_96m_fck>, <&mcbsp_clks>;
 		ti,bit-shift = <2>;
-		reg = <0x68>;
+		reg = <0x02d8>;
 	};
 
 	mcbsp4_fck: mcbsp4_fck {
@@ -426,11 +425,10 @@
 
 	dpll4_m4x2_mul_ck: dpll4_m4x2_mul_ck {
 		#clock-cells = <0>;
-		compatible = "ti,fixed-factor-clock";
+		compatible = "fixed-factor-clock";
 		clocks = <&dpll4_m4_ck>;
-		ti,clock-mult = <2>;
-		ti,clock-div = <1>;
-		ti,set-rate-parent;
+		clock-mult = <2>;
+		clock-div = <1>;
 	};
 
 	dpll4_m4x2_ck: dpll4_m4x2_ck {
@@ -440,7 +438,6 @@
 		ti,bit-shift = <0x1d>;
 		reg = <0x0d00>;
 		ti,set-bit-to-disable;
-		ti,set-rate-parent;
 	};
 
 	dpll4_m5_ck: dpll4_m5_ck {
@@ -454,11 +451,10 @@
 
 	dpll4_m5x2_mul_ck: dpll4_m5x2_mul_ck {
 		#clock-cells = <0>;
-		compatible = "ti,fixed-factor-clock";
+		compatible = "fixed-factor-clock";
 		clocks = <&dpll4_m5_ck>;
-		ti,clock-mult = <2>;
-		ti,clock-div = <1>;
-		ti,set-rate-parent;
+		clock-mult = <2>;
+		clock-div = <1>;
 	};
 
 	dpll4_m5x2_ck: dpll4_m5x2_ck {
@@ -468,7 +464,6 @@
 		ti,bit-shift = <0x1e>;
 		reg = <0x0d00>;
 		ti,set-bit-to-disable;
-		ti,set-rate-parent;
 	};
 
 	dpll4_m6_ck: dpll4_m6_ck {

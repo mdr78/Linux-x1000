@@ -1270,6 +1270,7 @@ enum fe_stv0900_error stv0900_st_dvbs2_single(struct stv0900_internal *intp,
 					enum fe_stv0900_demod_mode LDPC_Mode,
 					enum fe_stv0900_demod_num demod)
 {
+	enum fe_stv0900_error error = STV0900_NO_ERROR;
 	s32 reg_ind;
 
 	dprintk("%s\n", __func__);
@@ -1336,7 +1337,7 @@ enum fe_stv0900_error stv0900_st_dvbs2_single(struct stv0900_internal *intp,
 		break;
 	}
 
-	return STV0900_NO_ERROR;
+	return error;
 }
 
 static enum fe_stv0900_error stv0900_init_internal(struct dvb_frontend *fe,
@@ -1554,6 +1555,8 @@ static int stv0900_status(struct stv0900_internal *intp,
 static int stv0900_set_mis(struct stv0900_internal *intp,
 				enum fe_stv0900_demod_num demod, int mis)
 {
+	enum fe_stv0900_error error = STV0900_NO_ERROR;
+
 	dprintk("%s\n", __func__);
 
 	if (mis < 0 || mis > 255) {
@@ -1566,7 +1569,7 @@ static int stv0900_set_mis(struct stv0900_internal *intp,
 		stv0900_write_reg(intp, ISIBITENA, 0xff);
 	}
 
-	return STV0900_NO_ERROR;
+	return error;
 }
 
 
@@ -1744,8 +1747,7 @@ static int stv0900_send_master_cmd(struct dvb_frontend *fe,
 				state->demod);
 }
 
-static int stv0900_send_burst(struct dvb_frontend *fe,
-			      enum fe_sec_mini_cmd burst)
+static int stv0900_send_burst(struct dvb_frontend *fe, fe_sec_mini_cmd_t burst)
 {
 	struct stv0900_state *state = fe->demodulator_priv;
 	struct stv0900_internal *intp = state->internal;
@@ -1794,8 +1796,7 @@ static int stv0900_recv_slave_reply(struct dvb_frontend *fe,
 	return 0;
 }
 
-static int stv0900_set_tone(struct dvb_frontend *fe,
-			    enum fe_sec_tone_mode toneoff)
+static int stv0900_set_tone(struct dvb_frontend *fe, fe_sec_tone_mode_t toneoff)
 {
 	struct stv0900_state *state = fe->demodulator_priv;
 	struct stv0900_internal *intp = state->internal;

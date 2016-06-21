@@ -14,11 +14,10 @@
 
 	chosen {
 		bootargs = "console=ttyS0,115200n8 earlyprintk";
-		stdout-path = &uart0;
 	};
 
 	ocp@f1000000 {
-		pinctrl: pin-controller@10000 {
+		pinctrl: pinctrl@10000 {
 			/*
 			 * Switch positions
 			 *
@@ -86,7 +85,9 @@
 		};
 
 		serial@12000 {
-			status = "okay";
+			status = "ok";
+			pinctrl-0 = <&pmx_uart0>;
+			pinctrl-names = "default";
 		};
 
 		sata@80000 {
@@ -95,7 +96,9 @@
 		};
 
 		i2c@11000 {
-			status = "okay";
+			status = "ok";
+			pinctrl-0 = <&pmx_twsi0>;
+			pinctrl-names = "default";
 		};
 
 		mvsdio@90000 {
@@ -172,6 +175,8 @@
 
 &nand {
 	status = "okay";
+	pinctrl-0 = <&pmx_nand>;
+	pinctrl-names = "default";
 
 	partition@0 {
 		label = "u-boot";

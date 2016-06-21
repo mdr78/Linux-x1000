@@ -7,8 +7,6 @@
  * 30 May 2002:	Cleanup, Robert M. Love <rml@tech9.net>
  */
 
-#define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
-
 #include <linux/audit.h>
 #include <linux/capability.h>
 #include <linux/mm.h>
@@ -24,6 +22,7 @@
  */
 
 const kernel_cap_t __cap_empty_set = CAP_EMPTY_SET;
+
 EXPORT_SYMBOL(__cap_empty_set);
 
 int file_caps_enabled = 1;
@@ -35,7 +34,6 @@ static int __init file_caps_disable(char *str)
 }
 __setup("no_file_caps", file_caps_disable);
 
-#ifdef CONFIG_MULTIUSER
 /*
  * More recent versions of libcap are available from:
  *
@@ -44,10 +42,15 @@ __setup("no_file_caps", file_caps_disable);
 
 static void warn_legacy_capability_use(void)
 {
-	char name[sizeof(current->comm)];
+	static int warned;
+	if (!warned) {
+		char name[sizeof(current->comm)];
 
-	pr_info_once("warning: `%s' uses 32-bit capabilities (legacy support in use)\n",
-		     get_task_comm(name, current));
+		printk(KERN_INFO "warning: `%s' uses 32-bit capabilities"
+		       " (legacy support in use)\n",
+		       get_task_comm(name, current));
+		warned = 1;
+	}
 }
 
 /*
@@ -68,10 +71,16 @@ static void warn_legacy_capability_use(void)
 
 static void warn_deprecated_v2(void)
 {
-	char name[sizeof(current->comm)];
+	static int warned;
 
-	pr_info_once("warning: `%s' uses deprecated v2 capabilities in a way that may be insecure\n",
-		     get_task_comm(name, current));
+	if (!warned) {
+		char name[sizeof(current->comm)];
+
+		printk(KERN_INFO "warning: `%s' uses deprecated v2"
+		       " capabilities in a way that may be insecure.\n",
+		       get_task_comm(name, current));
+		warned = 1;
+	}
 }
 
 /*
@@ -189,7 +198,7 @@ SYSCALL_DEFINE2(capget, cap_user_header_t, header, cap_user_data_t, dataptr)
 		 *
 		 * An alternative would be to return an error here
 		 * (-ERANGE), but that causes legacy applications to
-		 * unexpectedly fail; the capget/modify/capset aborts
+		 * unexpectidly fail; the capget/modify/capset aborts
 		 * before modification is attempted and the application
 		 * fails.
 		 */
@@ -375,7 +384,7 @@ bool has_capability_noaudit(struct task_struct *t, int cap)
 bool ns_capable(struct user_namespace *ns, int cap)
 {
 	if (unlikely(!cap_valid(cap))) {
-		pr_crit("capable() called with invalid cap=%u\n", cap);
+		printk(KERN_CRIT "capable() called with invalid cap=%u\n", cap);
 		BUG();
 	}
 
@@ -387,6 +396,29 @@ bool ns_capable(struct user_namespace *ns, int cap)
 }
 EXPORT_SYMBOL(ns_capable);
 
+/**
+ * file_ns_capable - Determine if the file's opener had a capability in effect
+ * @file:  The file we want to check
+ * @ns:  The usernamespace we want the capability in
+ * @cap: The capability to be tested for
+ *
+ * Return true if task that opened the file had a capability in effect
+ * when the file was opened.
+ *
+ * This does not set PF_SUPERPRIV because the caller may not
+ * actually be privileged.
+ */
+bool file_ns_capable(const struct file *file, struct user_namespace *ns, int cap)
+{
+	if (WARN_ON_ONCE(!cap_valid(cap)))
+		return false;
+
+	if (security_capable(file->f_cred, ns, cap) == 0)
+		return true;
+
+	return false;
+}
+EXPORT_SYMBOL(file_ns_capable);
 
 /**
  * capable - Determine if the current task has a superior capability in effect
@@ -403,32 +435,6 @@ bool capable(int cap)
 	return ns_capable(&init_user_ns, cap);
 }
 EXPORT_SYMBOL(capable);
-#endif /* CONFIG_MULTIUSER */
-
-/**
- * file_ns_capable - Determine if the file's opener had a capability in effect
- * @file:  The file we want to check
- * @ns:  The usernamespace we want the capability in
- * @cap: The capability to be tested for
- *
- * Return true if task that opened the file had a capability in effect
- * when the file was opened.
- *
- * This does not set PF_SUPERPRIV because the caller may not
- * actually be privileged.
- */
-bool file_ns_capable(const struct file *file, struct user_namespace *ns,
-		     int cap)
-{
-	if (WARN_ON_ONCE(!cap_valid(cap)))
-		return false;
-
-	if (security_capable(file->f_cred, ns, cap) == 0)
-		return true;
-
-	return false;
-}
-EXPORT_SYMBOL(file_ns_capable);
 
 /**
  * capable_wrt_inode_uidgid - Check nsown_capable and uid and gid mapped

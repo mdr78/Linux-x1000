@@ -281,7 +281,7 @@ static int cxgb_close(struct net_device *dev)
 	if (adapter->params.stats_update_period &&
 	    !(adapter->open_device_map & PORT_MASK)) {
 		/* Stop statistics accumulation. */
-		smp_mb__after_atomic();
+		smp_mb__after_clear_bit();
 		spin_lock(&adapter->work_lock);   /* sync with update task */
 		spin_unlock(&adapter->work_lock);
 		cancel_mac_stats_update(adapter);
@@ -354,7 +354,7 @@ static void set_msglevel(struct net_device *dev, u32 val)
 	adapter->msg_enable = val;
 }
 
-static const char stats_strings[][ETH_GSTRING_LEN] = {
+static char stats_strings[][ETH_GSTRING_LEN] = {
 	"TxOctetsOK",
 	"TxOctetsBad",
 	"TxUnicastFramesOK",
@@ -580,8 +580,8 @@ static int get_settings(struct net_device *dev, struct ethtool_cmd *cmd)
 		ethtool_cmd_speed_set(cmd, p->link_config.speed);
 		cmd->duplex = p->link_config.duplex;
 	} else {
-		ethtool_cmd_speed_set(cmd, SPEED_UNKNOWN);
-		cmd->duplex = DUPLEX_UNKNOWN;
+		ethtool_cmd_speed_set(cmd, -1);
+		cmd->duplex = -1;
 	}
 
 	cmd->port = (cmd->supported & SUPPORTED_TP) ? PORT_TP : PORT_FIBRE;

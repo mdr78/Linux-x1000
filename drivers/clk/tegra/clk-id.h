@@ -64,8 +64,10 @@ enum clk_id {
 	tegra_clk_disp2,
 	tegra_clk_dp2,
 	tegra_clk_dpaux,
+	tegra_clk_dsia,
 	tegra_clk_dsialp,
 	tegra_clk_dsia_mux,
+	tegra_clk_dsib,
 	tegra_clk_dsiblp,
 	tegra_clk_dsib_mux,
 	tegra_clk_dtv,
@@ -231,7 +233,6 @@ enum clk_id {
 	tegra_clk_xusb_hs_src,
 	tegra_clk_xusb_ss,
 	tegra_clk_xusb_ss_src,
-	tegra_clk_xusb_ss_div2,
 	tegra_clk_max,
 };
 

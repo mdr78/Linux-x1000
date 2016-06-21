@@ -24,7 +24,8 @@ struct iio_interrupt_trigger_info {
 
 static irqreturn_t iio_interrupt_trigger_poll(int irq, void *private)
 {
-	iio_trigger_poll(private);
+	/* Timestamp not currently provided */
+	iio_trigger_poll(private, 0);
 	return IRQ_HANDLED;
 }
 
@@ -109,6 +110,7 @@ static struct platform_driver iio_interrupt_trigger_driver = {
 	.remove = iio_interrupt_trigger_remove,
 	.driver = {
 		.name = "iio_interrupt_trigger",
+		.owner = THIS_MODULE,
 	},
 };
 

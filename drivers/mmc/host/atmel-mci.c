@@ -17,7 +17,6 @@
 #include <linux/gpio.h>
 #include <linux/init.h>
 #include <linux/interrupt.h>
-#include <linux/io.h>
 #include <linux/ioport.h>
 #include <linux/module.h>
 #include <linux/of.h>
@@ -29,24 +28,19 @@
 #include <linux/slab.h>
 #include <linux/stat.h>
 #include <linux/types.h>
-#include <linux/platform_data/mmc-atmel-mci.h>
+#include <linux/platform_data/atmel.h>
 
 #include <linux/mmc/host.h>
 #include <linux/mmc/sdio.h>
 
+#include <mach/atmel-mci.h>
 #include <linux/atmel-mci.h>
 #include <linux/atmel_pdc.h>
-#include <linux/pm.h>
-#include <linux/pm_runtime.h>
-#include <linux/pinctrl/consumer.h>
 
-#include <asm/cacheflush.h>
 #include <asm/io.h>
 #include <asm/unaligned.h>
 
 #include "atmel-mci-regs.h"
-
-#define AUTOSUSPEND_DELAY	50
 
 #define ATMCI_DATA_ERROR_FLAGS	(ATMCI_DCRCE | ATMCI_DTOE | ATMCI_OVRE | ATMCI_UNRE)
 #define ATMCI_DMA_THRESHOLD	16
@@ -390,19 +384,20 @@ static int atmci_regs_show(struct seq_file *s, void *v)
 	if (!buf)
 		return -ENOMEM;
 
-	pm_runtime_get_sync(&host->pdev->dev);
-
 	/*
 	 * Grab a more or less consistent snapshot. Note that we're
 	 * not disabling interrupts, so IMR and SR may not be
 	 * consistent.
 	 */
+	ret = clk_prepare_enable(host->mck);
+	if (ret)
+		goto out;
+
 	spin_lock_bh(&host->lock);
 	memcpy_fromio(buf, host->regs, ATMCI_REGS_SIZE);
 	spin_unlock_bh(&host->lock);
 
-	pm_runtime_mark_last_busy(&host->pdev->dev);
-	pm_runtime_put_autosuspend(&host->pdev->dev);
+	clk_disable_unprepare(host->mck);
 
 	seq_printf(s, "MR:\t0x%08x%s%s ",
 			buf[ATMCI_MR / 4],
@@ -452,6 +447,7 @@ static int atmci_regs_show(struct seq_file *s, void *v)
 				val & ATMCI_CFG_LSYNC ? " LSYNC" : "");
 	}
 
+out:
 	kfree(buf);
 
 	return ret;
@@ -561,9 +557,6 @@ atmci_of_init(struct platform_device *pdev)
 
 		pdata->slot[slot_id].detect_is_active_high =
 			of_property_read_bool(cnp, "cd-inverted");
-
-		pdata->slot[slot_id].non_removable =
-			of_property_read_bool(cnp, "non-removable");
 
 		pdata->slot[slot_id].wp_pin =
 			of_get_named_gpio(cnp, "wp-gpios", 0);
@@ -827,9 +820,16 @@ static void atmci_pdc_complete(struct atmel_mci *host)
 
 	atmci_pdc_cleanup(host);
 
-	dev_dbg(&host->pdev->dev, "(%s) set pending xfer complete\n", __func__);
-	atmci_set_pending(host, EVENT_XFER_COMPLETE);
-	tasklet_schedule(&host->tasklet);
+	/*
+	 * If the card was removed, data will be NULL. No point trying
+	 * to send the stop command or waiting for NBUSY in this case.
+	 */
+	if (host->data) {
+		dev_dbg(&host->pdev->dev,
+		        "(%s) set pending xfer complete\n", __func__);
+		atmci_set_pending(host, EVENT_XFER_COMPLETE);
+		tasklet_schedule(&host->tasklet);
+	}
 }
 
 static void atmci_dma_cleanup(struct atmel_mci *host)
@@ -1257,8 +1257,6 @@ static void atmci_request(struct mmc_host *mmc, struct mmc_request *mrq)
 	WARN_ON(slot->mrq);
 	dev_dbg(&host->pdev->dev, "MRQ: cmd %u\n", mrq->cmd->opcode);
 
-	pm_runtime_get_sync(&host->pdev->dev);
-
 	/*
 	 * We may "know" the card is gone even though there's still an
 	 * electrical connection. If so, we really need to communicate
@@ -1288,8 +1286,7 @@ static void atmci_set_ios(struct mmc_host *mmc, struct mmc_ios *ios)
 	struct atmel_mci_slot	*slot = mmc_priv(mmc);
 	struct atmel_mci	*host = slot->host;
 	unsigned int		i;
-
-	pm_runtime_get_sync(&host->pdev->dev);
+	bool			unprepare_clk;
 
 	slot->sdc_reg &= ~ATMCI_SDCBUS_MASK;
 	switch (ios->bus_width) {
@@ -1303,10 +1300,15 @@ static void atmci_set_ios(struct mmc_host *mmc, struct mmc_ios *ios)
 
 	if (ios->clock) {
 		unsigned int clock_min = ~0U;
-		int clkdiv;
+		u32 clkdiv;
+
+		clk_prepare(host->mck);
+		unprepare_clk = true;
 
 		spin_lock_bh(&host->lock);
 		if (!host->mode_reg) {
+			clk_enable(host->mck);
+			unprepare_clk = false;
 			atmci_writel(host, ATMCI_CR, ATMCI_CR_SWRST);
 			atmci_writel(host, ATMCI_CR, ATMCI_CR_MCIEN);
 			if (host->caps.has_cfg_reg)
@@ -1327,12 +1329,7 @@ static void atmci_set_ios(struct mmc_host *mmc, struct mmc_ios *ios)
 		/* Calculate clock divider */
 		if (host->caps.has_odd_clk_div) {
 			clkdiv = DIV_ROUND_UP(host->bus_hz, clock_min) - 2;
-			if (clkdiv < 0) {
-				dev_warn(&mmc->class_dev,
-					 "clock %u too fast; using %lu\n",
-					 clock_min, host->bus_hz / 2);
-				clkdiv = 0;
-			} else if (clkdiv > 511) {
+			if (clkdiv > 511) {
 				dev_warn(&mmc->class_dev,
 				         "clock %u too slow; using %lu\n",
 				         clock_min, host->bus_hz / (511 + 2));
@@ -1379,6 +1376,8 @@ static void atmci_set_ios(struct mmc_host *mmc, struct mmc_ios *ios)
 	} else {
 		bool any_slot_active = false;
 
+		unprepare_clk = false;
+
 		spin_lock_bh(&host->lock);
 		slot->clock = 0;
 		for (i = 0; i < ATMCI_MAX_NR_SLOTS; i++) {
@@ -1391,11 +1390,16 @@ static void atmci_set_ios(struct mmc_host *mmc, struct mmc_ios *ios)
 			atmci_writel(host, ATMCI_CR, ATMCI_CR_MCIDIS);
 			if (host->mode_reg) {
 				atmci_readl(host, ATMCI_MR);
+				clk_disable(host->mck);
+				unprepare_clk = true;
 			}
 			host->mode_reg = 0;
 		}
 		spin_unlock_bh(&host->lock);
 	}
+
+	if (unprepare_clk)
+		clk_unprepare(host->mck);
 
 	switch (ios->power_mode) {
 	case MMC_POWER_OFF:
@@ -1422,9 +1426,6 @@ static void atmci_set_ios(struct mmc_host *mmc, struct mmc_ios *ios)
 		 */
 		break;
 	}
-
-	pm_runtime_mark_last_busy(&host->pdev->dev);
-	pm_runtime_put_autosuspend(&host->pdev->dev);
 }
 
 static int atmci_get_ro(struct mmc_host *mmc)
@@ -1516,9 +1517,6 @@ static void atmci_request_end(struct atmel_mci *host, struct mmc_request *mrq)
 	spin_unlock(&host->lock);
 	mmc_request_done(prev_mmc, mrq);
 	spin_lock(&host->lock);
-
-	pm_runtime_mark_last_busy(&host->pdev->dev);
-	pm_runtime_put_autosuspend(&host->pdev->dev);
 }
 
 static void atmci_command_complete(struct atmel_mci *host,
@@ -2144,7 +2142,7 @@ static irqreturn_t atmci_detect_interrupt(int irq, void *dev_id)
 	return IRQ_HANDLED;
 }
 
-static int atmci_init_slot(struct atmel_mci *host,
+static int __init atmci_init_slot(struct atmel_mci *host,
 		struct mci_slot_pdata *slot_data, unsigned int id,
 		u32 sdc_reg, u32 sdio_irq)
 {
@@ -2203,8 +2201,7 @@ static int atmci_init_slot(struct atmel_mci *host,
 	/* Assume card is present initially */
 	set_bit(ATMCI_CARD_PRESENT, &slot->flags);
 	if (gpio_is_valid(slot->detect_pin)) {
-		if (devm_gpio_request(&host->pdev->dev, slot->detect_pin,
-				      "mmc_detect")) {
+		if (gpio_request(slot->detect_pin, "mmc_detect")) {
 			dev_dbg(&mmc->class_dev, "no detect pin available\n");
 			slot->detect_pin = -EBUSY;
 		} else if (gpio_get_value(slot->detect_pin) ^
@@ -2213,16 +2210,11 @@ static int atmci_init_slot(struct atmel_mci *host,
 		}
 	}
 
-	if (!gpio_is_valid(slot->detect_pin)) {
-		if (slot_data->non_removable)
-			mmc->caps |= MMC_CAP_NONREMOVABLE;
-		else
-			mmc->caps |= MMC_CAP_NEEDS_POLL;
-	}
+	if (!gpio_is_valid(slot->detect_pin))
+		mmc->caps |= MMC_CAP_NEEDS_POLL;
 
 	if (gpio_is_valid(slot->wp_pin)) {
-		if (devm_gpio_request(&host->pdev->dev, slot->wp_pin,
-				      "mmc_wp")) {
+		if (gpio_request(slot->wp_pin, "mmc_wp")) {
 			dev_dbg(&mmc->class_dev, "no WP pin available\n");
 			slot->wp_pin = -EBUSY;
 		}
@@ -2246,6 +2238,7 @@ static int atmci_init_slot(struct atmel_mci *host,
 			dev_dbg(&mmc->class_dev,
 				"could not request IRQ %d for detect pin\n",
 				gpio_to_irq(slot->detect_pin));
+			gpio_free(slot->detect_pin);
 			slot->detect_pin = -EBUSY;
 		}
 	}
@@ -2255,7 +2248,7 @@ static int atmci_init_slot(struct atmel_mci *host,
 	return 0;
 }
 
-static void atmci_cleanup_slot(struct atmel_mci_slot *slot,
+static void __exit atmci_cleanup_slot(struct atmel_mci_slot *slot,
 		unsigned int id)
 {
 	/* Debugfs stuff is cleaned up by mmc core */
@@ -2270,31 +2263,64 @@ static void atmci_cleanup_slot(struct atmel_mci_slot *slot,
 
 		free_irq(gpio_to_irq(pin), slot);
 		del_timer_sync(&slot->detect_timer);
+		gpio_free(pin);
 	}
+	if (gpio_is_valid(slot->wp_pin))
+		gpio_free(slot->wp_pin);
 
 	slot->host->slot[id] = NULL;
 	mmc_free_host(slot->mmc);
 }
 
-static int atmci_configure_dma(struct atmel_mci *host)
+static bool atmci_filter(struct dma_chan *chan, void *pdata)
 {
-	host->dma.chan = dma_request_slave_channel_reason(&host->pdev->dev,
-							"rxtx");
-	if (IS_ERR(host->dma.chan))
-		return PTR_ERR(host->dma.chan);
+	struct mci_platform_data *sl_pdata = pdata;
+	struct mci_dma_data *sl;
 
-	dev_info(&host->pdev->dev, "using %s for DMA transfers\n",
-		 dma_chan_name(host->dma.chan));
+	if (!sl_pdata)
+		return false;
 
-	host->dma_conf.src_addr = host->mapbase + ATMCI_RDR;
-	host->dma_conf.src_addr_width = DMA_SLAVE_BUSWIDTH_4_BYTES;
-	host->dma_conf.src_maxburst = 1;
-	host->dma_conf.dst_addr = host->mapbase + ATMCI_TDR;
-	host->dma_conf.dst_addr_width = DMA_SLAVE_BUSWIDTH_4_BYTES;
-	host->dma_conf.dst_maxburst = 1;
-	host->dma_conf.device_fc = false;
+	sl = sl_pdata->dma_slave;
+	if (sl && find_slave_dev(sl) == chan->device->dev) {
+		chan->private = slave_data_ptr(sl);
+		return true;
+	} else {
+		return false;
+	}
+}
 
-	return 0;
+static bool atmci_configure_dma(struct atmel_mci *host)
+{
+	struct mci_platform_data	*pdata;
+	dma_cap_mask_t mask;
+
+	if (host == NULL)
+		return false;
+
+	pdata = host->pdev->dev.platform_data;
+
+	dma_cap_zero(mask);
+	dma_cap_set(DMA_SLAVE, mask);
+
+	host->dma.chan = dma_request_slave_channel_compat(mask, atmci_filter, pdata,
+							  &host->pdev->dev, "rxtx");
+	if (!host->dma.chan) {
+		dev_warn(&host->pdev->dev, "no DMA channel available\n");
+		return false;
+	} else {
+		dev_info(&host->pdev->dev,
+					"using %s for DMA transfers\n",
+					dma_chan_name(host->dma.chan));
+
+		host->dma_conf.src_addr = host->mapbase + ATMCI_RDR;
+		host->dma_conf.src_addr_width = DMA_SLAVE_BUSWIDTH_4_BYTES;
+		host->dma_conf.src_maxburst = 1;
+		host->dma_conf.dst_addr = host->mapbase + ATMCI_TDR;
+		host->dma_conf.dst_addr_width = DMA_SLAVE_BUSWIDTH_4_BYTES;
+		host->dma_conf.dst_maxburst = 1;
+		host->dma_conf.device_fc = false;
+		return true;
+	}
 }
 
 /*
@@ -2302,7 +2328,7 @@ static int atmci_configure_dma(struct atmel_mci *host)
  * HSMCI provides DMA support and a new config register but no more supports
  * PDC.
  */
-static void atmci_get_cap(struct atmel_mci *host)
+static void __init atmci_get_cap(struct atmel_mci *host)
 {
 	unsigned int version;
 
@@ -2324,7 +2350,6 @@ static void atmci_get_cap(struct atmel_mci *host)
 
 	/* keep only major version number */
 	switch (version & 0xf00) {
-	case 0x600:
 	case 0x500:
 		host->caps.has_odd_clk_div = 1;
 	case 0x400:
@@ -2351,14 +2376,14 @@ static void atmci_get_cap(struct atmel_mci *host)
 	}
 }
 
-static int atmci_probe(struct platform_device *pdev)
+static int __init atmci_probe(struct platform_device *pdev)
 {
 	struct mci_platform_data	*pdata;
 	struct atmel_mci		*host;
 	struct resource			*regs;
 	unsigned int			nr_slots;
 	int				irq;
-	int				ret, i;
+	int				ret;
 
 	regs = platform_get_resource(pdev, IORESOURCE_MEM, 0);
 	if (!regs)
@@ -2376,7 +2401,7 @@ static int atmci_probe(struct platform_device *pdev)
 	if (irq < 0)
 		return irq;
 
-	host = devm_kzalloc(&pdev->dev, sizeof(*host), GFP_KERNEL);
+	host = kzalloc(sizeof(struct atmel_mci), GFP_KERNEL);
 	if (!host)
 		return -ENOMEM;
 
@@ -2384,37 +2409,35 @@ static int atmci_probe(struct platform_device *pdev)
 	spin_lock_init(&host->lock);
 	INIT_LIST_HEAD(&host->queue);
 
-	host->mck = devm_clk_get(&pdev->dev, "mci_clk");
-	if (IS_ERR(host->mck))
-		return PTR_ERR(host->mck);
+	host->mck = clk_get(&pdev->dev, "mci_clk");
+	if (IS_ERR(host->mck)) {
+		ret = PTR_ERR(host->mck);
+		goto err_clk_get;
+	}
 
-	host->regs = devm_ioremap(&pdev->dev, regs->start, resource_size(regs));
+	ret = -ENOMEM;
+	host->regs = ioremap(regs->start, resource_size(regs));
 	if (!host->regs)
-		return -ENOMEM;
+		goto err_ioremap;
 
 	ret = clk_prepare_enable(host->mck);
 	if (ret)
-		return ret;
-
+		goto err_request_irq;
 	atmci_writel(host, ATMCI_CR, ATMCI_CR_SWRST);
 	host->bus_hz = clk_get_rate(host->mck);
+	clk_disable_unprepare(host->mck);
 
 	host->mapbase = regs->start;
 
 	tasklet_init(&host->tasklet, atmci_tasklet_func, (unsigned long)host);
 
 	ret = request_irq(irq, atmci_interrupt, 0, dev_name(&pdev->dev), host);
-	if (ret) {
-		clk_disable_unprepare(host->mck);
-		return ret;
-	}
+	if (ret)
+		goto err_request_irq;
 
 	/* Get MCI capabilities and set operations according to it */
 	atmci_get_cap(host);
-	ret = atmci_configure_dma(host);
-	if (ret == -EPROBE_DEFER)
-		goto err_dma_probe_defer;
-	if (ret == 0) {
+	if (atmci_configure_dma(host)) {
 		host->prepare_data = &atmci_prepare_data_dma;
 		host->submit_data = &atmci_submit_data_dma;
 		host->stop_transfer = &atmci_stop_transfer_dma;
@@ -2433,12 +2456,6 @@ static int atmci_probe(struct platform_device *pdev)
 	platform_set_drvdata(pdev, host);
 
 	setup_timer(&host->timer, atmci_timeout_timer, (unsigned long)host);
-
-	pm_runtime_get_noresume(&pdev->dev);
-	pm_runtime_set_active(&pdev->dev);
-	pm_runtime_set_autosuspend_delay(&pdev->dev, AUTOSUSPEND_DELAY);
-	pm_runtime_use_autosuspend(&pdev->dev);
-	pm_runtime_enable(&pdev->dev);
 
 	/* We need at least one slot to succeed */
 	nr_slots = 0;
@@ -2474,7 +2491,7 @@ static int atmci_probe(struct platform_device *pdev)
 		if (!host->buffer) {
 			ret = -ENOMEM;
 			dev_err(&pdev->dev, "buffer allocation failed\n");
-			goto err_dma_alloc;
+			goto err_init_slot;
 		}
 	}
 
@@ -2482,36 +2499,25 @@ static int atmci_probe(struct platform_device *pdev)
 			"Atmel MCI controller at 0x%08lx irq %d, %u slots\n",
 			host->mapbase, irq, nr_slots);
 
-	pm_runtime_mark_last_busy(&host->pdev->dev);
-	pm_runtime_put_autosuspend(&pdev->dev);
-
 	return 0;
 
-err_dma_alloc:
-	for (i = 0; i < ATMCI_MAX_NR_SLOTS; i++) {
-		if (host->slot[i])
-			atmci_cleanup_slot(host->slot[i], i);
-	}
 err_init_slot:
-	clk_disable_unprepare(host->mck);
-
-	pm_runtime_disable(&pdev->dev);
-	pm_runtime_put_noidle(&pdev->dev);
-
-	del_timer_sync(&host->timer);
-	if (!IS_ERR(host->dma.chan))
+	if (host->dma.chan)
 		dma_release_channel(host->dma.chan);
-err_dma_probe_defer:
 	free_irq(irq, host);
+err_request_irq:
+	iounmap(host->regs);
+err_ioremap:
+	clk_put(host->mck);
+err_clk_get:
+	kfree(host);
 	return ret;
 }
 
-static int atmci_remove(struct platform_device *pdev)
+static int __exit atmci_remove(struct platform_device *pdev)
 {
 	struct atmel_mci	*host = platform_get_drvdata(pdev);
 	unsigned int		i;
-
-	pm_runtime_get_sync(&pdev->dev);
 
 	if (host->buffer)
 		dma_free_coherent(&pdev->dev, host->buf_size,
@@ -2522,62 +2528,44 @@ static int atmci_remove(struct platform_device *pdev)
 			atmci_cleanup_slot(host->slot[i], i);
 	}
 
+	clk_prepare_enable(host->mck);
 	atmci_writel(host, ATMCI_IDR, ~0UL);
 	atmci_writel(host, ATMCI_CR, ATMCI_CR_MCIDIS);
 	atmci_readl(host, ATMCI_SR);
+	clk_disable_unprepare(host->mck);
 
-	del_timer_sync(&host->timer);
-	if (!IS_ERR(host->dma.chan))
+	if (host->dma.chan)
 		dma_release_channel(host->dma.chan);
 
 	free_irq(platform_get_irq(pdev, 0), host);
+	iounmap(host->regs);
 
-	clk_disable_unprepare(host->mck);
-
-	pm_runtime_disable(&pdev->dev);
-	pm_runtime_put_noidle(&pdev->dev);
-
-	return 0;
-}
-
-#ifdef CONFIG_PM
-static int atmci_runtime_suspend(struct device *dev)
-{
-	struct atmel_mci *host = dev_get_drvdata(dev);
-
-	clk_disable_unprepare(host->mck);
-
-	pinctrl_pm_select_sleep_state(dev);
+	clk_put(host->mck);
+	kfree(host);
 
 	return 0;
 }
-
-static int atmci_runtime_resume(struct device *dev)
-{
-	struct atmel_mci *host = dev_get_drvdata(dev);
-
-	pinctrl_pm_select_default_state(dev);
-
-	return clk_prepare_enable(host->mck);
-}
-#endif
-
-static const struct dev_pm_ops atmci_dev_pm_ops = {
-	SET_SYSTEM_SLEEP_PM_OPS(pm_runtime_force_suspend,
-				pm_runtime_force_resume)
-	SET_RUNTIME_PM_OPS(atmci_runtime_suspend, atmci_runtime_resume, NULL)
-};
 
 static struct platform_driver atmci_driver = {
-	.probe		= atmci_probe,
-	.remove		= atmci_remove,
+	.remove		= __exit_p(atmci_remove),
 	.driver		= {
 		.name		= "atmel_mci",
 		.of_match_table	= of_match_ptr(atmci_dt_ids),
-		.pm		= &atmci_dev_pm_ops,
 	},
 };
-module_platform_driver(atmci_driver);
+
+static int __init atmci_init(void)
+{
+	return platform_driver_probe(&atmci_driver, atmci_probe);
+}
+
+static void __exit atmci_exit(void)
+{
+	platform_driver_unregister(&atmci_driver);
+}
+
+late_initcall(atmci_init); /* try to load after dma driver when built-in */
+module_exit(atmci_exit);
 
 MODULE_DESCRIPTION("Atmel Multimedia Card Interface driver");
 MODULE_AUTHOR("Haavard Skinnemoen (Atmel)");

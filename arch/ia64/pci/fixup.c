@@ -5,8 +5,6 @@
 
 #include <linux/pci.h>
 #include <linux/init.h>
-#include <linux/vgaarb.h>
-#include <linux/screen_info.h>
 
 #include <asm/machvec.h>
 
@@ -21,10 +19,9 @@
  * IORESOURCE_ROM_SHADOW is used to associate the boot video
  * card with this copy. On laptops this copy has to be used since
  * the main ROM may be compressed or combined with another image.
- * See pci_map_rom() for use of this flag. Before marking the device
- * with IORESOURCE_ROM_SHADOW check if a vga_default_device is already set
- * by either arch cde or vga-arbitration, if so only apply the fixup to this
- * already determined primary video card.
+ * See pci_map_rom() for use of this flag. IORESOURCE_ROM_SHADOW
+ * is marked here since the boot video device will be the only enabled
+ * video device at this point.
  */
 
 static void pci_fixup_video(struct pci_dev *pdev)
@@ -38,6 +35,9 @@ static void pci_fixup_video(struct pci_dev *pdev)
 		return;
 	/* Maybe, this machine supports legacy memory map. */
 
+	if ((pdev->class >> 8) != PCI_CLASS_DISPLAY_VGA)
+		return;
+
 	/* Is VGA routed to us? */
 	bus = pdev->bus;
 	while (bus) {
@@ -50,7 +50,9 @@ static void pci_fixup_video(struct pci_dev *pdev)
 		 * type BRIDGE, or CARDBUS. Host to PCI controllers use
 		 * PCI header type NORMAL.
 		 */
-		if (bridge && (pci_is_bridge(bridge))) {
+		if (bridge
+		    &&((bridge->hdr_type == PCI_HEADER_TYPE_BRIDGE)
+		       ||(bridge->hdr_type == PCI_HEADER_TYPE_CARDBUS))) {
 			pci_read_config_word(bridge, PCI_BRIDGE_CONTROL,
 						&config);
 			if (!(config & PCI_BRIDGE_CTL_VGA))
@@ -58,13 +60,10 @@ static void pci_fixup_video(struct pci_dev *pdev)
 		}
 		bus = bus->parent;
 	}
-	if (!vga_default_device() || pdev == vga_default_device()) {
-		pci_read_config_word(pdev, PCI_COMMAND, &config);
-		if (config & (PCI_COMMAND_IO | PCI_COMMAND_MEMORY)) {
-			pdev->resource[PCI_ROM_RESOURCE].flags |= IORESOURCE_ROM_SHADOW;
-			dev_printk(KERN_DEBUG, &pdev->dev, "Video device with shadowed ROM\n");
-		}
+	pci_read_config_word(pdev, PCI_COMMAND, &config);
+	if (config & (PCI_COMMAND_IO | PCI_COMMAND_MEMORY)) {
+		pdev->resource[PCI_ROM_RESOURCE].flags |= IORESOURCE_ROM_SHADOW;
+		dev_printk(KERN_DEBUG, &pdev->dev, "Boot video device\n");
 	}
 }
-DECLARE_PCI_FIXUP_CLASS_FINAL(PCI_ANY_ID, PCI_ANY_ID,
-				PCI_CLASS_DISPLAY_VGA, 8, pci_fixup_video);
+DECLARE_PCI_FIXUP_HEADER(PCI_ANY_ID, PCI_ANY_ID, pci_fixup_video);

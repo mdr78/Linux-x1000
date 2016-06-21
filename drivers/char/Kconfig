@@ -6,15 +6,6 @@ menu "Character devices"
 
 source "drivers/tty/Kconfig"
 
-config DEVMEM
-	bool "/dev/mem virtual device support"
-	default y
-	help
-	  Say Y here if you want to support the /dev/mem device.
-	  The /dev/mem device is used to access areas of physical
-	  memory.
-	  When in doubt, say "Y".
-
 config DEVKMEM
 	bool "/dev/kmem virtual device support"
 	default y
@@ -49,7 +40,7 @@ config SGI_MBCS
 source "drivers/tty/serial/Kconfig"
 
 config TTY_PRINTK
-	tristate "TTY driver to output user messages via printk"
+	bool "TTY driver to output user messages via printk"
 	depends on EXPERT && TTY
 	default n
 	---help---
@@ -417,7 +408,7 @@ config APPLICOM
 
 config SONYPI
 	tristate "Sony Vaio Programmable I/O Control Device support"
-	depends on X86_32 && PCI && INPUT
+	depends on X86 && PCI && INPUT && !64BIT
 	---help---
 	  This driver enables access to the Sony Programmable I/O Control
 	  Device which can be found in many (all ?) Sony Vaio laptops.
@@ -590,6 +581,14 @@ config DEVPORT
 
 source "drivers/s390/char/Kconfig"
 
+config MSM_SMD_PKT
+	bool "Enable device interface for some SMD packet ports"
+	default n
+	depends on MSM_SMD
+	help
+	  Enables userspace clients to read and write to some packet SMD
+	  ports via device interface for MSM chipset.
+
 config TILE_SROM
 	bool "Character-device access via hypervisor to the Tilera SPI ROM"
 	depends on TILE
@@ -600,8 +599,6 @@ config TILE_SROM
 	  in /dev/srom/.  The Tilera hypervisor makes the flash
 	  device appear much like a simple EEPROM, and knows
 	  how to partition a single ROM for multiple purposes.
-
-source "drivers/char/xillybus/Kconfig"
 
 endmenu
 

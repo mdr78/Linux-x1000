@@ -151,7 +151,14 @@ static const struct snd_pcm_hardware fsl_dma_hardware = {
  */
 static void fsl_dma_abort_stream(struct snd_pcm_substream *substream)
 {
-	snd_pcm_stop_xrun(substream);
+	unsigned long flags;
+
+	snd_pcm_stream_lock_irqsave(substream, flags);
+
+	if (snd_pcm_running(substream))
+		snd_pcm_stop(substream, SNDRV_PCM_STATE_XRUN);
+
+	snd_pcm_stream_unlock_irqrestore(substream, flags);
 }
 
 /**
@@ -445,7 +452,7 @@ static int fsl_dma_open(struct snd_pcm_substream *substream)
 		return ret;
 	}
 
-	dma->assigned = true;
+	dma->assigned = 1;
 
 	snd_pcm_set_runtime_buffer(substream, &substream->dma_buffer);
 	snd_soc_set_runtime_hwparams(substream, &fsl_dma_hardware);
@@ -814,7 +821,7 @@ static int fsl_dma_close(struct snd_pcm_substream *substream)
 		substream->runtime->private_data = NULL;
 	}
 
-	dma->assigned = false;
+	dma->assigned = 0;
 
 	return 0;
 }
@@ -916,8 +923,8 @@ static int fsl_soc_dma_probe(struct platform_device *pdev)
 	dma->dai.pcm_free = fsl_dma_free_dma_buffers;
 
 	/* Store the SSI-specific information that we need */
-	dma->ssi_stx_phys = res.start + CCSR_SSI_STX0;
-	dma->ssi_srx_phys = res.start + CCSR_SSI_SRX0;
+	dma->ssi_stx_phys = res.start + offsetof(struct ccsr_ssi, stx0);
+	dma->ssi_srx_phys = res.start + offsetof(struct ccsr_ssi, srx0);
 
 	iprop = of_get_property(ssi_np, "fsl,fifo-depth", NULL);
 	if (iprop)
@@ -964,6 +971,7 @@ MODULE_DEVICE_TABLE(of, fsl_soc_dma_ids);
 static struct platform_driver fsl_soc_dma_driver = {
 	.driver = {
 		.name = "fsl-pcm-audio",
+		.owner = THIS_MODULE,
 		.of_match_table = fsl_soc_dma_ids,
 	},
 	.probe = fsl_soc_dma_probe,

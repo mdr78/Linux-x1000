@@ -1,7 +1,7 @@
 /*
  * Marvell Wireless LAN device driver: functions for station ioctl
  *
- * Copyright (C) 2011-2014, Marvell International Ltd.
+ * Copyright (C) 2011, Marvell International Ltd.
  *
  * This software file (the "File") is distributed by Marvell International
  * Ltd. under the terms of the GNU General Public License Version 2, June 1991
@@ -26,7 +26,7 @@
 #include "11n.h"
 #include "cfg80211.h"
 
-static int disconnect_on_suspend;
+static int disconnect_on_suspend = 1;
 module_param(disconnect_on_suspend, int, 0644);
 
 /*
@@ -60,15 +60,10 @@ int mwifiex_wait_queue_complete(struct mwifiex_adapter *adapter,
 	int status;
 
 	/* Wait for completion */
-	status = wait_event_interruptible_timeout(adapter->cmd_wait_q.wait,
-						  *(cmd_queued->condition),
-						  (12 * HZ));
-	if (status <= 0) {
-		if (status == 0)
-			status = -ETIMEDOUT;
-		mwifiex_dbg(adapter, ERROR, "cmd_wait_q terminated: %d\n",
-			    status);
-		mwifiex_cancel_all_pending_cmd(adapter);
+	status = wait_event_interruptible(adapter->cmd_wait_q.wait,
+					  *(cmd_queued->condition));
+	if (status) {
+		dev_err(adapter->dev, "cmd_wait_q terminated: %d\n", status);
 		return status;
 	}
 
@@ -94,8 +89,7 @@ int mwifiex_request_set_multicast_list(struct mwifiex_private *priv,
 	old_pkt_filter = priv->curr_pkt_filter;
 
 	if (mcast_list->mode == MWIFIEX_PROMISC_MODE) {
-		mwifiex_dbg(priv->adapter, INFO,
-			    "info: Enable Promiscuous mode\n");
+		dev_dbg(priv->adapter->dev, "info: Enable Promiscuous mode\n");
 		priv->curr_pkt_filter |= HostCmd_ACT_MAC_PROMISCUOUS_ENABLE;
 		priv->curr_pkt_filter &=
 			~HostCmd_ACT_MAC_ALL_MULTICAST_ENABLE;
@@ -103,30 +97,30 @@ int mwifiex_request_set_multicast_list(struct mwifiex_private *priv,
 		/* Multicast */
 		priv->curr_pkt_filter &= ~HostCmd_ACT_MAC_PROMISCUOUS_ENABLE;
 		if (mcast_list->mode == MWIFIEX_ALL_MULTI_MODE) {
-			mwifiex_dbg(priv->adapter, INFO,
-				    "info: Enabling All Multicast!\n");
+			dev_dbg(priv->adapter->dev,
+				"info: Enabling All Multicast!\n");
 			priv->curr_pkt_filter |=
 				HostCmd_ACT_MAC_ALL_MULTICAST_ENABLE;
 		} else {
 			priv->curr_pkt_filter &=
 				~HostCmd_ACT_MAC_ALL_MULTICAST_ENABLE;
-			mwifiex_dbg(priv->adapter, INFO,
-				    "info: Set multicast list=%d\n",
-				    mcast_list->num_multicast_addr);
+			dev_dbg(priv->adapter->dev,
+				"info: Set multicast list=%d\n",
+				mcast_list->num_multicast_addr);
 			/* Send multicast addresses to firmware */
-			ret = mwifiex_send_cmd(priv,
-					       HostCmd_CMD_MAC_MULTICAST_ADR,
-					       HostCmd_ACT_GEN_SET, 0,
-					       mcast_list, false);
+			ret = mwifiex_send_cmd_async(priv,
+				HostCmd_CMD_MAC_MULTICAST_ADR,
+				HostCmd_ACT_GEN_SET, 0,
+				mcast_list);
 		}
 	}
-	mwifiex_dbg(priv->adapter, INFO,
-		    "info: old_pkt_filter=%#x, curr_pkt_filter=%#x\n",
-		    old_pkt_filter, priv->curr_pkt_filter);
+	dev_dbg(priv->adapter->dev,
+		"info: old_pkt_filter=%#x, curr_pkt_filter=%#x\n",
+	       old_pkt_filter, priv->curr_pkt_filter);
 	if (old_pkt_filter != priv->curr_pkt_filter) {
-		ret = mwifiex_send_cmd(priv, HostCmd_CMD_MAC_CONTROL,
-				       HostCmd_ACT_GEN_SET,
-				       0, &priv->curr_pkt_filter, false);
+		ret = mwifiex_send_cmd_async(priv, HostCmd_CMD_MAC_CONTROL,
+					     HostCmd_ACT_GEN_SET,
+					     0, &priv->curr_pkt_filter);
 	}
 
 	return ret;
@@ -155,8 +149,7 @@ int mwifiex_fill_new_bss_desc(struct mwifiex_private *priv,
 	rcu_read_unlock();
 
 	if (!beacon_ie) {
-		mwifiex_dbg(priv->adapter, ERROR,
-			    " failed to alloc beacon_ie\n");
+		dev_err(priv->adapter->dev, " failed to alloc beacon_ie\n");
 		return -ENOMEM;
 	}
 
@@ -170,8 +163,7 @@ int mwifiex_fill_new_bss_desc(struct mwifiex_private *priv,
 	bss_desc->bss_band = bss_priv->band;
 	bss_desc->fw_tsf = bss_priv->fw_tsf;
 	if (bss_desc->cap_info_bitmap & WLAN_CAPABILITY_PRIVACY) {
-		mwifiex_dbg(priv->adapter, INFO,
-			    "info: InterpretIE: AP WEP enabled\n");
+		dev_dbg(priv->adapter->dev, "info: InterpretIE: AP WEP enabled\n");
 		bss_desc->privacy = MWIFIEX_802_11_PRIV_FILTER_8021X_WEP;
 	} else {
 		bss_desc->privacy = MWIFIEX_802_11_PRIV_FILTER_ACCEPT_ALL;
@@ -225,8 +217,8 @@ static int mwifiex_process_country_ie(struct mwifiex_private *priv,
 
 	if (!strncmp(priv->adapter->country_code, &country_ie[2], 2)) {
 		rcu_read_unlock();
-		mwifiex_dbg(priv->adapter, INFO,
-			    "11D: skip setting domain info in FW\n");
+		wiphy_dbg(priv->wdev->wiphy,
+			  "11D: skip setting domain info in FW\n");
 		return 0;
 	}
 	memcpy(priv->adapter->country_code, &country_ie[2], 2);
@@ -245,10 +237,10 @@ static int mwifiex_process_country_ie(struct mwifiex_private *priv,
 
 	rcu_read_unlock();
 
-	if (mwifiex_send_cmd(priv, HostCmd_CMD_802_11D_DOMAIN_INFO,
-			     HostCmd_ACT_GEN_SET, 0, NULL, false)) {
-		mwifiex_dbg(priv->adapter, ERROR,
-			    "11D: setting domain info in FW fail\n");
+	if (mwifiex_send_cmd_async(priv, HostCmd_CMD_802_11D_DOMAIN_INFO,
+				   HostCmd_ACT_GEN_SET, 0, NULL)) {
+		wiphy_err(priv->adapter->wiphy,
+			  "11D: setting domain info in FW\n");
 		return -1;
 	}
 
@@ -289,17 +281,18 @@ int mwifiex_bss_start(struct mwifiex_private *priv, struct cfg80211_bss *bss,
 	    priv->bss_mode == NL80211_IFTYPE_P2P_CLIENT) {
 		u8 config_bands;
 
+		ret = mwifiex_deauthenticate(priv, NULL);
+		if (ret)
+			goto done;
+
 		if (!bss_desc)
 			return -1;
 
 		if (mwifiex_band_to_radio_type(bss_desc->bss_band) ==
-						HostCmd_SCAN_RADIO_TYPE_BG) {
-			config_bands = BAND_B | BAND_G | BAND_GN;
-		} else {
-			config_bands = BAND_A | BAND_AN;
-			if (adapter->fw_bands & BAND_AAC)
-				config_bands |= BAND_AAC;
-		}
+						HostCmd_SCAN_RADIO_TYPE_BG)
+			config_bands = BAND_B | BAND_G | BAND_GN | BAND_GAC;
+		else
+			config_bands = BAND_A | BAND_AN | BAND_AAC;
 
 		if (!((config_bands | adapter->fw_bands) & ~adapter->fw_bands))
 			adapter->config_bands = config_bands;
@@ -310,15 +303,14 @@ int mwifiex_bss_start(struct mwifiex_private *priv, struct cfg80211_bss *bss,
 
 		if (mwifiex_11h_get_csa_closed_channel(priv) ==
 							(u8)bss_desc->channel) {
-			mwifiex_dbg(adapter, ERROR,
-				    "Attempt to reconnect on csa closed chan(%d)\n",
-				    bss_desc->channel);
+			dev_err(adapter->dev,
+				"Attempt to reconnect on csa closed chan(%d)\n",
+				bss_desc->channel);
 			goto done;
 		}
 
-		mwifiex_dbg(adapter, INFO,
-			    "info: SSID found in scan list ...\t"
-			    "associating...\n");
+		dev_dbg(adapter->dev, "info: SSID found in scan list ... "
+				      "associating...\n");
 
 		mwifiex_stop_net_dev_queue(priv->netdev, adapter);
 		if (netif_carrier_ok(priv->netdev))
@@ -351,6 +343,12 @@ int mwifiex_bss_start(struct mwifiex_private *priv, struct cfg80211_bss *bss,
 			goto done;
 		}
 
+		/* Exit Adhoc mode first */
+		dev_dbg(adapter->dev, "info: Sending Adhoc Stop\n");
+		ret = mwifiex_deauthenticate(priv, NULL);
+		if (ret)
+			goto done;
+
 		priv->adhoc_is_link_sensed = false;
 
 		ret = mwifiex_check_network_compatibility(priv, bss_desc);
@@ -360,17 +358,15 @@ int mwifiex_bss_start(struct mwifiex_private *priv, struct cfg80211_bss *bss,
 			netif_carrier_off(priv->netdev);
 
 		if (!ret) {
-			mwifiex_dbg(adapter, INFO,
-				    "info: network found in scan\t"
-				    " list. Joining...\n");
+			dev_dbg(adapter->dev, "info: network found in scan"
+							" list. Joining...\n");
 			ret = mwifiex_adhoc_join(priv, bss_desc);
 			if (bss)
 				cfg80211_put_bss(priv->adapter->wiphy, bss);
 		} else {
-			mwifiex_dbg(adapter, INFO,
-				    "info: Network not found in\t"
-				    "the list, creating adhoc with ssid = %s\n",
-				    req_ssid->ssid);
+			dev_dbg(adapter->dev, "info: Network not found in "
+				"the list, creating adhoc with ssid = %s\n",
+				req_ssid->ssid);
 			ret = mwifiex_adhoc_start(priv, req_ssid);
 		}
 	}
@@ -391,8 +387,8 @@ done:
  * This function prepares the correct firmware command and
  * issues it.
  */
-int mwifiex_set_hs_params(struct mwifiex_private *priv, u16 action,
-			  int cmd_type, struct mwifiex_ds_hs_cfg *hs_cfg)
+static int mwifiex_set_hs_params(struct mwifiex_private *priv, u16 action,
+				 int cmd_type, struct mwifiex_ds_hs_cfg *hs_cfg)
 
 {
 	struct mwifiex_adapter *adapter = priv->adapter;
@@ -405,9 +401,8 @@ int mwifiex_set_hs_params(struct mwifiex_private *priv, u16 action,
 	switch (action) {
 	case HostCmd_ACT_GEN_SET:
 		if (adapter->pps_uapsd_mode) {
-			mwifiex_dbg(adapter, INFO,
-				    "info: Host Sleep IOCTL\t"
-				    "is blocked in UAPSD/PPS mode\n");
+			dev_dbg(adapter->dev, "info: Host Sleep IOCTL"
+				" is blocked in UAPSD/PPS mode\n");
 			status = -1;
 			break;
 		}
@@ -434,13 +429,16 @@ int mwifiex_set_hs_params(struct mwifiex_private *priv, u16 action,
 				status = -1;
 				break;
 			}
-
-			status = mwifiex_send_cmd(priv,
-						  HostCmd_CMD_802_11_HS_CFG_ENH,
-						  HostCmd_ACT_GEN_SET, 0,
-						  &adapter->hs_cfg,
-						  cmd_type == MWIFIEX_SYNC_CMD);
-
+			if (cmd_type == MWIFIEX_SYNC_CMD)
+				status = mwifiex_send_cmd_sync(priv,
+						HostCmd_CMD_802_11_HS_CFG_ENH,
+						HostCmd_ACT_GEN_SET, 0,
+						&adapter->hs_cfg);
+			else
+				status = mwifiex_send_cmd_async(priv,
+						HostCmd_CMD_802_11_HS_CFG_ENH,
+						HostCmd_ACT_GEN_SET, 0,
+						&adapter->hs_cfg);
 			if (hs_cfg->conditions == HS_CFG_CANCEL)
 				/* Restore previous condition */
 				adapter->hs_cfg.conditions =
@@ -504,8 +502,7 @@ int mwifiex_enable_hs(struct mwifiex_adapter *adapter)
 	}
 
 	if (adapter->hs_activated) {
-		mwifiex_dbg(adapter, CMD,
-			    "cmd: HS Already activated\n");
+		dev_dbg(adapter->dev, "cmd: HS Already activated\n");
 		return true;
 	}
 
@@ -514,23 +511,17 @@ int mwifiex_enable_hs(struct mwifiex_adapter *adapter)
 	memset(&hscfg, 0, sizeof(struct mwifiex_ds_hs_cfg));
 	hscfg.is_invoke_hostcmd = true;
 
-	adapter->hs_enabling = true;
-	mwifiex_cancel_all_pending_cmd(adapter);
-
 	if (mwifiex_set_hs_params(mwifiex_get_priv(adapter,
 						   MWIFIEX_BSS_ROLE_STA),
 				  HostCmd_ACT_GEN_SET, MWIFIEX_SYNC_CMD,
 				  &hscfg)) {
-		mwifiex_dbg(adapter, ERROR,
-			    "IOCTL request HS enable failed\n");
+		dev_err(adapter->dev, "IOCTL request HS enable failed\n");
 		return false;
 	}
 
-	if (wait_event_interruptible_timeout(adapter->hs_activate_wait_q,
-					     adapter->hs_activate_wait_q_woken,
-					     (10 * HZ)) <= 0) {
-		mwifiex_dbg(adapter, ERROR,
-			    "hs_activate_wait_q terminated\n");
+	if (wait_event_interruptible(adapter->hs_activate_wait_q,
+				     adapter->hs_activate_wait_q_woken)) {
+		dev_err(adapter->dev, "hs_activate_wait_q terminated\n");
 		return false;
 	}
 
@@ -595,8 +586,8 @@ int mwifiex_disable_auto_ds(struct mwifiex_private *priv)
 
 	auto_ds.auto_ds = DEEP_SLEEP_OFF;
 
-	return mwifiex_send_cmd(priv, HostCmd_CMD_802_11_PS_MODE_ENH,
-				DIS_AUTO_PS, BITMAP_AUTO_DS, &auto_ds, true);
+	return mwifiex_send_cmd_sync(priv, HostCmd_CMD_802_11_PS_MODE_ENH,
+				     DIS_AUTO_PS, BITMAP_AUTO_DS, &auto_ds);
 }
 EXPORT_SYMBOL_GPL(mwifiex_disable_auto_ds);
 
@@ -610,8 +601,8 @@ int mwifiex_drv_get_data_rate(struct mwifiex_private *priv, u32 *rate)
 {
 	int ret;
 
-	ret = mwifiex_send_cmd(priv, HostCmd_CMD_802_11_TX_RATE_QUERY,
-			       HostCmd_ACT_GEN_GET, 0, NULL, true);
+	ret = mwifiex_send_cmd_sync(priv, HostCmd_CMD_802_11_TX_RATE_QUERY,
+				    HostCmd_ACT_GEN_GET, 0, NULL);
 
 	if (!ret) {
 		if (priv->is_data_rate_auto)
@@ -650,11 +641,10 @@ int mwifiex_set_tx_power(struct mwifiex_private *priv,
 		dbm = (u16) power_cfg->power_level;
 		if ((dbm < priv->min_tx_power_level) ||
 		    (dbm > priv->max_tx_power_level)) {
-			mwifiex_dbg(priv->adapter, ERROR,
-				    "txpower value %d dBm\t"
-				    "is out of range (%d dBm-%d dBm)\n",
-				    dbm, priv->min_tx_power_level,
-				    priv->max_tx_power_level);
+			dev_err(priv->adapter->dev, "txpower value %d dBm"
+				" is out of range (%d dBm-%d dBm)\n",
+				dbm, priv->min_tx_power_level,
+				priv->max_tx_power_level);
 			return -1;
 		}
 	}
@@ -708,8 +698,8 @@ int mwifiex_set_tx_power(struct mwifiex_private *priv,
 		pg->power_max = (s8) dbm;
 		pg->ht_bandwidth = HT_BW_40;
 	}
-	ret = mwifiex_send_cmd(priv, HostCmd_CMD_TXPWR_CFG,
-			       HostCmd_ACT_GEN_SET, 0, buf, true);
+	ret = mwifiex_send_cmd_sync(priv, HostCmd_CMD_TXPWR_CFG,
+				    HostCmd_ACT_GEN_SET, 0, buf);
 
 	kfree(buf);
 	return ret;
@@ -732,11 +722,12 @@ int mwifiex_drv_set_power(struct mwifiex_private *priv, u32 *ps_mode)
 	else
 		adapter->ps_mode = MWIFIEX_802_11_POWER_MODE_CAM;
 	sub_cmd = (*ps_mode) ? EN_AUTO_PS : DIS_AUTO_PS;
-	ret = mwifiex_send_cmd(priv, HostCmd_CMD_802_11_PS_MODE_ENH,
-			       sub_cmd, BITMAP_STA_PS, NULL, true);
+	ret = mwifiex_send_cmd_sync(priv, HostCmd_CMD_802_11_PS_MODE_ENH,
+				    sub_cmd, BITMAP_STA_PS, NULL);
 	if ((!ret) && (sub_cmd == DIS_AUTO_PS))
-		ret = mwifiex_send_cmd(priv, HostCmd_CMD_802_11_PS_MODE_ENH,
-				       GET_PS, 0, NULL, false);
+		ret = mwifiex_send_cmd_async(priv,
+					     HostCmd_CMD_802_11_PS_MODE_ENH,
+					     GET_PS, 0, NULL);
 
 	return ret;
 }
@@ -753,15 +744,14 @@ static int mwifiex_set_wpa_ie_helper(struct mwifiex_private *priv,
 {
 	if (ie_len) {
 		if (ie_len > sizeof(priv->wpa_ie)) {
-			mwifiex_dbg(priv->adapter, ERROR,
-				    "failed to copy WPA IE, too big\n");
+			dev_err(priv->adapter->dev,
+				"failed to copy WPA IE, too big\n");
 			return -1;
 		}
 		memcpy(priv->wpa_ie, ie_data_ptr, ie_len);
 		priv->wpa_ie_len = (u8) ie_len;
-		mwifiex_dbg(priv->adapter, CMD,
-			    "cmd: Set Wpa_ie_len=%d IE=%#x\n",
-			    priv->wpa_ie_len, priv->wpa_ie[0]);
+		dev_dbg(priv->adapter->dev, "cmd: Set Wpa_ie_len=%d IE=%#x\n",
+			priv->wpa_ie_len, priv->wpa_ie[0]);
 
 		if (priv->wpa_ie[0] == WLAN_EID_VENDOR_SPECIFIC) {
 			priv->sec_info.wpa_enabled = true;
@@ -774,9 +764,8 @@ static int mwifiex_set_wpa_ie_helper(struct mwifiex_private *priv,
 	} else {
 		memset(priv->wpa_ie, 0, sizeof(priv->wpa_ie));
 		priv->wpa_ie_len = 0;
-		mwifiex_dbg(priv->adapter, INFO,
-			    "info: reset wpa_ie_len=%d IE=%#x\n",
-			    priv->wpa_ie_len, priv->wpa_ie[0]);
+		dev_dbg(priv->adapter->dev, "info: reset wpa_ie_len=%d IE=%#x\n",
+			priv->wpa_ie_len, priv->wpa_ie[0]);
 		priv->sec_info.wpa_enabled = false;
 		priv->sec_info.wpa2_enabled = false;
 	}
@@ -796,24 +785,23 @@ static int mwifiex_set_wapi_ie(struct mwifiex_private *priv,
 {
 	if (ie_len) {
 		if (ie_len > sizeof(priv->wapi_ie)) {
-			mwifiex_dbg(priv->adapter, ERROR,
-				    "info: failed to copy WAPI IE, too big\n");
+			dev_dbg(priv->adapter->dev,
+				"info: failed to copy WAPI IE, too big\n");
 			return -1;
 		}
 		memcpy(priv->wapi_ie, ie_data_ptr, ie_len);
 		priv->wapi_ie_len = ie_len;
-		mwifiex_dbg(priv->adapter, CMD,
-			    "cmd: Set wapi_ie_len=%d IE=%#x\n",
-			    priv->wapi_ie_len, priv->wapi_ie[0]);
+		dev_dbg(priv->adapter->dev, "cmd: Set wapi_ie_len=%d IE=%#x\n",
+			priv->wapi_ie_len, priv->wapi_ie[0]);
 
 		if (priv->wapi_ie[0] == WLAN_EID_BSS_AC_ACCESS_DELAY)
 			priv->sec_info.wapi_enabled = true;
 	} else {
 		memset(priv->wapi_ie, 0, sizeof(priv->wapi_ie));
 		priv->wapi_ie_len = ie_len;
-		mwifiex_dbg(priv->adapter, INFO,
-			    "info: Reset wapi_ie_len=%d IE=%#x\n",
-			    priv->wapi_ie_len, priv->wapi_ie[0]);
+		dev_dbg(priv->adapter->dev,
+			"info: Reset wapi_ie_len=%d IE=%#x\n",
+		       priv->wapi_ie_len, priv->wapi_ie[0]);
 		priv->sec_info.wapi_enabled = false;
 	}
 	return 0;
@@ -831,8 +819,8 @@ static int mwifiex_set_wps_ie(struct mwifiex_private *priv,
 {
 	if (ie_len) {
 		if (ie_len > MWIFIEX_MAX_VSIE_LEN) {
-			mwifiex_dbg(priv->adapter, ERROR,
-				    "info: failed to copy WPS IE, too big\n");
+			dev_dbg(priv->adapter->dev,
+				"info: failed to copy WPS IE, too big\n");
 			return -1;
 		}
 
@@ -842,14 +830,13 @@ static int mwifiex_set_wps_ie(struct mwifiex_private *priv,
 
 		memcpy(priv->wps_ie, ie_data_ptr, ie_len);
 		priv->wps_ie_len = ie_len;
-		mwifiex_dbg(priv->adapter, CMD,
-			    "cmd: Set wps_ie_len=%d IE=%#x\n",
-			    priv->wps_ie_len, priv->wps_ie[0]);
+		dev_dbg(priv->adapter->dev, "cmd: Set wps_ie_len=%d IE=%#x\n",
+			priv->wps_ie_len, priv->wps_ie[0]);
 	} else {
 		kfree(priv->wps_ie);
 		priv->wps_ie_len = ie_len;
-		mwifiex_dbg(priv->adapter, INFO,
-			    "info: Reset wps_ie_len=%d\n", priv->wps_ie_len);
+		dev_dbg(priv->adapter->dev,
+			"info: Reset wps_ie_len=%d\n", priv->wps_ie_len);
 	}
 	return 0;
 }
@@ -864,9 +851,9 @@ static int mwifiex_sec_ioctl_set_wapi_key(struct mwifiex_private *priv,
 			       struct mwifiex_ds_encrypt_key *encrypt_key)
 {
 
-	return mwifiex_send_cmd(priv, HostCmd_CMD_802_11_KEY_MATERIAL,
-				HostCmd_ACT_GEN_SET, KEY_INFO_ENABLED,
-				encrypt_key, true);
+	return mwifiex_send_cmd_sync(priv, HostCmd_CMD_802_11_KEY_MATERIAL,
+				     HostCmd_ACT_GEN_SET, KEY_INFO_ENABLED,
+				     encrypt_key);
 }
 
 /*
@@ -878,7 +865,6 @@ static int mwifiex_sec_ioctl_set_wapi_key(struct mwifiex_private *priv,
 static int mwifiex_sec_ioctl_set_wep_key(struct mwifiex_private *priv,
 			      struct mwifiex_ds_encrypt_key *encrypt_key)
 {
-	struct mwifiex_adapter *adapter = priv->adapter;
 	int ret;
 	struct mwifiex_wep_key *wep_key;
 	int index;
@@ -893,17 +879,10 @@ static int mwifiex_sec_ioctl_set_wep_key(struct mwifiex_private *priv,
 		/* Copy the required key as the current key */
 		wep_key = &priv->wep_key[index];
 		if (!wep_key->key_length) {
-			mwifiex_dbg(adapter, ERROR,
-				    "key not set, so cannot enable it\n");
+			dev_err(priv->adapter->dev,
+				"key not set, so cannot enable it\n");
 			return -1;
 		}
-
-		if (adapter->key_api_major_ver == KEY_API_VER_MAJOR_V2) {
-			memcpy(encrypt_key->key_material,
-			       wep_key->key_material, wep_key->key_length);
-			encrypt_key->key_len = wep_key->key_length;
-		}
-
 		priv->wep_key_curr_index = (u16) index;
 		priv->sec_info.wep_enabled = 1;
 	} else {
@@ -918,36 +897,21 @@ static int mwifiex_sec_ioctl_set_wep_key(struct mwifiex_private *priv,
 		priv->sec_info.wep_enabled = 1;
 	}
 	if (wep_key->key_length) {
-		void *enc_key;
-
-		if (encrypt_key->key_disable) {
-			memset(&priv->wep_key[index], 0,
-			       sizeof(struct mwifiex_wep_key));
-			if (wep_key->key_length)
-				goto done;
-			}
-
-		if (adapter->key_api_major_ver == KEY_API_VER_MAJOR_V2)
-			enc_key = encrypt_key;
-		else
-			enc_key = NULL;
-
 		/* Send request to firmware */
-		ret = mwifiex_send_cmd(priv, HostCmd_CMD_802_11_KEY_MATERIAL,
-				       HostCmd_ACT_GEN_SET, 0, enc_key, false);
+		ret = mwifiex_send_cmd_async(priv,
+					     HostCmd_CMD_802_11_KEY_MATERIAL,
+					     HostCmd_ACT_GEN_SET, 0, NULL);
 		if (ret)
 			return ret;
 	}
-
-done:
 	if (priv->sec_info.wep_enabled)
 		priv->curr_pkt_filter |= HostCmd_ACT_MAC_WEP_ENABLE;
 	else
 		priv->curr_pkt_filter &= ~HostCmd_ACT_MAC_WEP_ENABLE;
 
-	ret = mwifiex_send_cmd(priv, HostCmd_CMD_MAC_CONTROL,
-			       HostCmd_ACT_GEN_SET, 0,
-			       &priv->curr_pkt_filter, true);
+	ret = mwifiex_send_cmd_sync(priv, HostCmd_CMD_MAC_CONTROL,
+				    HostCmd_ACT_GEN_SET, 0,
+				    &priv->curr_pkt_filter);
 
 	return ret;
 }
@@ -971,8 +935,7 @@ static int mwifiex_sec_ioctl_set_wpa_key(struct mwifiex_private *priv,
 
 	/* Current driver only supports key length of up to 32 bytes */
 	if (encrypt_key->key_len > WLAN_MAX_KEY_LEN) {
-		mwifiex_dbg(priv->adapter, ERROR,
-			    "key length too long\n");
+		dev_err(priv->adapter->dev, "key length too long\n");
 		return -1;
 	}
 
@@ -983,9 +946,10 @@ static int mwifiex_sec_ioctl_set_wpa_key(struct mwifiex_private *priv,
 		 */
 		/* Send the key as PTK to firmware */
 		encrypt_key->key_index = MWIFIEX_KEY_INDEX_UNICAST;
-		ret = mwifiex_send_cmd(priv, HostCmd_CMD_802_11_KEY_MATERIAL,
-				       HostCmd_ACT_GEN_SET,
-				       KEY_INFO_ENABLED, encrypt_key, false);
+		ret = mwifiex_send_cmd_async(priv,
+					     HostCmd_CMD_802_11_KEY_MATERIAL,
+					     HostCmd_ACT_GEN_SET,
+					     KEY_INFO_ENABLED, encrypt_key);
 		if (ret)
 			return ret;
 
@@ -1009,13 +973,15 @@ static int mwifiex_sec_ioctl_set_wpa_key(struct mwifiex_private *priv,
 		encrypt_key->key_index = MWIFIEX_KEY_INDEX_UNICAST;
 
 	if (remove_key)
-		ret = mwifiex_send_cmd(priv, HostCmd_CMD_802_11_KEY_MATERIAL,
-				       HostCmd_ACT_GEN_SET,
-				       !KEY_INFO_ENABLED, encrypt_key, true);
+		ret = mwifiex_send_cmd_sync(priv,
+					    HostCmd_CMD_802_11_KEY_MATERIAL,
+					    HostCmd_ACT_GEN_SET,
+					    !KEY_INFO_ENABLED, encrypt_key);
 	else
-		ret = mwifiex_send_cmd(priv, HostCmd_CMD_802_11_KEY_MATERIAL,
-				       HostCmd_ACT_GEN_SET,
-				       KEY_INFO_ENABLED, encrypt_key, true);
+		ret = mwifiex_send_cmd_sync(priv,
+					    HostCmd_CMD_802_11_KEY_MATERIAL,
+					    HostCmd_ACT_GEN_SET,
+					    KEY_INFO_ENABLED, encrypt_key);
 
 	return ret;
 }
@@ -1049,17 +1015,17 @@ mwifiex_drv_get_driver_version(struct mwifiex_adapter *adapter, char *version,
 			       int max_len)
 {
 	union {
-		__le32 l;
+		u32 l;
 		u8 c[4];
 	} ver;
 	char fw_ver[32];
 
-	ver.l = cpu_to_le32(adapter->fw_release_number);
+	ver.l = adapter->fw_release_number;
 	sprintf(fw_ver, "%u.%u.%u.p%u", ver.c[2], ver.c[1], ver.c[0], ver.c[3]);
 
 	snprintf(version, max_len, driver_version, fw_ver);
 
-	mwifiex_dbg(adapter, MSG, "info: MWIFIEX VERSION: %s\n", version);
+	dev_dbg(adapter->dev, "info: MWIFIEX VERSION: %s\n", version);
 
 	return 0;
 }
@@ -1078,27 +1044,19 @@ int mwifiex_set_encode(struct mwifiex_private *priv, struct key_params *kp,
 
 	memset(&encrypt_key, 0, sizeof(struct mwifiex_ds_encrypt_key));
 	encrypt_key.key_len = key_len;
-	encrypt_key.key_index = key_index;
 
 	if (kp && kp->cipher == WLAN_CIPHER_SUITE_AES_CMAC)
 		encrypt_key.is_igtk_key = true;
 
 	if (!disable) {
+		encrypt_key.key_index = key_index;
 		if (key_len)
 			memcpy(encrypt_key.key_material, key, key_len);
-		else
-			encrypt_key.is_current_wep_key = true;
-
 		if (mac_addr)
 			memcpy(encrypt_key.mac_addr, mac_addr, ETH_ALEN);
-		if (kp && kp->seq && kp->seq_len) {
+		if (kp && kp->seq && kp->seq_len)
 			memcpy(encrypt_key.pn, kp->seq, kp->seq_len);
-			encrypt_key.pn_len = kp->seq_len;
-			encrypt_key.is_rx_seq_valid = true;
-		}
 	} else {
-		if (GET_BSS_ROLE(priv) == MWIFIEX_BSS_ROLE_UAP)
-			return 0;
 		encrypt_key.key_disable = true;
 		if (mac_addr)
 			memcpy(encrypt_key.mac_addr, mac_addr, ETH_ALEN);
@@ -1119,8 +1077,8 @@ mwifiex_get_ver_ext(struct mwifiex_private *priv)
 	struct mwifiex_ver_ext ver_ext;
 
 	memset(&ver_ext, 0, sizeof(struct host_cmd_ds_version_ext));
-	if (mwifiex_send_cmd(priv, HostCmd_CMD_VERSION_EXT,
-			     HostCmd_ACT_GEN_GET, 0, &ver_ext, true))
+	if (mwifiex_send_cmd_sync(priv, HostCmd_CMD_VERSION_EXT,
+				  HostCmd_ACT_GEN_GET, 0, &ver_ext))
 		return -1;
 
 	return 0;
@@ -1145,14 +1103,43 @@ mwifiex_remain_on_chan_cfg(struct mwifiex_private *priv, u16 action,
 			ieee80211_frequency_to_channel(chan->center_freq);
 		roc_cfg.duration = cpu_to_le32(duration);
 	}
-	if (mwifiex_send_cmd(priv, HostCmd_CMD_REMAIN_ON_CHAN,
-			     action, 0, &roc_cfg, true)) {
-		mwifiex_dbg(priv->adapter, ERROR,
-			    "failed to remain on channel\n");
+	if (mwifiex_send_cmd_sync(priv, HostCmd_CMD_REMAIN_ON_CHAN,
+				  action, 0, &roc_cfg)) {
+		dev_err(priv->adapter->dev, "failed to remain on channel\n");
 		return -1;
 	}
 
 	return roc_cfg.status;
+}
+
+int
+mwifiex_set_bss_role(struct mwifiex_private *priv, u8 bss_role)
+{
+	if (GET_BSS_ROLE(priv) == bss_role) {
+		dev_dbg(priv->adapter->dev,
+			"info: already in the desired role.\n");
+		return 0;
+	}
+
+	mwifiex_free_priv(priv);
+	mwifiex_init_priv(priv);
+
+	priv->bss_role = bss_role;
+	switch (bss_role) {
+	case MWIFIEX_BSS_ROLE_UAP:
+		priv->bss_mode = NL80211_IFTYPE_AP;
+		break;
+	case MWIFIEX_BSS_ROLE_STA:
+	case MWIFIEX_BSS_ROLE_ANY:
+	default:
+		priv->bss_mode = NL80211_IFTYPE_STATION;
+		break;
+	}
+
+	mwifiex_send_cmd_sync(priv, HostCmd_CMD_SET_BSS_MODE,
+			      HostCmd_ACT_GEN_SET, 0, NULL);
+
+	return mwifiex_sta_init_cmd(priv, false);
 }
 
 /*
@@ -1165,8 +1152,8 @@ int
 mwifiex_get_stats_info(struct mwifiex_private *priv,
 		       struct mwifiex_ds_get_stats *log)
 {
-	return mwifiex_send_cmd(priv, HostCmd_CMD_802_11_GET_LOG,
-				HostCmd_ACT_GEN_GET, 0, log, true);
+	return mwifiex_send_cmd_sync(priv, HostCmd_CMD_802_11_GET_LOG,
+				     HostCmd_ACT_GEN_GET, 0, log);
 }
 
 /*
@@ -1208,7 +1195,8 @@ static int mwifiex_reg_mem_ioctl_reg_rw(struct mwifiex_private *priv,
 		return -1;
 	}
 
-	return mwifiex_send_cmd(priv, cmd_no, action, 0, reg_rw, true);
+	return mwifiex_send_cmd_sync(priv, cmd_no, action, 0, reg_rw);
+
 }
 
 /*
@@ -1273,8 +1261,8 @@ mwifiex_eeprom_read(struct mwifiex_private *priv, u16 offset, u16 bytes,
 	rd_eeprom.byte_count = cpu_to_le16((u16) bytes);
 
 	/* Send request to firmware */
-	ret = mwifiex_send_cmd(priv, HostCmd_CMD_802_11_EEPROM_ACCESS,
-			       HostCmd_ACT_GEN_GET, 0, &rd_eeprom, true);
+	ret = mwifiex_send_cmd_sync(priv, HostCmd_CMD_802_11_EEPROM_ACCESS,
+				    HostCmd_ACT_GEN_GET, 0, &rd_eeprom);
 
 	if (!ret)
 		memcpy(value, rd_eeprom.value, MAX_EEPROM_DATA);
@@ -1333,8 +1321,8 @@ mwifiex_set_gen_ie_helper(struct mwifiex_private *priv, u8 *ie_data_ptr,
 		if ((pvendor_ie->element_id == WLAN_EID_VENDOR_SPECIFIC) &&
 		    (!memcmp(pvendor_ie->oui, wps_oui, sizeof(wps_oui)))) {
 			priv->wps.session_enable = true;
-			mwifiex_dbg(priv->adapter, INFO,
-				    "info: WPS Session Enabled.\n");
+			dev_dbg(priv->adapter->dev,
+				"info: WPS Session Enabled.\n");
 			ret = mwifiex_set_wps_ie(priv, ie_data_ptr, ie_len);
 		}
 
@@ -1381,8 +1369,7 @@ static int mwifiex_misc_ioctl_gen_ie(struct mwifiex_private *priv,
 		memset(adapter->arp_filter, 0, sizeof(adapter->arp_filter));
 		if (gen_ie->len > ARP_FILTER_MAX_BUF_SIZE) {
 			adapter->arp_filter_size = 0;
-			mwifiex_dbg(adapter, ERROR,
-				    "invalid ARP filter size\n");
+			dev_err(adapter->dev, "invalid ARP filter size\n");
 			return -1;
 		} else {
 			memcpy(adapter->arp_filter, gen_ie->ie_data,
@@ -1391,7 +1378,7 @@ static int mwifiex_misc_ioctl_gen_ie(struct mwifiex_private *priv,
 		}
 		break;
 	default:
-		mwifiex_dbg(adapter, ERROR, "invalid IE type\n");
+		dev_err(adapter->dev, "invalid IE type\n");
 		return -1;
 	}
 	return 0;
@@ -1404,7 +1391,7 @@ static int mwifiex_misc_ioctl_gen_ie(struct mwifiex_private *priv,
  * with requisite parameters and calls the IOCTL handler.
  */
 int
-mwifiex_set_gen_ie(struct mwifiex_private *priv, const u8 *ie, int ie_len)
+mwifiex_set_gen_ie(struct mwifiex_private *priv, u8 *ie, int ie_len)
 {
 	struct mwifiex_ds_misc_gen_ie gen_ie;
 

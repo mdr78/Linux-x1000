@@ -42,7 +42,8 @@
 #include <linux/slab.h>
 #include <linux/string.h>
 #include <linux/wireless.h>
-#include <net/cfg80211.h>
+#include <linux/ieee80211.h>
+#include <linux/etherdevice.h>
 
 #include <net/iw_handler.h>
 
@@ -1453,8 +1454,7 @@ static int wl3501_get_freq(struct net_device *dev, struct iw_request_info *info,
 {
 	struct wl3501_card *this = netdev_priv(dev);
 
-	wrqu->freq.m = 100000 *
-		ieee80211_channel_to_frequency(this->chan, IEEE80211_BAND_2GHZ);
+	wrqu->freq.m = ieee80211_dsss_chan_to_freq(this->chan) * 100000;
 	wrqu->freq.e = 1;
 	return 0;
 }

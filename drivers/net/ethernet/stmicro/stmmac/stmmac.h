@@ -34,14 +34,6 @@
 #include <linux/ptp_clock_kernel.h>
 #include <linux/reset.h>
 
-struct stmmac_resources {
-	void __iomem *addr;
-	const char *mac;
-	int wol_irq;
-	int lpi_irq;
-	int irq;
-};
-
 struct stmmac_tx_info {
 	dma_addr_t buf;
 	bool map_as_page;
@@ -105,7 +97,6 @@ struct stmmac_priv {
 	int wolopts;
 	int wol_irq;
 	struct clk *stmmac_clk;
-	struct clk *pclk;
 	struct reset_control *stmmac_rst;
 	int clk_csr;
 	struct timer_list eee_ctrl_timer;
@@ -143,9 +134,9 @@ void stmmac_ptp_unregister(struct stmmac_priv *priv);
 int stmmac_resume(struct net_device *ndev);
 int stmmac_suspend(struct net_device *ndev);
 int stmmac_dvr_remove(struct net_device *ndev);
-int stmmac_dvr_probe(struct device *device,
-		     struct plat_stmmacenet_data *plat_dat,
-		     struct stmmac_resources *res);
+struct stmmac_priv *stmmac_dvr_probe(struct device *device,
+				     struct plat_stmmacenet_data *plat_dat,
+				     void __iomem *addr);
 void stmmac_disable_eee_mode(struct stmmac_priv *priv);
 bool stmmac_eee_init(struct stmmac_priv *priv);
 

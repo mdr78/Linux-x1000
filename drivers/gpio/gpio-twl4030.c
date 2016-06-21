@@ -139,6 +139,7 @@ static u8 cached_leden;
 static void twl4030_led_set_value(int led, int value)
 {
 	u8 mask = LEDEN_LEDAON | LEDEN_LEDAPWM;
+	int status;
 
 	if (led)
 		mask <<= 1;
@@ -147,9 +148,8 @@ static void twl4030_led_set_value(int led, int value)
 		cached_leden &= ~mask;
 	else
 		cached_leden |= mask;
-
-	WARN_ON_ONCE(twl_i2c_write_u8(TWL4030_MODULE_LED, cached_leden,
-				      TWL4030_LED_LEDEN_REG));
+	status = twl_i2c_write_u8(TWL4030_MODULE_LED, cached_leden,
+				  TWL4030_LED_LEDEN_REG);
 }
 
 static int twl4030_set_gpio_direction(int gpio, int is_input)
@@ -554,7 +554,7 @@ no_irqs:
 
 	platform_set_drvdata(pdev, priv);
 
-	if (pdata->setup) {
+	if (pdata && pdata->setup) {
 		int status;
 
 		status = pdata->setup(&pdev->dev, priv->gpio_chip.base,
@@ -605,6 +605,7 @@ MODULE_ALIAS("platform:twl4030_gpio");
 static struct platform_driver gpio_twl4030_driver = {
 	.driver = {
 		.name	= "twl4030_gpio",
+		.owner	= THIS_MODULE,
 		.of_match_table = twl_gpio_match,
 	},
 	.probe		= gpio_twl4030_probe,

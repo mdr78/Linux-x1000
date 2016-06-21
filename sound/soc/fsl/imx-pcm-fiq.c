@@ -270,17 +270,18 @@ static int imx_pcm_new(struct snd_soc_pcm_runtime *rtd)
 		ret = imx_pcm_preallocate_dma_buffer(pcm,
 			SNDRV_PCM_STREAM_PLAYBACK);
 		if (ret)
-			return ret;
+			goto out;
 	}
 
 	if (pcm->streams[SNDRV_PCM_STREAM_CAPTURE].substream) {
 		ret = imx_pcm_preallocate_dma_buffer(pcm,
 			SNDRV_PCM_STREAM_CAPTURE);
 		if (ret)
-			return ret;
+			goto out;
 	}
 
-	return 0;
+out:
+	return ret;
 }
 
 static int ssi_irq = 0;

@@ -269,17 +269,12 @@ err_inject_init(void)
 #ifdef ERR_INJ_DEBUG
 	printk(KERN_INFO "Enter error injection driver.\n");
 #endif
-
-	cpu_notifier_register_begin();
-
 	for_each_online_cpu(i) {
 		err_inject_cpu_callback(&err_inject_cpu_notifier, CPU_ONLINE,
 				(void *)(long)i);
 	}
 
-	__register_hotcpu_notifier(&err_inject_cpu_notifier);
-
-	cpu_notifier_register_done();
+	register_hotcpu_notifier(&err_inject_cpu_notifier);
 
 	return 0;
 }
@@ -293,17 +288,11 @@ err_inject_exit(void)
 #ifdef ERR_INJ_DEBUG
 	printk(KERN_INFO "Exit error injection driver.\n");
 #endif
-
-	cpu_notifier_register_begin();
-
 	for_each_online_cpu(i) {
 		sys_dev = get_cpu_device(i);
 		sysfs_remove_group(&sys_dev->kobj, &err_inject_attr_group);
 	}
-
-	__unregister_hotcpu_notifier(&err_inject_cpu_notifier);
-
-	cpu_notifier_register_done();
+	unregister_hotcpu_notifier(&err_inject_cpu_notifier);
 }
 
 module_init(err_inject_init);

@@ -24,8 +24,7 @@
 #define VFL_TYPE_VBI		1
 #define VFL_TYPE_RADIO		2
 #define VFL_TYPE_SUBDEV		3
-#define VFL_TYPE_SDR		4
-#define VFL_TYPE_MAX		5
+#define VFL_TYPE_MAX		4
 
 /* Is this a receiver, transmitter or mem-to-mem? */
 /* Ignored for VFL_TYPE_SUBDEV. */
@@ -44,6 +43,8 @@ struct v4l2_ctrl_handler;
 #define V4L2_FL_REGISTERED	(0)
 /* file->private_data points to struct v4l2_fh */
 #define V4L2_FL_USES_V4L2_FH	(1)
+/* Use the prio field of v4l2_fh for core priority checking */
+#define V4L2_FL_USE_FH_PRIO	(2)
 
 /* Priority helper functions */
 
@@ -65,6 +66,7 @@ struct v4l2_file_operations {
 	ssize_t (*read) (struct file *, char __user *, size_t, loff_t *);
 	ssize_t (*write) (struct file *, const char __user *, size_t, loff_t *);
 	unsigned int (*poll) (struct file *, struct poll_table_struct *);
+	long (*ioctl) (struct file *, unsigned int, unsigned long);
 	long (*unlocked_ioctl) (struct file *, unsigned int, unsigned long);
 #ifdef CONFIG_COMPAT
 	long (*compat_ioctl32) (struct file *, unsigned int, unsigned long);
@@ -123,8 +125,7 @@ struct video_device
 	spinlock_t		fh_lock; /* Lock for all v4l2_fhs */
 	struct list_head	fh_list; /* List of struct v4l2_fh */
 
-	/* Internal device debug flags, not for use by drivers */
-	int dev_debug;
+	int debug;			/* Activates debug level*/
 
 	/* Video standard vars */
 	v4l2_std_id tvnorms;		/* Supported tv norms */

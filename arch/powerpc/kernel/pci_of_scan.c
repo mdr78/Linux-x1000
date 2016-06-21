@@ -38,7 +38,7 @@ static u32 get_int_prop(struct device_node *np, const char *name, u32 def)
  * @addr0: value of 1st cell of a device tree PCI address.
  * @bridge: Set this flag if the address is from a bridge 'ranges' property
  */
-static unsigned int pci_parse_of_flags(u32 addr0, int bridge)
+unsigned int pci_parse_of_flags(u32 addr0, int bridge)
 {
 	unsigned int flags = 0;
 
@@ -102,7 +102,7 @@ static void of_pci_parse_addrs(struct device_node *node, struct pci_dev *dev)
 			res = &dev->resource[(i - PCI_BASE_ADDRESS_0) >> 2];
 		} else if (i == dev->rom_base_reg) {
 			res = &dev->resource[PCI_ROM_RESOURCE];
-			flags |= IORESOURCE_READONLY;
+			flags |= IORESOURCE_READONLY | IORESOURCE_CACHEABLE;
 		} else {
 			printk(KERN_ERR "PCI: bad cfg reg num 0x%x\n", i);
 			continue;
@@ -126,6 +126,7 @@ struct pci_dev *of_create_pci_dev(struct device_node *node,
 {
 	struct pci_dev *dev;
 	const char *type;
+	struct pci_slot *slot;
 
 	dev = pci_alloc_dev(bus);
 	if (!dev)
@@ -144,7 +145,10 @@ struct pci_dev *of_create_pci_dev(struct device_node *node,
 	dev->needs_freset = 0;		/* pcie fundamental reset required */
 	set_pcie_port_type(dev);
 
-	pci_dev_assign_slot(dev);
+	list_for_each_entry(slot, &dev->bus->slots, list)
+		if (PCI_SLOT(dev->devfn) == slot->number)
+			dev->slot = slot;
+
 	dev->vendor = get_int_prop(node, "vendor-id", 0xffff);
 	dev->device = get_int_prop(node, "device-id", 0xffff);
 	dev->subsystem_vendor = get_int_prop(node, "subsystem-vendor-id", 0);
@@ -187,9 +191,6 @@ struct pci_dev *of_create_pci_dev(struct device_node *node,
 
 	pci_device_add(dev, bus);
 
-	/* Setup MSI caps & disable MSI/MSI-X interrupts */
-	pci_msi_setup_pci_dev(dev);
-
 	return dev;
 }
 EXPORT_SYMBOL(of_create_pci_dev);
@@ -206,7 +207,6 @@ void of_scan_pci_bridge(struct pci_dev *dev)
 {
 	struct device_node *node = dev->dev.of_node;
 	struct pci_bus *bus;
-	struct pci_controller *phb;
 	const __be32 *busrange, *ranges;
 	int len, i, mode;
 	struct pci_bus_region region;
@@ -286,11 +286,9 @@ void of_scan_pci_bridge(struct pci_dev *dev)
 		bus->number);
 	pr_debug("    bus name: %s\n", bus->name);
 
-	phb = pci_bus_to_host(bus);
-
 	mode = PCI_PROBE_NORMAL;
-	if (phb->controller_ops.probe_mode)
-		mode = phb->controller_ops.probe_mode(bus);
+	if (ppc_md.pci_probe_mode)
+		mode = ppc_md.pci_probe_mode(bus);
 	pr_debug("    probe mode: %d\n", mode);
 
 	if (mode == PCI_PROBE_DEVTREE)
@@ -306,9 +304,6 @@ static struct pci_dev *of_scan_pci_dev(struct pci_bus *bus,
 	struct pci_dev *dev = NULL;
 	const __be32 *reg;
 	int reglen, devfn;
-#ifdef CONFIG_EEH
-	struct eeh_dev *edev = pdn_to_eeh_dev(PCI_DN(dn));
-#endif
 
 	pr_debug("  * %s\n", dn->full_name);
 	if (!of_device_is_available(dn))
@@ -325,12 +320,6 @@ static struct pci_dev *of_scan_pci_dev(struct pci_bus *bus,
 		pci_dev_put(dev);
 		return dev;
 	}
-
-	/* Device removed permanently ? */
-#ifdef CONFIG_EEH
-	if (edev && (edev->mode & EEH_DEV_REMOVED))
-		return NULL;
-#endif
 
 	/* create a new pci_dev for this device */
 	dev = of_create_pci_dev(dn, bus, devfn);
@@ -373,7 +362,8 @@ static void __of_scan_bus(struct device_node *node, struct pci_bus *bus,
 
 	/* Now scan child busses */
 	list_for_each_entry(dev, &bus->devices, bus_list) {
-		if (pci_is_bridge(dev)) {
+		if (dev->hdr_type == PCI_HEADER_TYPE_BRIDGE ||
+		    dev->hdr_type == PCI_HEADER_TYPE_CARDBUS) {
 			of_scan_pci_bridge(dev);
 		}
 	}

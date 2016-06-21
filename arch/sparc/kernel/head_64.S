@@ -946,12 +946,6 @@ ENTRY(__retl_one)
 	 mov	1, %o0
 ENDPROC(__retl_one)
 
-ENTRY(__retl_one_fp)
-	VISExitHalf
-	retl
-	 mov	1, %o0
-ENDPROC(__retl_one_fp)
-
 ENTRY(__ret_one_asi)
 	wr	%g0, ASI_AIUS, %asi
 	ret
@@ -963,13 +957,6 @@ ENTRY(__retl_one_asi)
 	retl
 	 mov	1, %o0
 ENDPROC(__retl_one_asi)
-
-ENTRY(__retl_one_asi_fp)
-	wr	%g0, ASI_AIUS, %asi
-	VISExitHalf
-	retl
-	 mov	1, %o0
-ENDPROC(__retl_one_asi_fp)
 
 ENTRY(__retl_o1)
 	retl

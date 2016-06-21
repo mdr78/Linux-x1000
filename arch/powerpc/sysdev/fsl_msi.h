@@ -27,10 +27,6 @@
 #define FSL_PIC_IP_IPIC   0x00000002
 #define FSL_PIC_IP_VMPIC  0x00000003
 
-#define MSI_HW_ERRATA_ENDIAN 0x00000010
-
-struct fsl_msi_cascade_data;
-
 struct fsl_msi {
 	struct irq_domain *irqhost;
 
@@ -41,7 +37,7 @@ struct fsl_msi {
 	u32 srs_shift; /* Shift of the shared interrupt register select */
 	void __iomem *msi_regs;
 	u32 feature;
-	struct fsl_msi_cascade_data *cascade_array[NR_MSI_REG_MAX];
+	int msi_virqs[NR_MSI_REG_MAX];
 
 	struct msi_bitmap bitmap;
 

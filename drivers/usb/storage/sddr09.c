@@ -52,9 +52,6 @@
 #include "transport.h"
 #include "protocol.h"
 #include "debug.h"
-#include "scsiglue.h"
-
-#define DRV_NAME "ums-sddr09"
 
 MODULE_DESCRIPTION("Driver for SanDisk SDDR-09 SmartMedia reader");
 MODULE_AUTHOR("Andries Brouwer <aeb@cwi.nl>, Robert Baruch <autophile@starband.net>");
@@ -1158,7 +1155,8 @@ sddr09_get_cardinfo(struct us_data *us, unsigned char flags) {
 		return NULL;
 	}
 
-	sprintf(blurbtxt, "sddr09: Found Flash card, ID = %4ph", deviceID);
+	sprintf(blurbtxt, "sddr09: Found Flash card, ID = %02X %02X %02X %02X",
+		deviceID[0], deviceID[1], deviceID[2], deviceID[3]);
 
 	/* Byte 0 is the manufacturer */
 	sprintf(blurbtxt + strlen(blurbtxt),
@@ -1500,7 +1498,7 @@ static int dpcm_transport(struct scsi_cmnd *srb, struct us_data *us)
 {
 	int ret;
 
-	usb_stor_dbg(us, "LUN=%d\n", (u8)srb->device->lun);
+	usb_stor_dbg(us, "LUN=%d\n", srb->device->lun);
 
 	switch (srb->device->lun) {
 	case 0:
@@ -1526,7 +1524,7 @@ static int dpcm_transport(struct scsi_cmnd *srb, struct us_data *us)
 		break;
 
 	default:
-	    usb_stor_dbg(us, "Invalid LUN %d\n", (u8)srb->device->lun);
+		usb_stor_dbg(us, "Invalid LUN %d\n", srb->device->lun);
 		ret = USB_STOR_TRANSPORT_ERROR;
 		break;
 	}
@@ -1741,8 +1739,6 @@ usb_stor_sddr09_init(struct us_data *us) {
 	return sddr09_common_init(us);
 }
 
-static struct scsi_host_template sddr09_host_template;
-
 static int sddr09_probe(struct usb_interface *intf,
 			 const struct usb_device_id *id)
 {
@@ -1750,8 +1746,7 @@ static int sddr09_probe(struct usb_interface *intf,
 	int result;
 
 	result = usb_stor_probe1(&us, intf, id,
-			(id - sddr09_usb_ids) + sddr09_unusual_dev_list,
-			&sddr09_host_template);
+			(id - sddr09_usb_ids) + sddr09_unusual_dev_list);
 	if (result)
 		return result;
 
@@ -1772,7 +1767,7 @@ static int sddr09_probe(struct usb_interface *intf,
 }
 
 static struct usb_driver sddr09_driver = {
-	.name =		DRV_NAME,
+	.name =		"ums-sddr09",
 	.probe =	sddr09_probe,
 	.disconnect =	usb_stor_disconnect,
 	.suspend =	usb_stor_suspend,
@@ -1785,4 +1780,4 @@ static struct usb_driver sddr09_driver = {
 	.no_dynamic_id = 1,
 };
 
-module_usb_stor_driver(sddr09_driver, sddr09_host_template, DRV_NAME);
+module_usb_driver(sddr09_driver);

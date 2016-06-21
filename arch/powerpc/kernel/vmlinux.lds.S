@@ -183,12 +183,6 @@ SECTIONS
 		*(.rela*)
 	}
 #endif
-	/* .exit.data is discarded at runtime, not link time,
-	 * to deal with references from .exit.text
-	 */
-	.exit.data : AT(ADDR(.exit.data) - LOAD_OFFSET) {
-		EXIT_DATA
-	}
 
 	/* freed after init ends here */
 	. = ALIGN(PAGE_SIZE);
@@ -219,7 +213,6 @@ SECTIONS
 		*(.opd)
 	}
 
-	. = ALIGN(256);
 	.got : AT(ADDR(.got) - LOAD_OFFSET) {
 		__toc_start = .;
 #ifndef CONFIG_RELOCATABLE

@@ -5,7 +5,6 @@
 void uhci_reset_hc(struct pci_dev *pdev, unsigned long base);
 int uhci_check_and_reset_hc(struct pci_dev *pdev, unsigned long base);
 int usb_amd_find_chipset_info(void);
-int usb_hcd_amd_remote_wakeup_quirk(struct pci_dev *pdev);
 bool usb_amd_hang_symptom_quirk(void);
 bool usb_amd_prefetch_quirk(void);
 void usb_amd_dev_put(void);
@@ -14,6 +13,10 @@ void usb_amd_quirk_pll_enable(void);
 void usb_enable_intel_xhci_ports(struct pci_dev *xhci_pdev);
 void usb_disable_xhci_ports(struct pci_dev *xhci_pdev);
 void sb800_prefetch(struct device *dev, int on);
+bool usb_is_intel_qrk(struct pci_dev *pdev);
+void usb_set_qrk_bulk_thresh(struct pci_dev *pdev);
+#define PCI_DEVICE_ID_INTEL_QUARK_X1000_SOC		0x0939
+void quirk_qrk_usb_phy_set_squelch(u32 threshold);
 #else
 struct pci_dev;
 static inline void usb_amd_quirk_pll_disable(void) {}

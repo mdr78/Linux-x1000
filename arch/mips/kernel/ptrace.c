@@ -24,8 +24,8 @@
 #include <linux/ptrace.h>
 #include <linux/regset.h>
 #include <linux/smp.h>
+#include <linux/user.h>
 #include <linux/security.h>
-#include <linux/stddef.h>
 #include <linux/tracehook.h>
 #include <linux/audit.h>
 #include <linux/seccomp.h>
@@ -33,7 +33,6 @@
 
 #include <asm/byteorder.h>
 #include <asm/cpu.h>
-#include <asm/cpu-info.h>
 #include <asm/dsp.h>
 #include <asm/fpu.h>
 #include <asm/mipsregs.h>
@@ -47,26 +46,6 @@
 
 #define CREATE_TRACE_POINTS
 #include <trace/events/syscalls.h>
-
-static void init_fp_ctx(struct task_struct *target)
-{
-	/* If FP has been used then the target already has context */
-	if (tsk_used_math(target))
-		return;
-
-	/* Begin with data registers set to all 1s... */
-	memset(&target->thread.fpu.fpr, ~0, sizeof(target->thread.fpu.fpr));
-
-	/* ...and FCSR zeroed */
-	target->thread.fpu.fcr31 = 0;
-
-	/*
-	 * Record that the target has "used" math, such that the context
-	 * just initialised, and any modifications made by the caller,
-	 * aren't discarded.
-	 */
-	set_stopped_child_used_math(target);
-}
 
 /*
  * Called by kernel/ptrace.c when detaching..
@@ -84,7 +63,7 @@ void ptrace_disable(struct task_struct *child)
  * for 32-bit kernels and for 32-bit processes on a 64-bit kernel.
  * Registers are sign extended to fill the available space.
  */
-int ptrace_getregs(struct task_struct *child, struct user_pt_regs __user *data)
+int ptrace_getregs(struct task_struct *child, __s64 __user *data)
 {
 	struct pt_regs *regs;
 	int i;
@@ -95,13 +74,13 @@ int ptrace_getregs(struct task_struct *child, struct user_pt_regs __user *data)
 	regs = task_pt_regs(child);
 
 	for (i = 0; i < 32; i++)
-		__put_user((long)regs->regs[i], (__s64 __user *)&data->regs[i]);
-	__put_user((long)regs->lo, (__s64 __user *)&data->lo);
-	__put_user((long)regs->hi, (__s64 __user *)&data->hi);
-	__put_user((long)regs->cp0_epc, (__s64 __user *)&data->cp0_epc);
-	__put_user((long)regs->cp0_badvaddr, (__s64 __user *)&data->cp0_badvaddr);
-	__put_user((long)regs->cp0_status, (__s64 __user *)&data->cp0_status);
-	__put_user((long)regs->cp0_cause, (__s64 __user *)&data->cp0_cause);
+		__put_user((long)regs->regs[i], data + i);
+	__put_user((long)regs->lo, data + EF_LO - EF_R0);
+	__put_user((long)regs->hi, data + EF_HI - EF_R0);
+	__put_user((long)regs->cp0_epc, data + EF_CP0_EPC - EF_R0);
+	__put_user((long)regs->cp0_badvaddr, data + EF_CP0_BADVADDR - EF_R0);
+	__put_user((long)regs->cp0_status, data + EF_CP0_STATUS - EF_R0);
+	__put_user((long)regs->cp0_cause, data + EF_CP0_CAUSE - EF_R0);
 
 	return 0;
 }
@@ -111,7 +90,7 @@ int ptrace_getregs(struct task_struct *child, struct user_pt_regs __user *data)
  * the 64-bit format.  On a 32-bit kernel only the lower order half
  * (according to endianness) will be used.
  */
-int ptrace_setregs(struct task_struct *child, struct user_pt_regs __user *data)
+int ptrace_setregs(struct task_struct *child, __s64 __user *data)
 {
 	struct pt_regs *regs;
 	int i;
@@ -122,10 +101,10 @@ int ptrace_setregs(struct task_struct *child, struct user_pt_regs __user *data)
 	regs = task_pt_regs(child);
 
 	for (i = 0; i < 32; i++)
-		__get_user(regs->regs[i], (__s64 __user *)&data->regs[i]);
-	__get_user(regs->lo, (__s64 __user *)&data->lo);
-	__get_user(regs->hi, (__s64 __user *)&data->hi);
-	__get_user(regs->cp0_epc, (__s64 __user *)&data->cp0_epc);
+		__get_user(regs->regs[i], data + i);
+	__get_user(regs->lo, data + EF_LO - EF_R0);
+	__get_user(regs->hi, data + EF_HI - EF_R0);
+	__get_user(regs->cp0_epc, data + EF_CP0_EPC - EF_R0);
 
 	/* badvaddr, status, and cause may not be written.  */
 
@@ -135,50 +114,63 @@ int ptrace_setregs(struct task_struct *child, struct user_pt_regs __user *data)
 int ptrace_getfpregs(struct task_struct *child, __u32 __user *data)
 {
 	int i;
+	unsigned int tmp;
 
 	if (!access_ok(VERIFY_WRITE, data, 33 * 8))
 		return -EIO;
 
 	if (tsk_used_math(child)) {
-		union fpureg *fregs = get_fpu_regs(child);
+		fpureg_t *fregs = get_fpu_regs(child);
 		for (i = 0; i < 32; i++)
-			__put_user(get_fpr64(&fregs[i], 0),
-				   i + (__u64 __user *)data);
+			__put_user(fregs[i], i + (__u64 __user *) data);
 	} else {
 		for (i = 0; i < 32; i++)
 			__put_user((__u64) -1, i + (__u64 __user *) data);
 	}
 
 	__put_user(child->thread.fpu.fcr31, data + 64);
-	__put_user(boot_cpu_data.fpu_id, data + 65);
+
+	preempt_disable();
+	if (cpu_has_fpu) {
+		unsigned int flags;
+
+		if (cpu_has_mipsmt) {
+			unsigned int vpflags = dvpe();
+			flags = read_c0_status();
+			__enable_fpu(FPU_AS_IS);
+			__asm__ __volatile__("cfc1\t%0,$0" : "=r" (tmp));
+			write_c0_status(flags);
+			evpe(vpflags);
+		} else {
+			flags = read_c0_status();
+			__enable_fpu(FPU_AS_IS);
+			__asm__ __volatile__("cfc1\t%0,$0" : "=r" (tmp));
+			write_c0_status(flags);
+		}
+	} else {
+		tmp = 0;
+	}
+	preempt_enable();
+	__put_user(tmp, data + 65);
 
 	return 0;
 }
 
 int ptrace_setfpregs(struct task_struct *child, __u32 __user *data)
 {
-	union fpureg *fregs;
-	u64 fpr_val;
-	u32 fcr31;
-	u32 value;
-	u32 mask;
+	fpureg_t *fregs;
 	int i;
 
 	if (!access_ok(VERIFY_READ, data, 33 * 8))
 		return -EIO;
 
-	init_fp_ctx(child);
 	fregs = get_fpu_regs(child);
 
-	for (i = 0; i < 32; i++) {
-		__get_user(fpr_val, i + (__u64 __user *)data);
-		set_fpr64(&fregs[i], 0, fpr_val);
-	}
+	for (i = 0; i < 32; i++)
+		__get_user(fregs[i], i + (__u64 __user *) data);
 
-	__get_user(value, data + 64);
-	fcr31 = child->thread.fpu.fcr31;
-	mask = boot_cpu_data.fpu_msk31;
-	child->thread.fpu.fcr31 = (value & ~mask) | (fcr31 & mask);
+	__get_user(child->thread.fpu.fcr31, data + 64);
+	child->thread.fpu.fcr31 &= ~FPU_CSR_ALL_X;
 
 	/* FIR may not be written.  */
 
@@ -191,7 +183,7 @@ int ptrace_get_watch_regs(struct task_struct *child,
 	enum pt_watch_style style;
 	int i;
 
-	if (!cpu_has_watch || boot_cpu_data.watch_reg_use_cnt == 0)
+	if (!cpu_has_watch || current_cpu_data.watch_reg_use_cnt == 0)
 		return -EIO;
 	if (!access_ok(VERIFY_WRITE, addr, sizeof(struct pt_watch_regs)))
 		return -EIO;
@@ -205,14 +197,14 @@ int ptrace_get_watch_regs(struct task_struct *child,
 #endif
 
 	__put_user(style, &addr->style);
-	__put_user(boot_cpu_data.watch_reg_use_cnt,
+	__put_user(current_cpu_data.watch_reg_use_cnt,
 		   &addr->WATCH_STYLE.num_valid);
-	for (i = 0; i < boot_cpu_data.watch_reg_use_cnt; i++) {
+	for (i = 0; i < current_cpu_data.watch_reg_use_cnt; i++) {
 		__put_user(child->thread.watch.mips3264.watchlo[i],
 			   &addr->WATCH_STYLE.watchlo[i]);
 		__put_user(child->thread.watch.mips3264.watchhi[i] & 0xfff,
 			   &addr->WATCH_STYLE.watchhi[i]);
-		__put_user(boot_cpu_data.watch_reg_masks[i],
+		__put_user(current_cpu_data.watch_reg_masks[i],
 			   &addr->WATCH_STYLE.watch_masks[i]);
 	}
 	for (; i < 8; i++) {
@@ -232,12 +224,12 @@ int ptrace_set_watch_regs(struct task_struct *child,
 	unsigned long lt[NUM_WATCH_REGS];
 	u16 ht[NUM_WATCH_REGS];
 
-	if (!cpu_has_watch || boot_cpu_data.watch_reg_use_cnt == 0)
+	if (!cpu_has_watch || current_cpu_data.watch_reg_use_cnt == 0)
 		return -EIO;
 	if (!access_ok(VERIFY_READ, addr, sizeof(struct pt_watch_regs)))
 		return -EIO;
 	/* Check the values. */
-	for (i = 0; i < boot_cpu_data.watch_reg_use_cnt; i++) {
+	for (i = 0; i < current_cpu_data.watch_reg_use_cnt; i++) {
 		__get_user(lt[i], &addr->WATCH_STYLE.watchlo[i]);
 #ifdef CONFIG_32BIT
 		if (lt[i] & __UA_LIMIT)
@@ -256,7 +248,7 @@ int ptrace_set_watch_regs(struct task_struct *child,
 			return -EINVAL;
 	}
 	/* Install them. */
-	for (i = 0; i < boot_cpu_data.watch_reg_use_cnt; i++) {
+	for (i = 0; i < current_cpu_data.watch_reg_use_cnt; i++) {
 		if (lt[i] & 7)
 			watch_active = 1;
 		child->thread.watch.mips3264.watchlo[i] = lt[i];
@@ -433,27 +425,10 @@ static int fpr_get(struct task_struct *target,
 		   unsigned int pos, unsigned int count,
 		   void *kbuf, void __user *ubuf)
 {
-	unsigned i;
-	int err;
-	u64 fpr_val;
-
+	return user_regset_copyout(&pos, &count, &kbuf, &ubuf,
+				   &target->thread.fpu,
+				   0, sizeof(elf_fpregset_t));
 	/* XXX fcr31  */
-
-	if (sizeof(target->thread.fpu.fpr[i]) == sizeof(elf_fpreg_t))
-		return user_regset_copyout(&pos, &count, &kbuf, &ubuf,
-					   &target->thread.fpu,
-					   0, sizeof(elf_fpregset_t));
-
-	for (i = 0; i < NUM_FPU_REGS; i++) {
-		fpr_val = get_fpr64(&target->thread.fpu.fpr[i], 0);
-		err = user_regset_copyout(&pos, &count, &kbuf, &ubuf,
-					  &fpr_val, i * sizeof(elf_fpreg_t),
-					  (i + 1) * sizeof(elf_fpreg_t));
-		if (err)
-			return err;
-	}
-
-	return 0;
 }
 
 static int fpr_set(struct task_struct *target,
@@ -461,122 +436,16 @@ static int fpr_set(struct task_struct *target,
 		   unsigned int pos, unsigned int count,
 		   const void *kbuf, const void __user *ubuf)
 {
-	unsigned i;
-	int err;
-	u64 fpr_val;
-
+	return user_regset_copyin(&pos, &count, &kbuf, &ubuf,
+				  &target->thread.fpu,
+				  0, sizeof(elf_fpregset_t));
 	/* XXX fcr31  */
-
-	init_fp_ctx(target);
-
-	if (sizeof(target->thread.fpu.fpr[i]) == sizeof(elf_fpreg_t))
-		return user_regset_copyin(&pos, &count, &kbuf, &ubuf,
-					  &target->thread.fpu,
-					  0, sizeof(elf_fpregset_t));
-
-	for (i = 0; i < NUM_FPU_REGS; i++) {
-		err = user_regset_copyin(&pos, &count, &kbuf, &ubuf,
-					 &fpr_val, i * sizeof(elf_fpreg_t),
-					 (i + 1) * sizeof(elf_fpreg_t));
-		if (err)
-			return err;
-		set_fpr64(&target->thread.fpu.fpr[i], 0, fpr_val);
-	}
-
-	return 0;
 }
 
 enum mips_regset {
 	REGSET_GPR,
 	REGSET_FPR,
 };
-
-struct pt_regs_offset {
-	const char *name;
-	int offset;
-};
-
-#define REG_OFFSET_NAME(reg, r) {					\
-	.name = #reg,							\
-	.offset = offsetof(struct pt_regs, r)				\
-}
-
-#define REG_OFFSET_END {						\
-	.name = NULL,							\
-	.offset = 0							\
-}
-
-static const struct pt_regs_offset regoffset_table[] = {
-	REG_OFFSET_NAME(r0, regs[0]),
-	REG_OFFSET_NAME(r1, regs[1]),
-	REG_OFFSET_NAME(r2, regs[2]),
-	REG_OFFSET_NAME(r3, regs[3]),
-	REG_OFFSET_NAME(r4, regs[4]),
-	REG_OFFSET_NAME(r5, regs[5]),
-	REG_OFFSET_NAME(r6, regs[6]),
-	REG_OFFSET_NAME(r7, regs[7]),
-	REG_OFFSET_NAME(r8, regs[8]),
-	REG_OFFSET_NAME(r9, regs[9]),
-	REG_OFFSET_NAME(r10, regs[10]),
-	REG_OFFSET_NAME(r11, regs[11]),
-	REG_OFFSET_NAME(r12, regs[12]),
-	REG_OFFSET_NAME(r13, regs[13]),
-	REG_OFFSET_NAME(r14, regs[14]),
-	REG_OFFSET_NAME(r15, regs[15]),
-	REG_OFFSET_NAME(r16, regs[16]),
-	REG_OFFSET_NAME(r17, regs[17]),
-	REG_OFFSET_NAME(r18, regs[18]),
-	REG_OFFSET_NAME(r19, regs[19]),
-	REG_OFFSET_NAME(r20, regs[20]),
-	REG_OFFSET_NAME(r21, regs[21]),
-	REG_OFFSET_NAME(r22, regs[22]),
-	REG_OFFSET_NAME(r23, regs[23]),
-	REG_OFFSET_NAME(r24, regs[24]),
-	REG_OFFSET_NAME(r25, regs[25]),
-	REG_OFFSET_NAME(r26, regs[26]),
-	REG_OFFSET_NAME(r27, regs[27]),
-	REG_OFFSET_NAME(r28, regs[28]),
-	REG_OFFSET_NAME(r29, regs[29]),
-	REG_OFFSET_NAME(r30, regs[30]),
-	REG_OFFSET_NAME(r31, regs[31]),
-	REG_OFFSET_NAME(c0_status, cp0_status),
-	REG_OFFSET_NAME(hi, hi),
-	REG_OFFSET_NAME(lo, lo),
-#ifdef CONFIG_CPU_HAS_SMARTMIPS
-	REG_OFFSET_NAME(acx, acx),
-#endif
-	REG_OFFSET_NAME(c0_badvaddr, cp0_badvaddr),
-	REG_OFFSET_NAME(c0_cause, cp0_cause),
-	REG_OFFSET_NAME(c0_epc, cp0_epc),
-#ifdef CONFIG_MIPS_MT_SMTC
-	REG_OFFSET_NAME(c0_tcstatus, cp0_tcstatus),
-#endif
-#ifdef CONFIG_CPU_CAVIUM_OCTEON
-	REG_OFFSET_NAME(mpl0, mpl[0]),
-	REG_OFFSET_NAME(mpl1, mpl[1]),
-	REG_OFFSET_NAME(mpl2, mpl[2]),
-	REG_OFFSET_NAME(mtp0, mtp[0]),
-	REG_OFFSET_NAME(mtp1, mtp[1]),
-	REG_OFFSET_NAME(mtp2, mtp[2]),
-#endif
-	REG_OFFSET_END,
-};
-
-/**
- * regs_query_register_offset() - query register offset from its name
- * @name:       the name of a register
- *
- * regs_query_register_offset() returns the offset of a register in struct
- * pt_regs from its name. If the name is invalid, this returns -EINVAL;
- */
-int regs_query_register_offset(const char *name)
-{
-        const struct pt_regs_offset *roff;
-        for (roff = regoffset_table; roff->name != NULL; roff++)
-                if (!strcmp(roff->name, name))
-                        return roff->offset;
-        return -EINVAL;
-}
 
 #if defined(CONFIG_32BIT) || defined(CONFIG_MIPS32_O32)
 
@@ -671,7 +540,7 @@ long arch_ptrace(struct task_struct *child, long request,
 	/* Read the word at location addr in the USER area. */
 	case PTRACE_PEEKUSR: {
 		struct pt_regs *regs;
-		union fpureg *fregs;
+		fpureg_t *fregs;
 		unsigned long tmp = 0;
 
 		regs = task_pt_regs(child);
@@ -696,12 +565,14 @@ long arch_ptrace(struct task_struct *child, long request,
 				 * order bits of the values stored in the even
 				 * registers - unless we're using r2k_switch.S.
 				 */
-				tmp = get_fpr32(&fregs[(addr & ~1) - FPR_BASE],
-						addr & 1);
+				if (addr & 1)
+					tmp = fregs[(addr & ~1) - 32] >> 32;
+				else
+					tmp = fregs[addr - 32];
 				break;
 			}
 #endif
-			tmp = get_fpr32(&fregs[addr - FPR_BASE], 0);
+			tmp = fregs[addr - FPR_BASE];
 			break;
 		case PC:
 			tmp = regs->cp0_epc;
@@ -726,10 +597,44 @@ long arch_ptrace(struct task_struct *child, long request,
 		case FPC_CSR:
 			tmp = child->thread.fpu.fcr31;
 			break;
-		case FPC_EIR:
-			/* implementation / version register */
-			tmp = boot_cpu_data.fpu_id;
+		case FPC_EIR: { /* implementation / version register */
+			unsigned int flags;
+#ifdef CONFIG_MIPS_MT_SMTC
+			unsigned long irqflags;
+			unsigned int mtflags;
+#endif /* CONFIG_MIPS_MT_SMTC */
+
+			preempt_disable();
+			if (!cpu_has_fpu) {
+				preempt_enable();
+				break;
+			}
+
+#ifdef CONFIG_MIPS_MT_SMTC
+			/* Read-modify-write of Status must be atomic */
+			local_irq_save(irqflags);
+			mtflags = dmt();
+#endif /* CONFIG_MIPS_MT_SMTC */
+			if (cpu_has_mipsmt) {
+				unsigned int vpflags = dvpe();
+				flags = read_c0_status();
+				__enable_fpu(FPU_AS_IS);
+				__asm__ __volatile__("cfc1\t%0,$0": "=r" (tmp));
+				write_c0_status(flags);
+				evpe(vpflags);
+			} else {
+				flags = read_c0_status();
+				__enable_fpu(FPU_AS_IS);
+				__asm__ __volatile__("cfc1\t%0,$0": "=r" (tmp));
+				write_c0_status(flags);
+			}
+#ifdef CONFIG_MIPS_MT_SMTC
+			emt(mtflags);
+			local_irq_restore(irqflags);
+#endif /* CONFIG_MIPS_MT_SMTC */
+			preempt_enable();
 			break;
+		}
 		case DSP_BASE ... DSP_BASE + 5: {
 			dspreg_t *dregs;
 
@@ -775,9 +680,14 @@ long arch_ptrace(struct task_struct *child, long request,
 			regs->regs[addr] = data;
 			break;
 		case FPR_BASE ... FPR_BASE + 31: {
-			union fpureg *fregs = get_fpu_regs(child);
+			fpureg_t *fregs = get_fpu_regs(child);
 
-			init_fp_ctx(child);
+			if (!tsk_used_math(child)) {
+				/* FP not yet used  */
+				memset(&child->thread.fpu, ~0,
+				       sizeof(child->thread.fpu));
+				child->thread.fpu.fcr31 = 0;
+			}
 #ifdef CONFIG_32BIT
 			if (test_thread_flag(TIF_32BIT_FPREGS)) {
 				/*
@@ -785,12 +695,19 @@ long arch_ptrace(struct task_struct *child, long request,
 				 * order bits of the values stored in the even
 				 * registers - unless we're using r2k_switch.S.
 				 */
-				set_fpr32(&fregs[(addr & ~1) - FPR_BASE],
-					  addr & 1, data);
+				if (addr & 1) {
+					fregs[(addr & ~1) - FPR_BASE] &=
+						0xffffffff;
+					fregs[(addr & ~1) - FPR_BASE] |=
+						((u64)data) << 32;
+				} else {
+					fregs[addr - FPR_BASE] &= ~0xffffffffLL;
+					fregs[addr - FPR_BASE] |= data;
+				}
 				break;
 			}
 #endif
-			set_fpr64(&fregs[addr - FPR_BASE], 0, data);
+			fregs[addr - FPR_BASE] = data;
 			break;
 		}
 		case PC:
@@ -877,15 +794,13 @@ long arch_ptrace(struct task_struct *child, long request,
  * Notification of system call entry/exit
  * - triggered by current->work.syscall_trace
  */
-asmlinkage long syscall_trace_enter(struct pt_regs *regs, long syscall)
+asmlinkage void syscall_trace_enter(struct pt_regs *regs)
 {
 	long ret = 0;
 	user_exit();
 
-	current_thread_info()->syscall = syscall;
-
-	if (secure_computing() == -1)
-		return -1;
+	/* do the secure computing check first */
+	secure_computing_strict(regs->regs[2]);
 
 	if (test_thread_flag(TIF_SYSCALL_TRACE) &&
 	    tracehook_report_syscall_entry(regs))
@@ -894,9 +809,10 @@ asmlinkage long syscall_trace_enter(struct pt_regs *regs, long syscall)
 	if (unlikely(test_thread_flag(TIF_SYSCALL_TRACEPOINT)))
 		trace_sys_enter(regs, regs->regs[2]);
 
-	audit_syscall_entry(syscall, regs->regs[4], regs->regs[5],
+	audit_syscall_entry(__syscall_get_arch(),
+			    regs->regs[2],
+			    regs->regs[4], regs->regs[5],
 			    regs->regs[6], regs->regs[7]);
-	return syscall;
 }
 
 /*

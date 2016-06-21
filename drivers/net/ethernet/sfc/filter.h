@@ -243,7 +243,7 @@ static inline int efx_filter_set_eth_local(struct efx_filter_spec *spec,
 	}
 	if (addr != NULL) {
 		spec->match_flags |= EFX_FILTER_MATCH_LOC_MAC;
-		ether_addr_copy(spec->loc_mac, addr);
+		memcpy(spec->loc_mac, addr, ETH_ALEN);
 	}
 	return 0;
 }

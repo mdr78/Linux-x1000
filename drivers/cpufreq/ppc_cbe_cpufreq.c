@@ -32,15 +32,15 @@
 
 /* the CBE supports an 8 step frequency scaling */
 static struct cpufreq_frequency_table cbe_freqs[] = {
-	{0, 1,	0},
-	{0, 2,	0},
-	{0, 3,	0},
-	{0, 4,	0},
-	{0, 5,	0},
-	{0, 6,	0},
-	{0, 8,	0},
-	{0, 10,	0},
-	{0, 0,	CPUFREQ_TABLE_END},
+	{1,	0},
+	{2,	0},
+	{3,	0},
+	{4,	0},
+	{5,	0},
+	{6,	0},
+	{8,	0},
+	{10,	0},
+	{0,	CPUFREQ_TABLE_END},
 };
 
 /*
@@ -67,10 +67,9 @@ static int set_pmode(unsigned int cpu, unsigned int slow_mode)
 
 static int cbe_cpufreq_cpu_init(struct cpufreq_policy *policy)
 {
-	struct cpufreq_frequency_table *pos;
 	const u32 *max_freqp;
 	u32 max_freq;
-	int cur_pmode;
+	int i, cur_pmode;
 	struct device_node *cpu;
 
 	cpu = of_get_cpu_node(policy->cpu, NULL);
@@ -103,9 +102,9 @@ static int cbe_cpufreq_cpu_init(struct cpufreq_policy *policy)
 	pr_debug("initializing frequency table\n");
 
 	/* initialize frequency table */
-	cpufreq_for_each_entry(pos, cbe_freqs) {
-		pos->frequency = max_freq / pos->driver_data;
-		pr_debug("%d: %d\n", (int)(pos - cbe_freqs), pos->frequency);
+	for (i=0; cbe_freqs[i].frequency!=CPUFREQ_TABLE_END; i++) {
+		cbe_freqs[i].frequency = max_freq / cbe_freqs[i].driver_data;
+		pr_debug("%d: %d\n", i, cbe_freqs[i].frequency);
 	}
 
 	/* if DEBUG is enabled set_pmode() measures the latency
@@ -142,6 +141,7 @@ static struct cpufreq_driver cbe_cpufreq_driver = {
 	.verify		= cpufreq_generic_frequency_table_verify,
 	.target_index	= cbe_cpufreq_target,
 	.init		= cbe_cpufreq_cpu_init,
+	.exit		= cpufreq_generic_exit,
 	.name		= "cbe-cpufreq",
 	.flags		= CPUFREQ_CONST_LOOPS,
 };

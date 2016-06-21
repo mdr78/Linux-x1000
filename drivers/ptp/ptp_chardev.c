@@ -86,9 +86,14 @@ int ptp_set_pinfunc(struct ptp_clock *ptp, unsigned int pin,
 			return -EINVAL;
 		break;
 	case PTP_PF_PHYSYNC:
-		if (chan != 0)
-			return -EINVAL;
+		pr_err("sorry, cannot reassign the calibration pin\n");
+		return -EINVAL;
 	default:
+		return -EINVAL;
+	}
+
+	if (pin2->func == PTP_PF_PHYSYNC) {
+		pr_err("sorry, cannot reprogram the calibration pin\n");
 		return -EINVAL;
 	}
 
@@ -124,7 +129,7 @@ long ptp_ioctl(struct posix_clock *pc, unsigned int cmd, unsigned long arg)
 	struct ptp_clock *ptp = container_of(pc, struct ptp_clock, clock);
 	struct ptp_clock_info *ops = ptp->info;
 	struct ptp_clock_time *pct;
-	struct timespec64 ts;
+	struct timespec ts;
 	int enable, err = 0;
 	unsigned int i, pin_index;
 
@@ -197,16 +202,16 @@ long ptp_ioctl(struct posix_clock *pc, unsigned int cmd, unsigned long arg)
 		}
 		pct = &sysoff->ts[0];
 		for (i = 0; i < sysoff->n_samples; i++) {
-			getnstimeofday64(&ts);
+			getnstimeofday(&ts);
 			pct->sec = ts.tv_sec;
 			pct->nsec = ts.tv_nsec;
 			pct++;
-			ptp->info->gettime64(ptp->info, &ts);
+			ptp->info->gettime(ptp->info, &ts);
 			pct->sec = ts.tv_sec;
 			pct->nsec = ts.tv_nsec;
 			pct++;
 		}
-		getnstimeofday64(&ts);
+		getnstimeofday(&ts);
 		pct->sec = ts.tv_sec;
 		pct->nsec = ts.tv_nsec;
 		if (copy_to_user((void __user *)arg, sysoff, sizeof(*sysoff)))

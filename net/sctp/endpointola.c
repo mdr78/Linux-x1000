@@ -481,7 +481,7 @@ normal:
 		}
 
 		if (chunk->transport)
-			chunk->transport->last_time_heard = ktime_get();
+			chunk->transport->last_time_heard = jiffies;
 
 		error = sctp_do_sm(net, SCTP_EVENT_T_CHUNK, subtype, state,
 				   ep, asoc, chunk, GFP_ATOMIC);

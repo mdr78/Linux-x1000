@@ -7,7 +7,6 @@
 #include <linux/nfsacl.h>
 
 #include "internal.h"
-#include "nfs3_fs.h"
 
 #define NFSDBG_FACILITY	NFSDBG_PROC
 
@@ -279,7 +278,7 @@ nfs3_list_one_acl(struct inode *inode, int type, const char *name, void *data,
 ssize_t
 nfs3_listxattr(struct dentry *dentry, char *data, size_t size)
 {
-	struct inode *inode = d_inode(dentry);
+	struct inode *inode = dentry->d_inode;
 	ssize_t result = 0;
 	int error;
 

@@ -205,6 +205,7 @@ static int via_cputemp_remove(struct platform_device *pdev)
 
 static struct platform_driver via_cputemp_driver = {
 	.driver = {
+		.owner = THIS_MODULE,
 		.name = DRVNAME,
 	},
 	.probe = via_cputemp_probe,
@@ -318,7 +319,7 @@ static int __init via_cputemp_init(void)
 	if (err)
 		goto exit;
 
-	cpu_notifier_register_begin();
+	get_online_cpus();
 	for_each_online_cpu(i) {
 		struct cpuinfo_x86 *c = &cpu_data(i);
 
@@ -338,14 +339,14 @@ static int __init via_cputemp_init(void)
 
 #ifndef CONFIG_HOTPLUG_CPU
 	if (list_empty(&pdev_list)) {
-		cpu_notifier_register_done();
+		put_online_cpus();
 		err = -ENODEV;
 		goto exit_driver_unreg;
 	}
 #endif
 
-	__register_hotcpu_notifier(&via_cputemp_cpu_notifier);
-	cpu_notifier_register_done();
+	register_hotcpu_notifier(&via_cputemp_cpu_notifier);
+	put_online_cpus();
 	return 0;
 
 #ifndef CONFIG_HOTPLUG_CPU
@@ -360,8 +361,8 @@ static void __exit via_cputemp_exit(void)
 {
 	struct pdev_entry *p, *n;
 
-	cpu_notifier_register_begin();
-	__unregister_hotcpu_notifier(&via_cputemp_cpu_notifier);
+	get_online_cpus();
+	unregister_hotcpu_notifier(&via_cputemp_cpu_notifier);
 	mutex_lock(&pdev_list_mutex);
 	list_for_each_entry_safe(p, n, &pdev_list, list) {
 		platform_device_unregister(p->pdev);
@@ -369,7 +370,7 @@ static void __exit via_cputemp_exit(void)
 		kfree(p);
 	}
 	mutex_unlock(&pdev_list_mutex);
-	cpu_notifier_register_done();
+	put_online_cpus();
 	platform_driver_unregister(&via_cputemp_driver);
 }
 

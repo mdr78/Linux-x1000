@@ -167,7 +167,7 @@ static struct mfd_cell stw481x_cells[] = {
 	},
 };
 
-static const struct regmap_config stw481x_regmap_config = {
+const struct regmap_config stw481x_regmap_config = {
 	.reg_bits = 8,
 	.val_bits = 8,
 };
@@ -186,12 +186,6 @@ static int stw481x_probe(struct i2c_client *client,
 	i2c_set_clientdata(client, stw481x);
 	stw481x->client = client;
 	stw481x->map = devm_regmap_init_i2c(client, &stw481x_regmap_config);
-	if (IS_ERR(stw481x->map)) {
-		ret = PTR_ERR(stw481x->map);
-		dev_err(&client->dev, "Failed to allocate register map: %d\n",
-			ret);
-		return ret;
-	}
 
 	ret = stw481x_startup(stw481x);
 	if (ret) {
@@ -231,7 +225,6 @@ static const struct i2c_device_id stw481x_id[] = {
 	{ "stw481x", 0 },
 	{ },
 };
-MODULE_DEVICE_TABLE(i2c, stw481x_id);
 
 static const struct of_device_id stw481x_match[] = {
 	{ .compatible = "st,stw4810", },

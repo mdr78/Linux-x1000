@@ -39,13 +39,19 @@ MODULE_LICENSE("GPL");
 MODULE_ALIAS_SNDRV_MINOR(SNDRV_MINOR_OSS_SEQUENCER);
 MODULE_ALIAS_SNDRV_MINOR(SNDRV_MINOR_OSS_MUSIC);
 
+#ifdef SNDRV_SEQ_OSS_DEBUG
+module_param(seq_oss_debug, int, 0644);
+MODULE_PARM_DESC(seq_oss_debug, "debug option");
+int seq_oss_debug = 0;
+#endif
+
 
 /*
  * prototypes
  */
 static int register_device(void);
 static void unregister_device(void);
-#ifdef CONFIG_SND_PROC_FS
+#ifdef CONFIG_PROC_FS
 static int register_proc(void);
 static void unregister_proc(void);
 #else
@@ -65,20 +71,15 @@ static unsigned int odev_poll(struct file *file, poll_table * wait);
  * module interface
  */
 
-static struct snd_seq_driver seq_oss_synth_driver = {
-	.driver = {
-		.name = KBUILD_MODNAME,
-		.probe = snd_seq_oss_synth_probe,
-		.remove = snd_seq_oss_synth_remove,
-	},
-	.id = SNDRV_SEQ_DEV_ID_OSS,
-	.argsize = sizeof(struct snd_seq_oss_reg),
-};
-
 static int __init alsa_seq_oss_init(void)
 {
 	int rc;
+	static struct snd_seq_dev_ops ops = {
+		snd_seq_oss_synth_register,
+		snd_seq_oss_synth_unregister,
+	};
 
+	snd_seq_autoload_lock();
 	if ((rc = register_device()) < 0)
 		goto error;
 	if ((rc = register_proc()) < 0) {
@@ -91,8 +92,8 @@ static int __init alsa_seq_oss_init(void)
 		goto error;
 	}
 
-	rc = snd_seq_driver_register(&seq_oss_synth_driver);
-	if (rc < 0) {
+	if ((rc = snd_seq_device_register_driver(SNDRV_SEQ_DEV_ID_OSS, &ops,
+						 sizeof(struct snd_seq_oss_reg))) < 0) {
 		snd_seq_oss_delete_client();
 		unregister_proc();
 		unregister_device();
@@ -103,12 +104,13 @@ static int __init alsa_seq_oss_init(void)
 	snd_seq_oss_synth_init();
 
  error:
+	snd_seq_autoload_unlock();
 	return rc;
 }
 
 static void __exit alsa_seq_oss_exit(void)
 {
-	snd_seq_driver_unregister(&seq_oss_synth_driver);
+	snd_seq_device_unregister_driver(SNDRV_SEQ_DEV_ID_OSS);
 	snd_seq_oss_delete_client();
 	unregister_proc();
 	unregister_device();
@@ -229,19 +231,22 @@ register_device(void)
 	mutex_lock(&register_mutex);
 	if ((rc = snd_register_oss_device(SNDRV_OSS_DEVICE_TYPE_SEQUENCER,
 					  NULL, 0,
-					  &seq_oss_f_ops, NULL)) < 0) {
-		pr_err("ALSA: seq_oss: can't register device seq\n");
+					  &seq_oss_f_ops, NULL,
+					  SNDRV_SEQ_OSS_DEVNAME)) < 0) {
+		snd_printk(KERN_ERR "can't register device seq\n");
 		mutex_unlock(&register_mutex);
 		return rc;
 	}
 	if ((rc = snd_register_oss_device(SNDRV_OSS_DEVICE_TYPE_MUSIC,
 					  NULL, 0,
-					  &seq_oss_f_ops, NULL)) < 0) {
-		pr_err("ALSA: seq_oss: can't register device music\n");
+					  &seq_oss_f_ops, NULL,
+					  SNDRV_SEQ_OSS_DEVNAME)) < 0) {
+		snd_printk(KERN_ERR "can't register device music\n");
 		snd_unregister_oss_device(SNDRV_OSS_DEVICE_TYPE_SEQUENCER, NULL, 0);
 		mutex_unlock(&register_mutex);
 		return rc;
 	}
+	debug_printk(("device registered\n"));
 	mutex_unlock(&register_mutex);
 	return 0;
 }
@@ -250,10 +255,11 @@ static void
 unregister_device(void)
 {
 	mutex_lock(&register_mutex);
+	debug_printk(("device unregistered\n"));
 	if (snd_unregister_oss_device(SNDRV_OSS_DEVICE_TYPE_MUSIC, NULL, 0) < 0)		
-		pr_err("ALSA: seq_oss: error unregister device music\n");
+		snd_printk(KERN_ERR "error unregister device music\n");
 	if (snd_unregister_oss_device(SNDRV_OSS_DEVICE_TYPE_SEQUENCER, NULL, 0) < 0)
-		pr_err("ALSA: seq_oss: error unregister device seq\n");
+		snd_printk(KERN_ERR "error unregister device seq\n");
 	mutex_unlock(&register_mutex);
 }
 
@@ -261,7 +267,7 @@ unregister_device(void)
  * /proc interface
  */
 
-#ifdef CONFIG_SND_PROC_FS
+#ifdef CONFIG_PROC_FS
 
 static struct snd_info_entry *info_entry;
 
@@ -303,4 +309,4 @@ unregister_proc(void)
 	snd_info_free_entry(info_entry);
 	info_entry = NULL;
 }
-#endif /* CONFIG_SND_PROC_FS */
+#endif /* CONFIG_PROC_FS */

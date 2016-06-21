@@ -14,7 +14,7 @@
  */
 
 /**
- * struct ad7606_platform_data - platform/board specific information
+ * struct ad7606_platform_data - platform/board specifc information
  * @default_os:		default oversampling value {0, 2, 4, 8, 16, 32, 64}
  * @default_range:	default range +/-{5000, 10000} mVolt
  * @gpio_convst:	number of gpio connected to the CONVST pin
@@ -41,7 +41,7 @@ struct ad7606_platform_data {
 };
 
 /**
- * struct ad7606_chip_info - chip specific information
+ * struct ad7606_chip_info - chip specifc information
  * @name:		identification string for chip
  * @int_vref_mv:	the internal reference voltage
  * @channels:		channel specification

@@ -578,7 +578,7 @@ int lance_start_xmit(struct sk_buff *skb, struct net_device *dev)
 	outs++;
 	/* Kick the lance: transmit now */
 	WRITERDP(lp, LE_C0_INEA | LE_C0_TDMD);
-	dev_consume_skb_any(skb);
+	dev_kfree_skb(skb);
 
 	spin_lock_irqsave(&lp->devlock, flags);
 	if (TX_BUFFS_AVAIL)
@@ -661,7 +661,6 @@ void lance_poll(struct net_device *dev)
 	spin_unlock(&lp->devlock);
 	lance_interrupt(dev->irq, dev);
 }
-EXPORT_SYMBOL_GPL(lance_poll);
 #endif
 
 MODULE_LICENSE("GPL");

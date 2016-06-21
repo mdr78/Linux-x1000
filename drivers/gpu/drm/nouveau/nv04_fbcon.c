@@ -22,6 +22,8 @@
  * DEALINGS IN THE SOFTWARE.
  */
 
+#include <core/object.h>
+
 #include "nouveau_drm.h"
 #include "nouveau_dma.h"
 #include "nouveau_fbcon.h"
@@ -139,7 +141,8 @@ nv04_fbcon_accel_init(struct fb_info *info)
 	struct drm_device *dev = nfbdev->dev;
 	struct nouveau_drm *drm = nouveau_drm(dev);
 	struct nouveau_channel *chan = drm->channel;
-	struct nvif_device *device = &drm->device;
+	struct nouveau_device *device = nv_device(drm->device);
+	struct nouveau_object *object;
 	int surface_fmt, pattern_fmt, rect_fmt;
 	int ret;
 
@@ -171,48 +174,48 @@ nv04_fbcon_accel_init(struct fb_info *info)
 		return -EINVAL;
 	}
 
-	ret = nvif_object_init(&chan->user, 0x0062,
-			       device->info.family >= NV_DEVICE_INFO_V0_CELSIUS ?
-			       0x0062 : 0x0042, NULL, 0, &nfbdev->surf2d);
+	ret = nouveau_object_new(nv_object(chan->cli), NVDRM_CHAN, NvCtxSurf2D,
+				 device->card_type >= NV_10 ? 0x0062 : 0x0042,
+				 NULL, 0, &object);
 	if (ret)
 		return ret;
 
-	ret = nvif_object_init(&chan->user, 0x0019, 0x0019, NULL, 0,
-			       &nfbdev->clip);
+	ret = nouveau_object_new(nv_object(chan->cli), NVDRM_CHAN, NvClipRect,
+				 0x0019, NULL, 0, &object);
 	if (ret)
 		return ret;
 
-	ret = nvif_object_init(&chan->user, 0x0043, 0x0043, NULL, 0,
-			       &nfbdev->rop);
+	ret = nouveau_object_new(nv_object(chan->cli), NVDRM_CHAN, NvRop,
+				 0x0043, NULL, 0, &object);
 	if (ret)
 		return ret;
 
-	ret = nvif_object_init(&chan->user, 0x0044, 0x0044, NULL, 0,
-			       &nfbdev->patt);
+	ret = nouveau_object_new(nv_object(chan->cli), NVDRM_CHAN, NvImagePatt,
+				 0x0044, NULL, 0, &object);
 	if (ret)
 		return ret;
 
-	ret = nvif_object_init(&chan->user, 0x004a, 0x004a, NULL, 0,
-			       &nfbdev->gdi);
+	ret = nouveau_object_new(nv_object(chan->cli), NVDRM_CHAN, NvGdiRect,
+				 0x004a, NULL, 0, &object);
 	if (ret)
 		return ret;
 
-	ret = nvif_object_init(&chan->user, 0x005f,
-			       device->info.chipset >= 0x11 ? 0x009f : 0x005f,
-			       NULL, 0, &nfbdev->blit);
+	ret = nouveau_object_new(nv_object(chan->cli), NVDRM_CHAN, NvImageBlit,
+				 device->chipset >= 0x11 ? 0x009f : 0x005f,
+				 NULL, 0, &object);
 	if (ret)
 		return ret;
 
-	if (RING_SPACE(chan, 49 + (device->info.chipset >= 0x11 ? 4 : 0))) {
+	if (RING_SPACE(chan, 49)) {
 		nouveau_fbcon_gpu_lockup(info);
 		return 0;
 	}
 
 	BEGIN_NV04(chan, NvSubCtxSurf2D, 0x0000, 1);
-	OUT_RING(chan, nfbdev->surf2d.handle);
+	OUT_RING(chan, NvCtxSurf2D);
 	BEGIN_NV04(chan, NvSubCtxSurf2D, 0x0184, 2);
-	OUT_RING(chan, chan->vram.handle);
-	OUT_RING(chan, chan->vram.handle);
+	OUT_RING(chan, NvDmaFB);
+	OUT_RING(chan, NvDmaFB);
 	BEGIN_NV04(chan, NvSubCtxSurf2D, 0x0300, 4);
 	OUT_RING(chan, surface_fmt);
 	OUT_RING(chan, info->fix.line_length | (info->fix.line_length << 16));
@@ -220,12 +223,12 @@ nv04_fbcon_accel_init(struct fb_info *info)
 	OUT_RING(chan, info->fix.smem_start - dev->mode_config.fb_base);
 
 	BEGIN_NV04(chan, NvSubCtxSurf2D, 0x0000, 1);
-	OUT_RING(chan, nfbdev->rop.handle);
+	OUT_RING(chan, NvRop);
 	BEGIN_NV04(chan, NvSubCtxSurf2D, 0x0300, 1);
 	OUT_RING(chan, 0x55);
 
 	BEGIN_NV04(chan, NvSubCtxSurf2D, 0x0000, 1);
-	OUT_RING(chan, nfbdev->patt.handle);
+	OUT_RING(chan, NvImagePatt);
 	BEGIN_NV04(chan, NvSubCtxSurf2D, 0x0300, 8);
 	OUT_RING(chan, pattern_fmt);
 #ifdef __BIG_ENDIAN
@@ -241,18 +244,18 @@ nv04_fbcon_accel_init(struct fb_info *info)
 	OUT_RING(chan, ~0);
 
 	BEGIN_NV04(chan, NvSubCtxSurf2D, 0x0000, 1);
-	OUT_RING(chan, nfbdev->clip.handle);
+	OUT_RING(chan, NvClipRect);
 	BEGIN_NV04(chan, NvSubCtxSurf2D, 0x0300, 2);
 	OUT_RING(chan, 0);
 	OUT_RING(chan, (info->var.yres_virtual << 16) | info->var.xres_virtual);
 
 	BEGIN_NV04(chan, NvSubImageBlit, 0x0000, 1);
-	OUT_RING(chan, nfbdev->blit.handle);
+	OUT_RING(chan, NvImageBlit);
 	BEGIN_NV04(chan, NvSubImageBlit, 0x019c, 1);
-	OUT_RING(chan, nfbdev->surf2d.handle);
+	OUT_RING(chan, NvCtxSurf2D);
 	BEGIN_NV04(chan, NvSubImageBlit, 0x02fc, 1);
 	OUT_RING(chan, 3);
-	if (device->info.chipset >= 0x11 /*XXX: oclass == 0x009f*/) {
+	if (device->chipset >= 0x11 /*XXX: oclass == 0x009f*/) {
 		BEGIN_NV04(chan, NvSubImageBlit, 0x0120, 3);
 		OUT_RING(chan, 0);
 		OUT_RING(chan, 1);
@@ -260,12 +263,12 @@ nv04_fbcon_accel_init(struct fb_info *info)
 	}
 
 	BEGIN_NV04(chan, NvSubGdiRect, 0x0000, 1);
-	OUT_RING(chan, nfbdev->gdi.handle);
+	OUT_RING(chan, NvGdiRect);
 	BEGIN_NV04(chan, NvSubGdiRect, 0x0198, 1);
-	OUT_RING(chan, nfbdev->surf2d.handle);
+	OUT_RING(chan, NvCtxSurf2D);
 	BEGIN_NV04(chan, NvSubGdiRect, 0x0188, 2);
-	OUT_RING(chan, nfbdev->patt.handle);
-	OUT_RING(chan, nfbdev->rop.handle);
+	OUT_RING(chan, NvImagePatt);
+	OUT_RING(chan, NvRop);
 	BEGIN_NV04(chan, NvSubGdiRect, 0x0304, 1);
 	OUT_RING(chan, 1);
 	BEGIN_NV04(chan, NvSubGdiRect, 0x0300, 1);

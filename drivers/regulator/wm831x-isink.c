@@ -165,8 +165,10 @@ static int wm831x_isink_probe(struct platform_device *pdev)
 
 	isink = devm_kzalloc(&pdev->dev, sizeof(struct wm831x_isink),
 			     GFP_KERNEL);
-	if (!isink)
+	if (isink == NULL) {
+		dev_err(&pdev->dev, "Unable to allocate private data\n");
 		return -ENOMEM;
+	}
 
 	isink->wm831x = wm831x;
 
@@ -204,8 +206,7 @@ static int wm831x_isink_probe(struct platform_device *pdev)
 	irq = wm831x_irq(wm831x, platform_get_irq(pdev, 0));
 	ret = devm_request_threaded_irq(&pdev->dev, irq, NULL,
 					wm831x_isink_irq,
-					IRQF_TRIGGER_RISING | IRQF_ONESHOT,
-					isink->name,
+					IRQF_TRIGGER_RISING, isink->name,
 					isink);
 	if (ret != 0) {
 		dev_err(&pdev->dev, "Failed to request ISINK IRQ %d: %d\n",
@@ -225,6 +226,7 @@ static struct platform_driver wm831x_isink_driver = {
 	.probe = wm831x_isink_probe,
 	.driver		= {
 		.name	= "wm831x-isink",
+		.owner	= THIS_MODULE,
 	},
 };
 

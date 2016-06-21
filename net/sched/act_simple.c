@@ -1,5 +1,5 @@
 /*
- * net/sched/act_simple.c	Simple example of an action
+ * net/sched/simp.c	Simple example of an action
  *
  *		This program is free software; you can redistribute it and/or
  *		modify it under the terms of the GNU General Public License
@@ -25,6 +25,7 @@
 #include <net/tc_act/tc_defact.h>
 
 #define SIMP_TAB_MASK     7
+static struct tcf_hashinfo simp_hash_info;
 
 #define SIMP_MAX_DATA	32
 static int tcf_simp(struct sk_buff *skb, const struct tc_action *a,
@@ -46,10 +47,20 @@ static int tcf_simp(struct sk_buff *skb, const struct tc_action *a,
 	return d->tcf_action;
 }
 
-static void tcf_simp_release(struct tc_action *a, int bind)
+static int tcf_simp_release(struct tcf_defact *d, int bind)
 {
-	struct tcf_defact *d = to_defact(a);
-	kfree(d->tcfd_defdata);
+	int ret = 0;
+	if (d) {
+		if (bind)
+			d->tcf_bindcnt--;
+		d->tcf_refcnt--;
+		if (d->tcf_bindcnt <= 0 && d->tcf_refcnt <= 0) {
+			kfree(d->tcfd_defdata);
+			tcf_hash_destroy(&d->common, &simp_hash_info);
+			ret = 1;
+		}
+	}
+	return ret;
 }
 
 static int alloc_defdata(struct tcf_defact *d, char *defdata)
@@ -83,6 +94,7 @@ static int tcf_simp_init(struct net *net, struct nlattr *nla,
 	struct nlattr *tb[TCA_DEF_MAX + 1];
 	struct tc_defact *parm;
 	struct tcf_defact *d;
+	struct tcf_common *pc;
 	char *defdata;
 	int ret = 0, err;
 
@@ -102,26 +114,29 @@ static int tcf_simp_init(struct net *net, struct nlattr *nla,
 	parm = nla_data(tb[TCA_DEF_PARMS]);
 	defdata = nla_data(tb[TCA_DEF_DATA]);
 
-	if (!tcf_hash_check(parm->index, a, bind)) {
-		ret = tcf_hash_create(parm->index, est, a, sizeof(*d),
-				      bind, false);
-		if (ret)
-			return ret;
+	pc = tcf_hash_check(parm->index, a, bind);
+	if (!pc) {
+		pc = tcf_hash_create(parm->index, est, a, sizeof(*d), bind);
+		if (IS_ERR(pc))
+			return PTR_ERR(pc);
 
-		d = to_defact(a);
+		d = to_defact(pc);
 		ret = alloc_defdata(d, defdata);
 		if (ret < 0) {
-			tcf_hash_cleanup(a, est);
+			if (est)
+				gen_kill_estimator(&pc->tcfc_bstats,
+						   &pc->tcfc_rate_est);
+			kfree_rcu(pc, tcfc_rcu);
 			return ret;
 		}
 		d->tcf_action = parm->action;
 		ret = ACT_P_CREATED;
 	} else {
-		d = to_defact(a);
+		d = to_defact(pc);
 
 		if (bind)
 			return 0;
-		tcf_hash_release(a, bind);
+		tcf_simp_release(d, bind);
 		if (!ovr)
 			return -EEXIST;
 
@@ -129,8 +144,17 @@ static int tcf_simp_init(struct net *net, struct nlattr *nla,
 	}
 
 	if (ret == ACT_P_CREATED)
-		tcf_hash_insert(a);
+		tcf_hash_insert(pc, a->ops->hinfo);
 	return ret;
+}
+
+static int tcf_simp_cleanup(struct tc_action *a, int bind)
+{
+	struct tcf_defact *d = a->priv;
+
+	if (d)
+		return tcf_simp_release(d, bind);
+	return 0;
 }
 
 static int tcf_simp_dump(struct sk_buff *skb, struct tc_action *a,
@@ -163,11 +187,12 @@ nla_put_failure:
 
 static struct tc_action_ops act_simp_ops = {
 	.kind		=	"simple",
+	.hinfo		=	&simp_hash_info,
 	.type		=	TCA_ACT_SIMP,
 	.owner		=	THIS_MODULE,
 	.act		=	tcf_simp,
 	.dump		=	tcf_simp_dump,
-	.cleanup	=	tcf_simp_release,
+	.cleanup	=	tcf_simp_cleanup,
 	.init		=	tcf_simp_init,
 };
 
@@ -177,15 +202,23 @@ MODULE_LICENSE("GPL");
 
 static int __init simp_init_module(void)
 {
-	int ret;
-	ret = tcf_register_action(&act_simp_ops, SIMP_TAB_MASK);
+	int err, ret;
+	err = tcf_hashinfo_init(&simp_hash_info, SIMP_TAB_MASK);
+	if (err)
+		return err;
+
+	ret = tcf_register_action(&act_simp_ops);
 	if (!ret)
 		pr_info("Simple TC action Loaded\n");
+	else
+		tcf_hashinfo_destroy(&simp_hash_info);
+
 	return ret;
 }
 
 static void __exit simp_cleanup_module(void)
 {
+	tcf_hashinfo_destroy(&simp_hash_info);
 	tcf_unregister_action(&act_simp_ops);
 }
 

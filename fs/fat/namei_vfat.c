@@ -16,10 +16,11 @@
  */
 
 #include <linux/module.h>
+#include <linux/jiffies.h>
 #include <linux/ctype.h>
 #include <linux/slab.h>
+#include <linux/buffer_head.h>
 #include <linux/namei.h>
-#include <linux/random.h>
 #include "fat.h"
 
 /*
@@ -34,7 +35,7 @@ static int vfat_revalidate_shortname(struct dentry *dentry)
 {
 	int ret = 1;
 	spin_lock(&dentry->d_lock);
-	if (dentry->d_time != d_inode(dentry->d_parent)->i_version)
+	if (dentry->d_time != dentry->d_parent->d_inode->i_version)
 		ret = 0;
 	spin_unlock(&dentry->d_lock);
 	return ret;
@@ -46,7 +47,7 @@ static int vfat_revalidate(struct dentry *dentry, unsigned int flags)
 		return -ECHILD;
 
 	/* This is not negative dentry. Always valid. */
-	if (d_really_is_positive(dentry))
+	if (dentry->d_inode)
 		return 1;
 	return vfat_revalidate_shortname(dentry);
 }
@@ -66,7 +67,7 @@ static int vfat_revalidate_ci(struct dentry *dentry, unsigned int flags)
 	 * positive dentry isn't good idea. So it's unsupported like
 	 * rename("filename", "FILENAME") for now.
 	 */
-	if (d_really_is_positive(dentry))
+	if (dentry->d_inode)
 		return 1;
 
 	/*
@@ -323,17 +324,6 @@ static int vfat_create_shortname(struct inode *dir, struct nls_table *nls,
 	int sz = 0, extlen, baselen, i, numtail_baselen, numtail2_baselen;
 	int is_shortname;
 	struct shortname_info base_info, ext_info;
-	unsigned opts_shortname = opts->shortname;
-
-#ifdef CONFIG_VFAT_FS_NO_DUALNAMES
-	/*
-	 * When we do not have dualnames, we want to maximise the
-	 * chance that a file will be able to be represented with just
-	 * a 8.3 entry. We can do that by using the WINNT case
-	 * handling extensions to FAT.
-	 */
-	opts_shortname = VFAT_SFN_CREATE_WINNT;
-#endif
 
 	is_shortname = 1;
 	INIT_SHORTNAME_INFO(&base_info);
@@ -442,22 +432,13 @@ static int vfat_create_shortname(struct inode *dir, struct nls_table *nls,
 	memcpy(name_res, base, baselen);
 	memcpy(name_res + 8, ext, extlen);
 	*lcase = 0;
-
-#ifdef CONFIG_VFAT_NO_CREATE_WITH_LONGNAMES
-	if (is_shortname == 0)
-		return -ENAMETOOLONG;
-	if (!base_info.valid || !ext_info.valid)
-		return -EINVAL;
-	opts_shortname = VFAT_SFN_CREATE_WINNT;
-#endif
-
 	if (is_shortname && base_info.valid && ext_info.valid) {
 		if (vfat_find_form(dir, name_res) == 0)
 			return -EEXIST;
 
-		if (opts_shortname & VFAT_SFN_CREATE_WIN95) {
+		if (opts->shortname & VFAT_SFN_CREATE_WIN95) {
 			return (base_info.upper && ext_info.upper);
-		} else if (opts_shortname & VFAT_SFN_CREATE_WINNT) {
+		} else if (opts->shortname & VFAT_SFN_CREATE_WINNT) {
 			if ((base_info.upper || base_info.lower) &&
 			    (ext_info.upper || ext_info.lower)) {
 				if (!base_info.upper && base_info.lower)
@@ -596,66 +577,6 @@ xlate_to_uni(const unsigned char *name, int len, unsigned char *outname,
 	return 0;
 }
 
-#ifdef CONFIG_VFAT_FS_NO_DUALNAMES
-/*
- * This function creates a dummy 8.3 entry which is as compatible as
- * possible with existing FAT devices, while not being a valid
- * filename under windows or Linux
- */
-static void vfat_build_dummy_83_buffer(struct inode *dir, char *msdos_name,
-				       int is_dir)
-{
-	/*
-	 * These characters are all invalid in 8.3 names, plus have
-	 * been shown to be harmless on all tested devices
-	 */
-	const char invalidchar[] = { 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x0B,
-				     0x0C, 0x0E, 0x0F, 0x10, 0x11, 0x12, 0x13,
-				     0x14, 0x15, 0x16, 0x17, 0x18, 0x19, 0x1A,
-				     0x1B, 0x1C, 0x1D, 0x1E, 0x1F, 0x22, 0x2a,
-				     0x3a, 0x3c, 0x3e, 0x3f, 0x5b, 0x5d, 0x7c };
-	int i, tilde_pos, slash_pos;
-	u32 rand_num = prandom_u32();
-
-	/* We need a '~' in the prefix to make Win98 happy. */
-	tilde_pos = rand_num % 8;
-	rand_num >>= 3;
-
-	/*
-	 * the '/' makes sure that even unpatched Linux systems can't
-	 * get at files by the 8.3 entry. Don't put in a / in
-	 * directories as it can cause problems with some
-	 * photo frames
-	 */
-	if (is_dir)
-		slash_pos = -1;
-	else {
-		slash_pos = (tilde_pos + 1 + rand_num % 7) % 8;
-		rand_num >>= 3;
-	}
-
-	/*
-	 * fill in the first 8 bytes with invalid characters. Note
-	 * that we need to be careful not to run out of randomness. We
-	 * leave the 3 byte extension in place as some cheap MP3
-	 * players need them.
-	 */
-	for (i = 0; i < 8; i++) {
-		if (i == tilde_pos)
-			msdos_name[i] = '~';
-		else if (i == slash_pos)
-			msdos_name[i] = '/';
-		else {
-			msdos_name[i] =
-				invalidchar[rand_num % sizeof(invalidchar)];
-			rand_num /= sizeof(invalidchar);
-			if (rand_num < sizeof(invalidchar))
-				rand_num = prandom_u32();
-		}
-	}
-}
-#endif
-
 static int vfat_build_slots(struct inode *dir, const unsigned char *name,
 			    int len, int is_dir, int cluster,
 			    struct timespec *ts,
@@ -663,19 +584,15 @@ static int vfat_build_slots(struct inode *dir, const unsigned char *name,
 {
 	struct msdos_sb_info *sbi = MSDOS_SB(dir->i_sb);
 	struct fat_mount_options *opts = &sbi->options;
+	struct msdos_dir_slot *ps;
 	struct msdos_dir_entry *de;
-	unsigned char lcase;
+	unsigned char cksum, lcase;
 	unsigned char msdos_name[MSDOS_NAME];
 	wchar_t *uname;
 	__le16 time, date;
 	u8 time_cs;
-	int err, ulen, usize;
-#ifndef CONFIG_VFAT_NO_CREATE_WITH_LONGNAMES
-	int i;
-	struct msdos_dir_slot *ps;
-	unsigned char cksum;
+	int err, ulen, usize, i;
 	loff_t offset;
-#endif
 
 	*nr_slots = 0;
 
@@ -702,16 +619,6 @@ static int vfat_build_slots(struct inode *dir, const unsigned char *name,
 		goto shortname;
 	}
 
-#ifdef CONFIG_VFAT_FS_NO_DUALNAMES
-	printk_once(KERN_INFO
-		    "VFAT: not creating 8.3 short filenames for long names\n");
-	vfat_build_dummy_83_buffer(dir, msdos_name, is_dir);
-	lcase = FAT_NO_83NAME;
-#endif
-
-#ifdef CONFIG_VFAT_NO_CREATE_WITH_LONGNAMES
-	de = (struct msdos_dir_entry *)slots;
-#else
 	/* build the entry of long file name */
 	cksum = fat_checksum(msdos_name);
 
@@ -729,7 +636,6 @@ static int vfat_build_slots(struct inode *dir, const unsigned char *name,
 	}
 	slots[0].id |= 0x40;
 	de = (struct msdos_dir_entry *)ps;
-#endif
 
 shortname:
 	/* build the entry of 8.3 alias name */
@@ -830,12 +736,7 @@ static struct dentry *vfat_lookup(struct inode *dir, struct dentry *dentry,
 	}
 
 	alias = d_find_alias(inode);
-	/*
-	 * Checking "alias->d_parent == dentry->d_parent" to make sure
-	 * FS is not corrupted (especially double linked dir).
-	 */
-	if (alias && alias->d_parent == dentry->d_parent &&
-	    !vfat_d_anon_disconn(alias)) {
+	if (alias && !vfat_d_anon_disconn(alias)) {
 		/*
 		 * This inode has non anonymous-DCACHE_DISCONNECTED
 		 * dentry. This means, the user did ->lookup() by an
@@ -854,9 +755,12 @@ static struct dentry *vfat_lookup(struct inode *dir, struct dentry *dentry,
 
 out:
 	mutex_unlock(&MSDOS_SB(sb)->s_lock);
-	if (!inode)
-		dentry->d_time = dir->i_version;
-	return d_splice_alias(inode, dentry);
+	dentry->d_time = dentry->d_parent->d_inode->i_version;
+	dentry = d_splice_alias(inode, dentry);
+	if (dentry)
+		dentry->d_time = dentry->d_parent->d_inode->i_version;
+	return dentry;
+
 error:
 	mutex_unlock(&MSDOS_SB(sb)->s_lock);
 	return ERR_PTR(err);
@@ -889,6 +793,7 @@ static int vfat_create(struct inode *dir, struct dentry *dentry, umode_t mode,
 	inode->i_mtime = inode->i_atime = inode->i_ctime = ts;
 	/* timestamp is already written, so mark_inode_dirty() is unneeded. */
 
+	dentry->d_time = dentry->d_parent->d_inode->i_version;
 	d_instantiate(dentry, inode);
 out:
 	mutex_unlock(&MSDOS_SB(sb)->s_lock);
@@ -897,7 +802,7 @@ out:
 
 static int vfat_rmdir(struct inode *dir, struct dentry *dentry)
 {
-	struct inode *inode = d_inode(dentry);
+	struct inode *inode = dentry->d_inode;
 	struct super_block *sb = dir->i_sb;
 	struct fat_slot_info sinfo;
 	int err;
@@ -919,7 +824,6 @@ static int vfat_rmdir(struct inode *dir, struct dentry *dentry)
 	clear_nlink(inode);
 	inode->i_mtime = inode->i_atime = CURRENT_TIME_SEC;
 	fat_detach(inode);
-	dentry->d_time = dir->i_version;
 out:
 	mutex_unlock(&MSDOS_SB(sb)->s_lock);
 
@@ -928,7 +832,7 @@ out:
 
 static int vfat_unlink(struct inode *dir, struct dentry *dentry)
 {
-	struct inode *inode = d_inode(dentry);
+	struct inode *inode = dentry->d_inode;
 	struct super_block *sb = dir->i_sb;
 	struct fat_slot_info sinfo;
 	int err;
@@ -945,7 +849,6 @@ static int vfat_unlink(struct inode *dir, struct dentry *dentry)
 	clear_nlink(inode);
 	inode->i_mtime = inode->i_atime = CURRENT_TIME_SEC;
 	fat_detach(inode);
-	dentry->d_time = dir->i_version;
 out:
 	mutex_unlock(&MSDOS_SB(sb)->s_lock);
 
@@ -986,6 +889,7 @@ static int vfat_mkdir(struct inode *dir, struct dentry *dentry, umode_t mode)
 	inode->i_mtime = inode->i_atime = inode->i_ctime = ts;
 	/* timestamp is already written, so mark_inode_dirty() is unneeded. */
 
+	dentry->d_time = dentry->d_parent->d_inode->i_version;
 	d_instantiate(dentry, inode);
 
 	mutex_unlock(&MSDOS_SB(sb)->s_lock);
@@ -1011,8 +915,8 @@ static int vfat_rename(struct inode *old_dir, struct dentry *old_dentry,
 	struct super_block *sb = old_dir->i_sb;
 
 	old_sinfo.bh = sinfo.bh = dotdot_bh = NULL;
-	old_inode = d_inode(old_dentry);
-	new_inode = d_inode(new_dentry);
+	old_inode = old_dentry->d_inode;
+	new_inode = new_dentry->d_inode;
 	mutex_lock(&MSDOS_SB(sb)->s_lock);
 	err = vfat_find(old_dir, &old_dentry->d_name, &old_sinfo);
 	if (err)
@@ -1160,11 +1064,7 @@ static struct dentry *vfat_mount(struct file_system_type *fs_type,
 
 static struct file_system_type vfat_fs_type = {
 	.owner		= THIS_MODULE,
-#ifdef CONFIG_VFAT_NO_CREATE_WITH_LONGNAMES
-	.name		= "lfat",
-#else
 	.name		= "vfat",
-#endif
 	.mount		= vfat_mount,
 	.kill_sb	= kill_block_super,
 	.fs_flags	= FS_REQUIRES_DEV,
@@ -1184,9 +1084,6 @@ static void __exit exit_vfat_fs(void)
 MODULE_LICENSE("GPL");
 MODULE_DESCRIPTION("VFAT filesystem support");
 MODULE_AUTHOR("Gordon Chaffee");
-#ifdef CONFIG_VFAT_NO_CREATE_WITH_LONGNAMES
-MODULE_ALIAS("lfat");
-#endif
 
 module_init(init_vfat_fs)
 module_exit(exit_vfat_fs)

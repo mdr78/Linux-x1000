@@ -103,44 +103,6 @@ in_irq_stack(unsigned long *stack, unsigned long *irq_stack,
 	return (stack >= irq_stack && stack < irq_stack_end);
 }
 
-static const unsigned long irq_stack_size =
-	(IRQ_STACK_SIZE - 64) / sizeof(unsigned long);
-
-enum stack_type {
-	STACK_IS_UNKNOWN,
-	STACK_IS_NORMAL,
-	STACK_IS_EXCEPTION,
-	STACK_IS_IRQ,
-};
-
-static enum stack_type
-analyze_stack(int cpu, struct task_struct *task, unsigned long *stack,
-	      unsigned long **stack_end, unsigned long *irq_stack,
-	      unsigned *used, char **id)
-{
-	unsigned long addr;
-
-	addr = ((unsigned long)stack & (~(THREAD_SIZE - 1)));
-	if ((unsigned long)task_stack_page(task) == addr)
-		return STACK_IS_NORMAL;
-
-	*stack_end = in_exception_stack(cpu, (unsigned long)stack,
-					used, id);
-	if (*stack_end)
-		return STACK_IS_EXCEPTION;
-
-	if (!irq_stack)
-		return STACK_IS_NORMAL;
-
-	*stack_end = irq_stack;
-	irq_stack = irq_stack - irq_stack_size;
-
-	if (in_irq_stack(stack, irq_stack, *stack_end))
-		return STACK_IS_IRQ;
-
-	return STACK_IS_UNKNOWN;
-}
-
 /*
  * x86-64 can have up to three kernel stacks:
  * process stack
@@ -153,12 +115,12 @@ void dump_trace(struct task_struct *task, struct pt_regs *regs,
 		const struct stacktrace_ops *ops, void *data)
 {
 	const unsigned cpu = get_cpu();
-	struct thread_info *tinfo;
-	unsigned long *irq_stack = (unsigned long *)per_cpu(irq_stack_ptr, cpu);
-	unsigned long dummy;
+	unsigned long *irq_stack_end =
+		(unsigned long *)per_cpu(irq_stack_ptr, cpu);
 	unsigned used = 0;
+	struct thread_info *tinfo;
 	int graph = 0;
-	int done = 0;
+	unsigned long dummy;
 
 	if (!task)
 		task = current;
@@ -180,61 +142,49 @@ void dump_trace(struct task_struct *task, struct pt_regs *regs,
 	 * exceptions
 	 */
 	tinfo = task_thread_info(task);
-	while (!done) {
-		unsigned long *stack_end;
-		enum stack_type stype;
+	for (;;) {
 		char *id;
+		unsigned long *estack_end;
+		estack_end = in_exception_stack(cpu, (unsigned long)stack,
+						&used, &id);
 
-		stype = analyze_stack(cpu, task, stack, &stack_end,
-				      irq_stack, &used, &id);
-
-		/* Default finish unless specified to continue */
-		done = 1;
-
-		switch (stype) {
-
-		/* Break out early if we are on the thread stack */
-		case STACK_IS_NORMAL:
-			break;
-
-		case STACK_IS_EXCEPTION:
-
+		if (estack_end) {
 			if (ops->stack(data, id) < 0)
 				break;
 
 			bp = ops->walk_stack(tinfo, stack, bp, ops,
-					     data, stack_end, &graph);
+					     data, estack_end, &graph);
 			ops->stack(data, "<EOE>");
 			/*
 			 * We link to the next stack via the
 			 * second-to-last pointer (index -2 to end) in the
 			 * exception stack:
 			 */
-			stack = (unsigned long *) stack_end[-2];
-			done = 0;
-			break;
-
-		case STACK_IS_IRQ:
-
-			if (ops->stack(data, "IRQ") < 0)
-				break;
-			bp = ops->walk_stack(tinfo, stack, bp,
-				     ops, data, stack_end, &graph);
-			/*
-			 * We link to the next stack (which would be
-			 * the process stack normally) the last
-			 * pointer (index -1 to end) in the IRQ stack:
-			 */
-			stack = (unsigned long *) (stack_end[-1]);
-			irq_stack = NULL;
-			ops->stack(data, "EOI");
-			done = 0;
-			break;
-
-		case STACK_IS_UNKNOWN:
-			ops->stack(data, "UNK");
-			break;
+			stack = (unsigned long *) estack_end[-2];
+			continue;
 		}
+		if (irq_stack_end) {
+			unsigned long *irq_stack;
+			irq_stack = irq_stack_end -
+				(IRQ_STACK_SIZE - 64) / sizeof(*irq_stack);
+
+			if (in_irq_stack(stack, irq_stack, irq_stack_end)) {
+				if (ops->stack(data, "IRQ") < 0)
+					break;
+				bp = ops->walk_stack(tinfo, stack, bp,
+					ops, data, irq_stack_end, &graph);
+				/*
+				 * We link to the next stack (which would be
+				 * the process stack normally) the last
+				 * pointer (index -1 to end) in the IRQ stack:
+				 */
+				stack = (unsigned long *) (irq_stack_end[-1]);
+				irq_stack_end = NULL;
+				ops->stack(data, "EOI");
+				continue;
+			}
+		}
+		break;
 	}
 
 	/*
@@ -280,15 +230,12 @@ show_stack_log_lvl(struct task_struct *task, struct pt_regs *regs,
 				pr_cont(" <EOI> ");
 			}
 		} else {
-		if (kstack_end(stack))
+		if (((long) stack & (THREAD_SIZE-1)) == 0)
 			break;
 		}
-		if ((i % STACKSLOTS_PER_LINE) == 0) {
-			if (i != 0)
-				pr_cont("\n");
-			printk("%s %016lx", log_lvl, *stack++);
-		} else
-			pr_cont(" %016lx", *stack++);
+		if (i && ((i % STACKSLOTS_PER_LINE) == 0))
+			pr_cont("\n");
+		pr_cont(" %016lx", *stack++);
 		touch_nmi_watchdog();
 	}
 	preempt_enable();

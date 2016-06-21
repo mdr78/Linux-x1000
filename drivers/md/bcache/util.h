@@ -4,7 +4,6 @@
 
 #include <linux/blkdev.h>
 #include <linux/errno.h>
-#include <linux/blkdev.h>
 #include <linux/kernel.h>
 #include <linux/llist.h>
 #include <linux/ratelimit.h>
@@ -53,7 +52,10 @@ struct closure;
 
 #define free_heap(heap)							\
 do {									\
-	kvfree((heap)->data);						\
+	if (is_vmalloc_addr((heap)->data))				\
+		vfree((heap)->data);					\
+	else								\
+		kfree((heap)->data);					\
 	(heap)->data = NULL;						\
 } while (0)
 
@@ -161,7 +163,10 @@ do {									\
 
 #define free_fifo(fifo)							\
 do {									\
-	kvfree((fifo)->data);						\
+	if (is_vmalloc_addr((fifo)->data))				\
+		vfree((fifo)->data);					\
+	else								\
+		kfree((fifo)->data);					\
 	(fifo)->data = NULL;						\
 } while (0)
 
@@ -411,8 +416,8 @@ do {									\
 			  average_frequency,	frequency_units);	\
 	__print_time_stat(stats, name,					\
 			  average_duration,	duration_units);	\
-	sysfs_print(name ## _ ##max_duration ## _ ## duration_units,	\
-			div_u64((stats)->max_duration, NSEC_PER_ ## duration_units));\
+	__print_time_stat(stats, name,					\
+			  max_duration,		duration_units);	\
 									\
 	sysfs_print(name ## _last_ ## frequency_units, (stats)->last	\
 		    ? div_s64(local_clock() - (stats)->last,		\
@@ -571,10 +576,10 @@ static inline sector_t bdev_sectors(struct block_device *bdev)
 	return bdev->bd_inode->i_size >> 9;
 }
 
-#define closure_bio_submit(bio, cl)					\
+#define closure_bio_submit(bio, cl, dev)				\
 do {									\
 	closure_get(cl);						\
-	generic_make_request(bio);					\
+	bch_generic_make_request(bio, &(dev)->bio_split_hook);		\
 } while (0)
 
 uint64_t bch_crc64_update(uint64_t, const void *, size_t);

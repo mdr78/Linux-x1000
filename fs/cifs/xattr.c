@@ -28,8 +28,6 @@
 #include "cifsglob.h"
 #include "cifsproto.h"
 #include "cifs_debug.h"
-#include "cifs_fs_sb.h"
-#include "cifs_unicode.h"
 
 #define MAX_EA_VALUE_SIZE 65535
 #define CIFS_XATTR_DOS_ATTRIB "user.DosAttrib"
@@ -50,9 +48,9 @@ int cifs_removexattr(struct dentry *direntry, const char *ea_name)
 
 	if (direntry == NULL)
 		return -EIO;
-	if (d_really_is_negative(direntry))
+	if (direntry->d_inode == NULL)
 		return -EIO;
-	sb = d_inode(direntry)->i_sb;
+	sb = direntry->d_inode->i_sb;
 	if (sb == NULL)
 		return -EIO;
 
@@ -87,7 +85,8 @@ int cifs_removexattr(struct dentry *direntry, const char *ea_name)
 		if (pTcon->ses->server->ops->set_EA)
 			rc = pTcon->ses->server->ops->set_EA(xid, pTcon,
 				full_path, ea_name, NULL, (__u16)0,
-				cifs_sb->local_nls, cifs_remap(cifs_sb));
+				cifs_sb->local_nls, cifs_sb->mnt_cifs_flags &
+					CIFS_MOUNT_MAP_SPECIAL_CHR);
 	}
 remove_ea_exit:
 	kfree(full_path);
@@ -111,9 +110,9 @@ int cifs_setxattr(struct dentry *direntry, const char *ea_name,
 
 	if (direntry == NULL)
 		return -EIO;
-	if (d_really_is_negative(direntry))
+	if (direntry->d_inode == NULL)
 		return -EIO;
-	sb = d_inode(direntry)->i_sb;
+	sb = direntry->d_inode->i_sb;
 	if (sb == NULL)
 		return -EIO;
 
@@ -155,7 +154,8 @@ int cifs_setxattr(struct dentry *direntry, const char *ea_name,
 		if (pTcon->ses->server->ops->set_EA)
 			rc = pTcon->ses->server->ops->set_EA(xid, pTcon,
 				full_path, ea_name, ea_value, (__u16)value_size,
-				cifs_sb->local_nls, cifs_remap(cifs_sb));
+				cifs_sb->local_nls, cifs_sb->mnt_cifs_flags &
+					CIFS_MOUNT_MAP_SPECIAL_CHR);
 	} else if (strncmp(ea_name, XATTR_OS2_PREFIX, XATTR_OS2_PREFIX_LEN)
 		   == 0) {
 		if (cifs_sb->mnt_cifs_flags & CIFS_MOUNT_NO_XATTR)
@@ -165,7 +165,8 @@ int cifs_setxattr(struct dentry *direntry, const char *ea_name,
 		if (pTcon->ses->server->ops->set_EA)
 			rc = pTcon->ses->server->ops->set_EA(xid, pTcon,
 				full_path, ea_name, ea_value, (__u16)value_size,
-				cifs_sb->local_nls, cifs_remap(cifs_sb));
+				cifs_sb->local_nls, cifs_sb->mnt_cifs_flags &
+					CIFS_MOUNT_MAP_SPECIAL_CHR);
 	} else if (strncmp(ea_name, CIFS_XATTR_CIFS_ACL,
 			strlen(CIFS_XATTR_CIFS_ACL)) == 0) {
 #ifdef CONFIG_CIFS_ACL
@@ -177,12 +178,12 @@ int cifs_setxattr(struct dentry *direntry, const char *ea_name,
 			memcpy(pacl, ea_value, value_size);
 			if (pTcon->ses->server->ops->set_acl)
 				rc = pTcon->ses->server->ops->set_acl(pacl,
-						value_size, d_inode(direntry),
+						value_size, direntry->d_inode,
 						full_path, CIFS_ACL_DACL);
 			else
 				rc = -EOPNOTSUPP;
 			if (rc == 0) /* force revalidate of the inode */
-				CIFS_I(d_inode(direntry))->time = 0;
+				CIFS_I(direntry->d_inode)->time = 0;
 			kfree(pacl);
 		}
 #else
@@ -198,7 +199,8 @@ int cifs_setxattr(struct dentry *direntry, const char *ea_name,
 				rc = CIFSSMBSetPosixACL(xid, pTcon, full_path,
 					ea_value, (const int)value_size,
 					ACL_TYPE_ACCESS, cifs_sb->local_nls,
-					cifs_remap(cifs_sb));
+					cifs_sb->mnt_cifs_flags &
+						CIFS_MOUNT_MAP_SPECIAL_CHR);
 			cifs_dbg(FYI, "set POSIX ACL rc %d\n", rc);
 #else
 			cifs_dbg(FYI, "set POSIX ACL not supported\n");
@@ -210,7 +212,8 @@ int cifs_setxattr(struct dentry *direntry, const char *ea_name,
 				rc = CIFSSMBSetPosixACL(xid, pTcon, full_path,
 					ea_value, (const int)value_size,
 					ACL_TYPE_DEFAULT, cifs_sb->local_nls,
-					cifs_remap(cifs_sb));
+					cifs_sb->mnt_cifs_flags &
+						CIFS_MOUNT_MAP_SPECIAL_CHR);
 			cifs_dbg(FYI, "set POSIX default ACL rc %d\n", rc);
 #else
 			cifs_dbg(FYI, "set default POSIX ACL not supported\n");
@@ -246,9 +249,9 @@ ssize_t cifs_getxattr(struct dentry *direntry, const char *ea_name,
 
 	if (direntry == NULL)
 		return -EIO;
-	if (d_really_is_negative(direntry))
+	if (direntry->d_inode == NULL)
 		return -EIO;
-	sb = d_inode(direntry)->i_sb;
+	sb = direntry->d_inode->i_sb;
 	if (sb == NULL)
 		return -EIO;
 
@@ -282,7 +285,8 @@ ssize_t cifs_getxattr(struct dentry *direntry, const char *ea_name,
 		if (pTcon->ses->server->ops->query_all_EAs)
 			rc = pTcon->ses->server->ops->query_all_EAs(xid, pTcon,
 				full_path, ea_name, ea_value, buf_size,
-				cifs_sb->local_nls, cifs_remap(cifs_sb));
+				cifs_sb->local_nls, cifs_sb->mnt_cifs_flags &
+					CIFS_MOUNT_MAP_SPECIAL_CHR);
 	} else if (strncmp(ea_name, XATTR_OS2_PREFIX, XATTR_OS2_PREFIX_LEN) == 0) {
 		if (cifs_sb->mnt_cifs_flags & CIFS_MOUNT_NO_XATTR)
 			goto get_ea_exit;
@@ -291,7 +295,8 @@ ssize_t cifs_getxattr(struct dentry *direntry, const char *ea_name,
 		if (pTcon->ses->server->ops->query_all_EAs)
 			rc = pTcon->ses->server->ops->query_all_EAs(xid, pTcon,
 				full_path, ea_name, ea_value, buf_size,
-				cifs_sb->local_nls, cifs_remap(cifs_sb));
+				cifs_sb->local_nls, cifs_sb->mnt_cifs_flags &
+					CIFS_MOUNT_MAP_SPECIAL_CHR);
 	} else if (strncmp(ea_name, POSIX_ACL_XATTR_ACCESS,
 			  strlen(POSIX_ACL_XATTR_ACCESS)) == 0) {
 #ifdef CONFIG_CIFS_POSIX
@@ -299,7 +304,8 @@ ssize_t cifs_getxattr(struct dentry *direntry, const char *ea_name,
 			rc = CIFSSMBGetPosixACL(xid, pTcon, full_path,
 				ea_value, buf_size, ACL_TYPE_ACCESS,
 				cifs_sb->local_nls,
-				cifs_remap(cifs_sb));
+				cifs_sb->mnt_cifs_flags &
+					CIFS_MOUNT_MAP_SPECIAL_CHR);
 #else
 		cifs_dbg(FYI, "Query POSIX ACL not supported yet\n");
 #endif /* CONFIG_CIFS_POSIX */
@@ -310,7 +316,8 @@ ssize_t cifs_getxattr(struct dentry *direntry, const char *ea_name,
 			rc = CIFSSMBGetPosixACL(xid, pTcon, full_path,
 				ea_value, buf_size, ACL_TYPE_DEFAULT,
 				cifs_sb->local_nls,
-				cifs_remap(cifs_sb));
+				cifs_sb->mnt_cifs_flags &
+					CIFS_MOUNT_MAP_SPECIAL_CHR);
 #else
 		cifs_dbg(FYI, "Query POSIX default ACL not supported yet\n");
 #endif /* CONFIG_CIFS_POSIX */
@@ -324,7 +331,7 @@ ssize_t cifs_getxattr(struct dentry *direntry, const char *ea_name,
 				goto get_ea_exit; /* rc already EOPNOTSUPP */
 
 			pacl = pTcon->ses->server->ops->get_acl(cifs_sb,
-					d_inode(direntry), full_path, &acllen);
+					direntry->d_inode, full_path, &acllen);
 			if (IS_ERR(pacl)) {
 				rc = PTR_ERR(pacl);
 				cifs_dbg(VFS, "%s: error %zd getting sec desc\n",
@@ -382,9 +389,9 @@ ssize_t cifs_listxattr(struct dentry *direntry, char *data, size_t buf_size)
 
 	if (direntry == NULL)
 		return -EIO;
-	if (d_really_is_negative(direntry))
+	if (direntry->d_inode == NULL)
 		return -EIO;
-	sb = d_inode(direntry)->i_sb;
+	sb = direntry->d_inode->i_sb;
 	if (sb == NULL)
 		return -EIO;
 
@@ -414,7 +421,8 @@ ssize_t cifs_listxattr(struct dentry *direntry, char *data, size_t buf_size)
 	if (pTcon->ses->server->ops->query_all_EAs)
 		rc = pTcon->ses->server->ops->query_all_EAs(xid, pTcon,
 				full_path, NULL, data, buf_size,
-				cifs_sb->local_nls, cifs_remap(cifs_sb));
+				cifs_sb->local_nls, cifs_sb->mnt_cifs_flags &
+					CIFS_MOUNT_MAP_SPECIAL_CHR);
 list_ea_exit:
 	kfree(full_path);
 	free_xid(xid);

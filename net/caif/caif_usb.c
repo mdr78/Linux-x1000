@@ -87,12 +87,13 @@ static struct cflayer *cfusbl_create(int phyid, u8 ethaddr[ETH_ALEN],
 {
 	struct cfusbl *this = kmalloc(sizeof(struct cfusbl), GFP_ATOMIC);
 
-	if (!this)
+	if (!this) {
+		pr_warn("Out of memory\n");
 		return NULL;
-
+	}
 	caif_assert(offsetof(struct cfusbl, layer) == 0);
 
-	memset(&this->layer, 0, sizeof(this->layer));
+	memset(this, 0, sizeof(struct cflayer));
 	this->layer.receive = cfusbl_receive;
 	this->layer.transmit = cfusbl_transmit;
 	this->layer.ctrlcmd = cfusbl_ctrlcmd;

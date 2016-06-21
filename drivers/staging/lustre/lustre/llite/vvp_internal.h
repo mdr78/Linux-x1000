@@ -39,7 +39,8 @@
 #ifndef VVP_INTERNAL_H
 #define VVP_INTERNAL_H
 
-#include "../include/cl_object.h"
+
+#include <cl_object.h>
 #include "llite_internal.h"
 
 int	       vvp_io_init     (const struct lu_env *env,
@@ -56,6 +57,6 @@ struct lu_object *vvp_object_alloc(const struct lu_env *env,
 
 struct ccc_object *cl_inode2ccc(struct inode *inode);
 
-extern const struct file_operations vvp_dump_pgcache_file_ops;
+extern struct kmem_cache *vvp_thread_kmem;
 
 #endif /* VVP_INTERNAL_H */

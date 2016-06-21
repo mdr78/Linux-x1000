@@ -73,14 +73,9 @@ bfa_cb_ioim_done(void *drv, struct bfad_ioim_s *dio,
 
 		break;
 
+	case BFI_IOIM_STS_ABORTED:
 	case BFI_IOIM_STS_TIMEDOUT:
-		host_status = DID_TIME_OUT;
-		cmnd->result = ScsiResult(host_status, 0);
-		break;
 	case BFI_IOIM_STS_PATHTOV:
-		host_status = DID_TRANSPORT_DISRUPTED;
-		cmnd->result = ScsiResult(host_status, 0);
-		break;
 	default:
 		host_status = DID_ERROR;
 		cmnd->result = ScsiResult(host_status, 0);
@@ -776,7 +771,11 @@ bfad_thread_workq(struct bfad_s *bfad)
 static int
 bfad_im_slave_configure(struct scsi_device *sdev)
 {
-	scsi_change_queue_depth(sdev, bfa_lun_queue_depth);
+	if (sdev->tagged_supported)
+		scsi_activate_tcq(sdev, bfa_lun_queue_depth);
+	else
+		scsi_deactivate_tcq(sdev, bfa_lun_queue_depth);
+
 	return 0;
 }
 
@@ -849,8 +848,6 @@ bfad_im_module_exit(void)
 
 	if (bfad_im_scsi_vport_transport_template)
 		fc_release_transport(bfad_im_scsi_vport_transport_template);
-
-	idr_destroy(&bfad_im_port_index);
 }
 
 void
@@ -866,8 +863,14 @@ bfad_ramp_up_qdepth(struct bfad_itnim_s *itnim, struct scsi_device *sdev)
 			if (bfa_lun_queue_depth > tmp_sdev->queue_depth) {
 				if (tmp_sdev->id != sdev->id)
 					continue;
-				scsi_change_queue_depth(tmp_sdev,
-					tmp_sdev->queue_depth + 1);
+				if (tmp_sdev->ordered_tags)
+					scsi_adjust_queue_depth(tmp_sdev,
+						MSG_ORDERED_TAG,
+						tmp_sdev->queue_depth + 1);
+				else
+					scsi_adjust_queue_depth(tmp_sdev,
+						MSG_SIMPLE_TAG,
+						tmp_sdev->queue_depth + 1);
 
 				itnim->last_ramp_up_time = jiffies;
 			}

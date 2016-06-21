@@ -68,7 +68,7 @@ struct phy_dev_entry {
 	struct thermal_zone_device *tzone;
 };
 
-static struct thermal_zone_params pkg_temp_tz_params = {
+static const struct thermal_zone_params pkg_temp_tz_params = {
 	.no_hwmon	= true,
 };
 
@@ -164,7 +164,7 @@ err_ret:
 	return err;
 }
 
-static int sys_get_curr_temp(struct thermal_zone_device *tzd, int *temp)
+static int sys_get_curr_temp(struct thermal_zone_device *tzd, unsigned long *temp)
 {
 	u32 eax, edx;
 	struct phy_dev_entry *phy_dev_entry;
@@ -175,7 +175,7 @@ static int sys_get_curr_temp(struct thermal_zone_device *tzd, int *temp)
 	if (eax & 0x80000000) {
 		*temp = phy_dev_entry->tj_max -
 				((eax >> 16) & 0x7f) * 1000;
-		pr_debug("sys_get_curr_temp %d\n", *temp);
+		pr_debug("sys_get_curr_temp %ld\n", *temp);
 		return 0;
 	}
 
@@ -183,7 +183,7 @@ static int sys_get_curr_temp(struct thermal_zone_device *tzd, int *temp)
 }
 
 static int sys_get_trip_temp(struct thermal_zone_device *tzd,
-		int trip, int *temp)
+		int trip, unsigned long *temp)
 {
 	u32 eax, edx;
 	struct phy_dev_entry *phy_dev_entry;
@@ -214,13 +214,13 @@ static int sys_get_trip_temp(struct thermal_zone_device *tzd,
 		*temp = phy_dev_entry->tj_max - thres_reg_value * 1000;
 	else
 		*temp = 0;
-	pr_debug("sys_get_trip_temp %d\n", *temp);
+	pr_debug("sys_get_trip_temp %ld\n", *temp);
 
 	return 0;
 }
 
 static int sys_set_trip_temp(struct thermal_zone_device *tzd, int trip,
-							int temp)
+							unsigned long temp)
 {
 	u32 l, h;
 	struct phy_dev_entry *phy_dev_entry;
@@ -590,12 +590,12 @@ static int __init pkg_temp_thermal_init(void)
 	platform_thermal_package_rate_control =
 			pkg_temp_thermal_platform_thermal_rate_control;
 
-	cpu_notifier_register_begin();
+	get_online_cpus();
 	for_each_online_cpu(i)
 		if (get_core_online(i))
 			goto err_ret;
-	__register_hotcpu_notifier(&pkg_temp_thermal_notifier);
-	cpu_notifier_register_done();
+	register_hotcpu_notifier(&pkg_temp_thermal_notifier);
+	put_online_cpus();
 
 	pkg_temp_debugfs_init(); /* Don't care if fails */
 
@@ -604,7 +604,7 @@ static int __init pkg_temp_thermal_init(void)
 err_ret:
 	for_each_online_cpu(i)
 		put_core_offline(i);
-	cpu_notifier_register_done();
+	put_online_cpus();
 	kfree(pkg_work_scheduled);
 	platform_thermal_package_notify = NULL;
 	platform_thermal_package_rate_control = NULL;
@@ -617,8 +617,8 @@ static void __exit pkg_temp_thermal_exit(void)
 	struct phy_dev_entry *phdev, *n;
 	int i;
 
-	cpu_notifier_register_begin();
-	__unregister_hotcpu_notifier(&pkg_temp_thermal_notifier);
+	get_online_cpus();
+	unregister_hotcpu_notifier(&pkg_temp_thermal_notifier);
 	mutex_lock(&phy_dev_list_mutex);
 	list_for_each_entry_safe(phdev, n, &phy_dev_list, list) {
 		/* Retore old MSR value for package thermal interrupt */
@@ -636,7 +636,7 @@ static void __exit pkg_temp_thermal_exit(void)
 	for_each_online_cpu(i)
 		cancel_delayed_work_sync(
 			&per_cpu(pkg_temp_thermal_threshold_work, i));
-	cpu_notifier_register_done();
+	put_online_cpus();
 
 	kfree(pkg_work_scheduled);
 

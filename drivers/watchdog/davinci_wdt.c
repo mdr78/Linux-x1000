@@ -16,6 +16,7 @@
 #include <linux/types.h>
 #include <linux/kernel.h>
 #include <linux/watchdog.h>
+#include <linux/init.h>
 #include <linux/platform_device.h>
 #include <linux/io.h>
 #include <linux/device.h>
@@ -179,7 +180,6 @@ static int davinci_wdt_probe(struct platform_device *pdev)
 	wdd->min_timeout	= 1;
 	wdd->max_timeout	= MAX_HEARTBEAT;
 	wdd->timeout		= DEFAULT_HEARTBEAT;
-	wdd->parent		= &pdev->dev;
 
 	watchdog_init_timeout(wdd, heartbeat, dev);
 
@@ -219,6 +219,7 @@ MODULE_DEVICE_TABLE(of, davinci_wdt_of_match);
 static struct platform_driver platform_wdt_driver = {
 	.driver = {
 		.name = "davinci-wdt",
+		.owner	= THIS_MODULE,
 		.of_match_table = davinci_wdt_of_match,
 	},
 	.probe = davinci_wdt_probe,

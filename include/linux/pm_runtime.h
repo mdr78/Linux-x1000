@@ -24,22 +24,20 @@
 #define RPM_AUTO		0x08	/* Use autosuspend_delay */
 
 #ifdef CONFIG_PM
-extern struct workqueue_struct *pm_wq;
-
-static inline bool queue_pm_work(struct work_struct *work)
-{
-	return queue_work(pm_wq, work);
-}
-
 extern int pm_generic_runtime_suspend(struct device *dev);
 extern int pm_generic_runtime_resume(struct device *dev);
-extern int pm_runtime_force_suspend(struct device *dev);
-extern int pm_runtime_force_resume(struct device *dev);
+#else
+static inline int pm_generic_runtime_suspend(struct device *dev) { return 0; }
+static inline int pm_generic_runtime_resume(struct device *dev) { return 0; }
+#endif
+
+#ifdef CONFIG_PM_RUNTIME
+
+extern struct workqueue_struct *pm_wq;
 
 extern int __pm_runtime_idle(struct device *dev, int rpmflags);
 extern int __pm_runtime_suspend(struct device *dev, int rpmflags);
 extern int __pm_runtime_resume(struct device *dev, int rpmflags);
-extern int pm_runtime_get_if_in_use(struct device *dev);
 extern int pm_schedule_suspend(struct device *dev, unsigned int delay);
 extern int __pm_runtime_set_status(struct device *dev, unsigned int status);
 extern int pm_runtime_barrier(struct device *dev);
@@ -114,19 +112,7 @@ static inline void pm_runtime_mark_last_busy(struct device *dev)
 	ACCESS_ONCE(dev->power.last_busy) = jiffies;
 }
 
-static inline bool pm_runtime_is_irq_safe(struct device *dev)
-{
-	return dev->power.irq_safe;
-}
-
-#else /* !CONFIG_PM */
-
-static inline bool queue_pm_work(struct work_struct *work) { return false; }
-
-static inline int pm_generic_runtime_suspend(struct device *dev) { return 0; }
-static inline int pm_generic_runtime_resume(struct device *dev) { return 0; }
-static inline int pm_runtime_force_suspend(struct device *dev) { return 0; }
-static inline int pm_runtime_force_resume(struct device *dev) { return 0; }
+#else /* !CONFIG_PM_RUNTIME */
 
 static inline int __pm_runtime_idle(struct device *dev, int rpmflags)
 {
@@ -143,10 +129,6 @@ static inline int __pm_runtime_resume(struct device *dev, int rpmflags)
 static inline int pm_schedule_suspend(struct device *dev, unsigned int delay)
 {
 	return -ENOSYS;
-}
-static inline int pm_runtime_get_if_in_use(struct device *dev)
-{
-	return -EINVAL;
 }
 static inline int __pm_runtime_set_status(struct device *dev,
 					    unsigned int status) { return 0; }
@@ -168,7 +150,6 @@ static inline bool pm_runtime_enabled(struct device *dev) { return false; }
 
 static inline void pm_runtime_no_callbacks(struct device *dev) {}
 static inline void pm_runtime_irq_safe(struct device *dev) {}
-static inline bool pm_runtime_is_irq_safe(struct device *dev) { return false; }
 
 static inline bool pm_runtime_callbacks_present(struct device *dev) { return false; }
 static inline void pm_runtime_mark_last_busy(struct device *dev) {}
@@ -181,7 +162,7 @@ static inline unsigned long pm_runtime_autosuspend_expiration(
 static inline void pm_runtime_set_memalloc_noio(struct device *dev,
 						bool enable){}
 
-#endif /* !CONFIG_PM */
+#endif /* !CONFIG_PM_RUNTIME */
 
 static inline int pm_runtime_idle(struct device *dev)
 {

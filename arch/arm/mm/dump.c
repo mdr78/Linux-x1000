@@ -120,51 +120,34 @@ static const struct prot_bits pte_bits[] = {
 };
 
 static const struct prot_bits section_bits[] = {
-#ifdef CONFIG_ARM_LPAE
+#ifndef CONFIG_ARM_LPAE
+	/* These are approximate */
+	{
+		.mask	= PMD_SECT_AP_READ | PMD_SECT_AP_WRITE,
+		.val	= 0,
+		.set	= "    ro",
+	}, {
+		.mask	= PMD_SECT_AP_READ | PMD_SECT_AP_WRITE,
+		.val	= PMD_SECT_AP_WRITE,
+		.set	= "    RW",
+	}, {
+		.mask	= PMD_SECT_AP_READ | PMD_SECT_AP_WRITE,
+		.val	= PMD_SECT_AP_READ,
+		.set	= "USR ro",
+	}, {
+		.mask	= PMD_SECT_AP_READ | PMD_SECT_AP_WRITE,
+		.val	= PMD_SECT_AP_READ | PMD_SECT_AP_WRITE,
+		.set	= "USR RW",
+#else
 	{
 		.mask	= PMD_SECT_USER,
 		.val	= PMD_SECT_USER,
 		.set	= "USR",
 	}, {
-		.mask	= L_PMD_SECT_RDONLY,
-		.val	= L_PMD_SECT_RDONLY,
+		.mask	= PMD_SECT_RDONLY,
+		.val	= PMD_SECT_RDONLY,
 		.set	= "ro",
 		.clear	= "RW",
-#elif __LINUX_ARM_ARCH__ >= 6
-	{
-		.mask	= PMD_SECT_APX | PMD_SECT_AP_READ | PMD_SECT_AP_WRITE,
-		.val	= PMD_SECT_APX | PMD_SECT_AP_WRITE,
-		.set	= "    ro",
-	}, {
-		.mask	= PMD_SECT_APX | PMD_SECT_AP_READ | PMD_SECT_AP_WRITE,
-		.val	= PMD_SECT_AP_WRITE,
-		.set	= "    RW",
-	}, {
-		.mask	= PMD_SECT_APX | PMD_SECT_AP_READ | PMD_SECT_AP_WRITE,
-		.val	= PMD_SECT_AP_READ,
-		.set	= "USR ro",
-	}, {
-		.mask	= PMD_SECT_APX | PMD_SECT_AP_READ | PMD_SECT_AP_WRITE,
-		.val	= PMD_SECT_AP_READ | PMD_SECT_AP_WRITE,
-		.set	= "USR RW",
-#else /* ARMv4/ARMv5  */
-	/* These are approximate */
-	{
-		.mask   = PMD_SECT_AP_READ | PMD_SECT_AP_WRITE,
-		.val    = 0,
-		.set    = "    ro",
-	}, {
-		.mask   = PMD_SECT_AP_READ | PMD_SECT_AP_WRITE,
-		.val    = PMD_SECT_AP_WRITE,
-		.set    = "    RW",
-	}, {
-		.mask   = PMD_SECT_AP_READ | PMD_SECT_AP_WRITE,
-		.val    = PMD_SECT_AP_READ,
-		.set    = "USR ro",
-	}, {
-		.mask   = PMD_SECT_AP_READ | PMD_SECT_AP_WRITE,
-		.val    = PMD_SECT_AP_READ | PMD_SECT_AP_WRITE,
-		.set    = "USR RW",
 #endif
 	}, {
 		.mask	= PMD_SECT_XN,
@@ -219,6 +202,9 @@ static void note_page(struct pg_state *st, unsigned long addr, unsigned level, u
 {
 	static const char units[] = "KMGTPE";
 	u64 prot = val & pg_level[level].mask;
+
+	if (addr < USER_PGTABLES_CEILING)
+		return;
 
 	if (!st->level) {
 		st->level = level;
@@ -305,13 +291,15 @@ static void walk_pgd(struct seq_file *m)
 	pgd_t *pgd = swapper_pg_dir;
 	struct pg_state st;
 	unsigned long addr;
-	unsigned i;
+	unsigned i, pgdoff = USER_PGTABLES_CEILING / PGDIR_SIZE;
 
 	memset(&st, 0, sizeof(st));
 	st.seq = m;
 	st.marker = address_markers;
 
-	for (i = 0; i < PTRS_PER_PGD; i++, pgd++) {
+	pgd += pgdoff;
+
+	for (i = pgdoff; i < PTRS_PER_PGD; i++, pgd++) {
 		addr = i * PGDIR_SIZE;
 		if (!pgd_none(*pgd)) {
 			walk_pud(&st, pgd, addr);

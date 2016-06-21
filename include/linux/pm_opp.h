@@ -15,13 +15,14 @@
 #define __LINUX_OPP_H__
 
 #include <linux/err.h>
+#include <linux/cpufreq.h>
 #include <linux/notifier.h>
 
 struct dev_pm_opp;
 struct device;
 
 enum dev_pm_opp_event {
-	OPP_EVENT_ADD, OPP_EVENT_REMOVE, OPP_EVENT_ENABLE, OPP_EVENT_DISABLE,
+	OPP_EVENT_ADD, OPP_EVENT_ENABLE, OPP_EVENT_DISABLE,
 };
 
 #if defined(CONFIG_PM_OPP)
@@ -30,11 +31,7 @@ unsigned long dev_pm_opp_get_voltage(struct dev_pm_opp *opp);
 
 unsigned long dev_pm_opp_get_freq(struct dev_pm_opp *opp);
 
-bool dev_pm_opp_is_turbo(struct dev_pm_opp *opp);
-
 int dev_pm_opp_get_opp_count(struct device *dev);
-unsigned long dev_pm_opp_get_max_clock_latency(struct device *dev);
-struct dev_pm_opp *dev_pm_opp_get_suspend_opp(struct device *dev);
 
 struct dev_pm_opp *dev_pm_opp_find_freq_exact(struct device *dev,
 					      unsigned long freq,
@@ -48,7 +45,6 @@ struct dev_pm_opp *dev_pm_opp_find_freq_ceil(struct device *dev,
 
 int dev_pm_opp_add(struct device *dev, unsigned long freq,
 		   unsigned long u_volt);
-void dev_pm_opp_remove(struct device *dev, unsigned long freq);
 
 int dev_pm_opp_enable(struct device *dev, unsigned long freq);
 
@@ -66,24 +62,9 @@ static inline unsigned long dev_pm_opp_get_freq(struct dev_pm_opp *opp)
 	return 0;
 }
 
-static inline bool dev_pm_opp_is_turbo(struct dev_pm_opp *opp)
-{
-	return false;
-}
-
 static inline int dev_pm_opp_get_opp_count(struct device *dev)
 {
 	return 0;
-}
-
-static inline unsigned long dev_pm_opp_get_max_clock_latency(struct device *dev)
-{
-	return 0;
-}
-
-static inline struct dev_pm_opp *dev_pm_opp_get_suspend_opp(struct device *dev)
-{
-	return NULL;
 }
 
 static inline struct dev_pm_opp *dev_pm_opp_find_freq_exact(struct device *dev,
@@ -110,10 +91,6 @@ static inline int dev_pm_opp_add(struct device *dev, unsigned long freq,
 	return -EINVAL;
 }
 
-static inline void dev_pm_opp_remove(struct device *dev, unsigned long freq)
-{
-}
-
 static inline int dev_pm_opp_enable(struct device *dev, unsigned long freq)
 {
 	return 0;
@@ -132,40 +109,31 @@ static inline struct srcu_notifier_head *dev_pm_opp_get_notifier(
 #endif		/* CONFIG_PM_OPP */
 
 #if defined(CONFIG_PM_OPP) && defined(CONFIG_OF)
-int dev_pm_opp_of_add_table(struct device *dev);
-void dev_pm_opp_of_remove_table(struct device *dev);
-int dev_pm_opp_of_cpumask_add_table(cpumask_var_t cpumask);
-void dev_pm_opp_of_cpumask_remove_table(cpumask_var_t cpumask);
-int dev_pm_opp_of_get_sharing_cpus(struct device *cpu_dev, cpumask_var_t cpumask);
-int dev_pm_opp_set_sharing_cpus(struct device *cpu_dev, cpumask_var_t cpumask);
+int of_init_opp_table(struct device *dev);
 #else
-static inline int dev_pm_opp_of_add_table(struct device *dev)
+static inline int of_init_opp_table(struct device *dev)
+{
+	return -EINVAL;
+}
+#endif
+
+#if defined(CONFIG_CPU_FREQ) && defined(CONFIG_PM_OPP)
+int dev_pm_opp_init_cpufreq_table(struct device *dev,
+			    struct cpufreq_frequency_table **table);
+void dev_pm_opp_free_cpufreq_table(struct device *dev,
+				struct cpufreq_frequency_table **table);
+#else
+static inline int dev_pm_opp_init_cpufreq_table(struct device *dev,
+			    struct cpufreq_frequency_table **table)
 {
 	return -EINVAL;
 }
 
-static inline void dev_pm_opp_of_remove_table(struct device *dev)
+static inline
+void dev_pm_opp_free_cpufreq_table(struct device *dev,
+				struct cpufreq_frequency_table **table)
 {
 }
-
-static inline int dev_pm_opp_of_cpumask_add_table(cpumask_var_t cpumask)
-{
-	return -ENOSYS;
-}
-
-static inline void dev_pm_opp_of_cpumask_remove_table(cpumask_var_t cpumask)
-{
-}
-
-static inline int dev_pm_opp_of_get_sharing_cpus(struct device *cpu_dev, cpumask_var_t cpumask)
-{
-	return -ENOSYS;
-}
-
-static inline int dev_pm_opp_set_sharing_cpus(struct device *cpu_dev, cpumask_var_t cpumask)
-{
-	return -ENOSYS;
-}
-#endif
+#endif		/* CONFIG_CPU_FREQ */
 
 #endif		/* __LINUX_OPP_H__ */

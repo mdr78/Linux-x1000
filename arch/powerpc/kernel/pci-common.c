@@ -20,7 +20,7 @@
 #include <linux/pci.h>
 #include <linux/string.h>
 #include <linux/init.h>
-#include <linux/delay.h>
+#include <linux/bootmem.h>
 #include <linux/export.h>
 #include <linux/of_address.h>
 #include <linux/of_pci.h>
@@ -76,7 +76,7 @@ struct pci_controller *pcibios_alloc_controller(struct device_node *dev)
 	list_add_tail(&phb->list_node, &hose_list);
 	spin_unlock(&hose_spinlock);
 	phb->dn = dev;
-	phb->is_dynamic = slab_is_available();
+	phb->is_dynamic = mem_init_done;
 #ifdef CONFIG_PPC64
 	if (dev) {
 		int nid = of_node_to_nid(dev);
@@ -89,7 +89,6 @@ struct pci_controller *pcibios_alloc_controller(struct device_node *dev)
 #endif
 	return phb;
 }
-EXPORT_SYMBOL_GPL(pcibios_alloc_controller);
 
 void pcibios_free_controller(struct pci_controller *phb)
 {
@@ -100,7 +99,6 @@ void pcibios_free_controller(struct pci_controller *phb)
 	if (phb->is_dynamic)
 		kfree(phb);
 }
-EXPORT_SYMBOL_GPL(pcibios_free_controller);
 
 /*
  * The function is used to return the minimal alignment
@@ -111,10 +109,8 @@ EXPORT_SYMBOL_GPL(pcibios_free_controller);
 resource_size_t pcibios_window_alignment(struct pci_bus *bus,
 					 unsigned long type)
 {
-	struct pci_controller *phb = pci_bus_to_host(bus);
-
-	if (phb->controller_ops.window_alignment)
-		return phb->controller_ops.window_alignment(bus, type);
+	if (ppc_md.pcibios_window_alignment)
+		return ppc_md.pcibios_window_alignment(bus, type);
 
 	/*
 	 * PCI core will figure out the default
@@ -123,28 +119,6 @@ resource_size_t pcibios_window_alignment(struct pci_bus *bus,
 	 */
 	return 1;
 }
-
-void pcibios_reset_secondary_bus(struct pci_dev *dev)
-{
-	struct pci_controller *phb = pci_bus_to_host(dev->bus);
-
-	if (phb->controller_ops.reset_secondary_bus) {
-		phb->controller_ops.reset_secondary_bus(dev);
-		return;
-	}
-
-	pci_reset_secondary_bus(dev);
-}
-
-#ifdef CONFIG_PCI_IOV
-resource_size_t pcibios_iov_resource_alignment(struct pci_dev *pdev, int resno)
-{
-	if (ppc_md.pcibios_iov_resource_alignment)
-		return ppc_md.pcibios_iov_resource_alignment(pdev, resno);
-
-	return pci_iov_resource_size(pdev, resno);
-}
-#endif /* CONFIG_PCI_IOV */
 
 static resource_size_t pcibios_io_size(const struct pci_controller *hose)
 {
@@ -225,6 +199,26 @@ struct pci_controller* pci_find_hose_for_OF_device(struct device_node* node)
 		node = node->parent;
 	}
 	return NULL;
+}
+
+static ssize_t pci_show_devspec(struct device *dev,
+		struct device_attribute *attr, char *buf)
+{
+	struct pci_dev *pdev;
+	struct device_node *np;
+
+	pdev = to_pci_dev (dev);
+	np = pci_device_to_OF_node(pdev);
+	if (np == NULL || np->full_name == NULL)
+		return 0;
+	return sprintf(buf, "%s", np->full_name);
+}
+static DEVICE_ATTR(devspec, S_IRUGO, pci_show_devspec, NULL);
+
+/* Add sysfs properties */
+int pcibios_add_platform_entries(struct pci_dev *pdev)
+{
+	return device_create_file(&pdev->dev, &dev_attr_devspec);
 }
 
 /*
@@ -672,36 +666,60 @@ void pci_resource_to_user(const struct pci_dev *dev, int bar,
 void pci_process_bridge_OF_ranges(struct pci_controller *hose,
 				  struct device_node *dev, int primary)
 {
+	const __be32 *ranges;
+	int rlen;
+	int pna = of_n_addr_cells(dev);
+	int np = pna + 5;
 	int memno = 0;
+	u32 pci_space;
+	unsigned long long pci_addr, cpu_addr, pci_next, cpu_next, size;
 	struct resource *res;
-	struct of_pci_range range;
-	struct of_pci_range_parser parser;
 
 	printk(KERN_INFO "PCI host bridge %s %s ranges:\n",
 	       dev->full_name, primary ? "(primary)" : "");
 
-	/* Check for ranges property */
-	if (of_pci_range_parser_init(&parser, dev))
+	/* Get ranges property */
+	ranges = of_get_property(dev, "ranges", &rlen);
+	if (ranges == NULL)
 		return;
 
 	/* Parse it */
-	for_each_of_pci_range(&parser, &range) {
+	while ((rlen -= np * 4) >= 0) {
+		/* Read next ranges element */
+		pci_space = of_read_number(ranges, 1);
+		pci_addr = of_read_number(ranges + 1, 2);
+		cpu_addr = of_translate_address(dev, ranges + 3);
+		size = of_read_number(ranges + pna + 3, 2);
+		ranges += np;
+
 		/* If we failed translation or got a zero-sized region
 		 * (some FW try to feed us with non sensical zero sized regions
 		 * such as power3 which look like some kind of attempt at exposing
 		 * the VGA memory hole)
 		 */
-		if (range.cpu_addr == OF_BAD_ADDR || range.size == 0)
+		if (cpu_addr == OF_BAD_ADDR || size == 0)
 			continue;
+
+		/* Now consume following elements while they are contiguous */
+		for (; rlen >= np * sizeof(u32);
+		     ranges += np, rlen -= np * 4) {
+			if (of_read_number(ranges, 1) != pci_space)
+				break;
+			pci_next = of_read_number(ranges + 1, 2);
+			cpu_next = of_translate_address(dev, ranges + 3);
+			if (pci_next != pci_addr + size ||
+			    cpu_next != cpu_addr + size)
+				break;
+			size += of_read_number(ranges + pna + 3, 2);
+		}
 
 		/* Act based on address space type */
 		res = NULL;
-		switch (range.flags & IORESOURCE_TYPE_BITS) {
-		case IORESOURCE_IO:
+		switch ((pci_space >> 24) & 0x3) {
+		case 1:		/* PCI IO space */
 			printk(KERN_INFO
 			       "  IO 0x%016llx..0x%016llx -> 0x%016llx\n",
-			       range.cpu_addr, range.cpu_addr + range.size - 1,
-			       range.pci_addr);
+			       cpu_addr, cpu_addr + size - 1, pci_addr);
 
 			/* We support only one IO range */
 			if (hose->pci_io_size) {
@@ -711,12 +729,11 @@ void pci_process_bridge_OF_ranges(struct pci_controller *hose,
 			}
 #ifdef CONFIG_PPC32
 			/* On 32 bits, limit I/O space to 16MB */
-			if (range.size > 0x01000000)
-				range.size = 0x01000000;
+			if (size > 0x01000000)
+				size = 0x01000000;
 
 			/* 32 bits needs to map IOs here */
-			hose->io_base_virt = ioremap(range.cpu_addr,
-						range.size);
+			hose->io_base_virt = ioremap(cpu_addr, size);
 
 			/* Expect trouble if pci_addr is not 0 */
 			if (primary)
@@ -726,20 +743,20 @@ void pci_process_bridge_OF_ranges(struct pci_controller *hose,
 			/* pci_io_size and io_base_phys always represent IO
 			 * space starting at 0 so we factor in pci_addr
 			 */
-			hose->pci_io_size = range.pci_addr + range.size;
-			hose->io_base_phys = range.cpu_addr - range.pci_addr;
+			hose->pci_io_size = pci_addr + size;
+			hose->io_base_phys = cpu_addr - pci_addr;
 
 			/* Build resource */
 			res = &hose->io_resource;
-			range.cpu_addr = range.pci_addr;
+			res->flags = IORESOURCE_IO;
+			res->start = pci_addr;
 			break;
-		case IORESOURCE_MEM:
+		case 2:		/* PCI Memory space */
+		case 3:		/* PCI 64 bits Memory space */
 			printk(KERN_INFO
 			       " MEM 0x%016llx..0x%016llx -> 0x%016llx %s\n",
-			       range.cpu_addr, range.cpu_addr + range.size - 1,
-			       range.pci_addr,
-			       (range.pci_space & 0x40000000) ?
-			       "Prefetch" : "");
+			       cpu_addr, cpu_addr + size - 1, pci_addr,
+			       (pci_space & 0x40000000) ? "Prefetch" : "");
 
 			/* We support only 3 memory ranges */
 			if (memno >= 3) {
@@ -748,25 +765,28 @@ void pci_process_bridge_OF_ranges(struct pci_controller *hose,
 				continue;
 			}
 			/* Handles ISA memory hole space here */
-			if (range.pci_addr == 0) {
+			if (pci_addr == 0) {
 				if (primary || isa_mem_base == 0)
-					isa_mem_base = range.cpu_addr;
-				hose->isa_mem_phys = range.cpu_addr;
-				hose->isa_mem_size = range.size;
+					isa_mem_base = cpu_addr;
+				hose->isa_mem_phys = cpu_addr;
+				hose->isa_mem_size = size;
 			}
 
 			/* Build resource */
-			hose->mem_offset[memno] = range.cpu_addr -
-							range.pci_addr;
+			hose->mem_offset[memno] = cpu_addr - pci_addr;
 			res = &hose->mem_resources[memno++];
+			res->flags = IORESOURCE_MEM;
+			if (pci_space & 0x40000000)
+				res->flags |= IORESOURCE_PREFETCH;
+			res->start = cpu_addr;
 			break;
 		}
 		if (res != NULL) {
 			res->name = dev->full_name;
-			res->flags = range.flags;
-			res->start = range.cpu_addr;
-			res->end = range.cpu_addr + range.size - 1;
-			res->parent = res->child = res->sibling = NULL;
+			res->end = res->start + size - 1;
+			res->parent = NULL;
+			res->sibling = NULL;
+			res->child = NULL;
 		}
 	}
 }
@@ -804,10 +824,6 @@ static void pcibios_fixup_resources(struct pci_dev *dev)
 		       pci_name(dev));
 		return;
 	}
-
-	if (dev->is_virtfn)
-		return;
-
 	for (i = 0; i < DEVICE_COUNT_RESOURCE; i++) {
 		struct resource *res = dev->resource + i;
 		struct pci_bus_region reg;
@@ -824,15 +840,23 @@ static void pcibios_fixup_resources(struct pci_dev *dev)
 		    (reg.start == 0 && !pci_has_flag(PCI_PROBE_ONLY))) {
 			/* Only print message if not re-assigning */
 			if (!pci_has_flag(PCI_REASSIGN_ALL_RSRC))
-				pr_debug("PCI:%s Resource %d %pR is unassigned\n",
-					 pci_name(dev), i, res);
+				pr_debug("PCI:%s Resource %d %016llx-%016llx [%x] "
+					 "is unassigned\n",
+					 pci_name(dev), i,
+					 (unsigned long long)res->start,
+					 (unsigned long long)res->end,
+					 (unsigned int)res->flags);
 			res->end -= res->start;
 			res->start = 0;
 			res->flags |= IORESOURCE_UNSET;
 			continue;
 		}
 
-		pr_debug("PCI:%s Resource %d %pR\n", pci_name(dev), i, res);
+		pr_debug("PCI:%s Resource %d %016llx-%016llx [%x]\n",
+			 pci_name(dev), i,
+			 (unsigned long long)res->start,\
+			 (unsigned long long)res->end,
+			 (unsigned int)res->flags);
 	}
 
 	/* Call machine specific resource fixup */
@@ -936,7 +960,11 @@ static void pcibios_fixup_bridge(struct pci_bus *bus)
 			continue;
 		}
 
-		pr_debug("PCI:%s Bus rsrc %d %pR\n", pci_name(dev), i, res);
+		pr_debug("PCI:%s Bus rsrc %d %016llx-%016llx [%x]\n",
+			 pci_name(dev), i,
+			 (unsigned long long)res->start,\
+			 (unsigned long long)res->end,
+			 (unsigned int)res->flags);
 
 		/* Try to detect uninitialized P2P bridge resources,
 		 * and clear them out so they get re-assigned later
@@ -950,8 +978,6 @@ static void pcibios_fixup_bridge(struct pci_bus *bus)
 
 void pcibios_setup_bus_self(struct pci_bus *bus)
 {
-	struct pci_controller *phb;
-
 	/* Fix up the bus resources for P2P bridges */
 	if (bus->self != NULL)
 		pcibios_fixup_bridge(bus);
@@ -963,14 +989,12 @@ void pcibios_setup_bus_self(struct pci_bus *bus)
 		ppc_md.pcibios_fixup_bus(bus);
 
 	/* Setup bus DMA mappings */
-	phb = pci_bus_to_host(bus);
-	if (phb->controller_ops.dma_bus_setup)
-		phb->controller_ops.dma_bus_setup(bus);
+	if (ppc_md.pci_dma_bus_setup)
+		ppc_md.pci_dma_bus_setup(bus);
 }
 
 static void pcibios_setup_device(struct pci_dev *dev)
 {
-	struct pci_controller *phb;
 	/* Fixup NUMA node as it may not be setup yet by the generic
 	 * code and is needed by the DMA init
 	 */
@@ -981,9 +1005,8 @@ static void pcibios_setup_device(struct pci_dev *dev)
 	set_dma_offset(&dev->dev, PCI_DRAM_OFFSET);
 
 	/* Additional platform DMA/iommu setup */
-	phb = pci_bus_to_host(dev->bus);
-	if (phb->controller_ops.dma_dev_setup)
-		phb->controller_ops.dma_dev_setup(dev);
+	if (ppc_md.pci_dma_dev_setup)
+		ppc_md.pci_dma_dev_setup(dev);
 
 	/* Read default IRQs and fixup if necessary */
 	pci_read_irq_line(dev);
@@ -999,12 +1022,6 @@ int pcibios_add_device(struct pci_dev *dev)
 	 */
 	if (dev->bus->is_added)
 		pcibios_setup_device(dev);
-
-#ifdef CONFIG_PCI_IOV
-	if (ppc_md.pcibios_fixup_sriov)
-		ppc_md.pcibios_fixup_sriov(dev);
-#endif /* CONFIG_PCI_IOV */
-
 	return 0;
 }
 
@@ -1121,8 +1138,10 @@ static int reparent_resources(struct resource *parent,
 	*pp = NULL;
 	for (p = res->child; p != NULL; p = p->sibling) {
 		p->parent = res;
-		pr_debug("PCI: Reparented %s %pR under %s\n",
-			 p->name, p, res->name);
+		pr_debug("PCI: Reparented %s [%llx..%llx] under %s\n",
+			 p->name,
+			 (unsigned long long)p->start,
+			 (unsigned long long)p->end, res->name);
 	}
 	return 0;
 }
@@ -1160,7 +1179,7 @@ static int reparent_resources(struct resource *parent,
  *	    as well.
  */
 
-static void pcibios_allocate_bus_resources(struct pci_bus *bus)
+void pcibios_allocate_bus_resources(struct pci_bus *bus)
 {
 	struct pci_bus *b;
 	int i;
@@ -1191,13 +1210,16 @@ static void pcibios_allocate_bus_resources(struct pci_bus *bus)
 			}
 		}
 
-		pr_debug("PCI: %s (bus %d) bridge rsrc %d: %pR, parent %p (%s)\n",
-			 bus->self ? pci_name(bus->self) : "PHB", bus->number,
-			 i, res, pr, (pr && pr->name) ? pr->name : "nil");
+		pr_debug("PCI: %s (bus %d) bridge rsrc %d: %016llx-%016llx "
+			 "[0x%x], parent %p (%s)\n",
+			 bus->self ? pci_name(bus->self) : "PHB",
+			 bus->number, i,
+			 (unsigned long long)res->start,
+			 (unsigned long long)res->end,
+			 (unsigned int)res->flags,
+			 pr, (pr && pr->name) ? pr->name : "nil");
 
 		if (pr && !(pr->flags & IORESOURCE_UNSET)) {
-			struct pci_dev *dev = bus->self;
-
 			if (request_resource(pr, res) == 0)
 				continue;
 			/*
@@ -1206,11 +1228,6 @@ static void pcibios_allocate_bus_resources(struct pci_bus *bus)
 			 * bridge resource and try again.
 			 */
 			if (reparent_resources(pr, res) == 0)
-				continue;
-
-			if (dev && i < PCI_BRIDGE_RESOURCE_NUM &&
-			    pci_claim_bridge_resource(dev,
-						i + PCI_BRIDGE_RESOURCES) == 0)
 				continue;
 		}
 		pr_warning("PCI: Cannot allocate resource region "
@@ -1235,8 +1252,11 @@ static inline void alloc_resource(struct pci_dev *dev, int idx)
 {
 	struct resource *pr, *r = &dev->resource[idx];
 
-	pr_debug("PCI: Allocating %s: Resource %d: %pR\n",
-		 pci_name(dev), idx, r);
+	pr_debug("PCI: Allocating %s: Resource %d: %016llx..%016llx [%x]\n",
+		 pci_name(dev), idx,
+		 (unsigned long long)r->start,
+		 (unsigned long long)r->end,
+		 (unsigned int)r->flags);
 
 	pr = pci_find_parent_resource(dev, r);
 	if (!pr || (pr->flags & IORESOURCE_UNSET) ||
@@ -1244,7 +1264,11 @@ static inline void alloc_resource(struct pci_dev *dev, int idx)
 		printk(KERN_WARNING "PCI: Cannot allocate resource region %d"
 		       " of device %s, will remap\n", idx, pci_name(dev));
 		if (pr)
-			pr_debug("PCI:  parent is %p: %pR\n", pr, pr);
+			pr_debug("PCI:  parent is %p: %016llx-%016llx [%x]\n",
+				 pr,
+				 (unsigned long long)pr->start,
+				 (unsigned long long)pr->end,
+				 (unsigned int)pr->flags);
 		/* We'll assign a new address later */
 		r->flags |= IORESOURCE_UNSET;
 		r->end -= r->start;
@@ -1406,20 +1430,20 @@ void pcibios_claim_one_bus(struct pci_bus *bus)
 			if (r->parent || !r->start || !r->flags)
 				continue;
 
-			pr_debug("PCI: Claiming %s: Resource %d: %pR\n",
-				 pci_name(dev), i, r);
+			pr_debug("PCI: Claiming %s: "
+				 "Resource %d: %016llx..%016llx [%x]\n",
+				 pci_name(dev), i,
+				 (unsigned long long)r->start,
+				 (unsigned long long)r->end,
+				 (unsigned int)r->flags);
 
-			if (pci_claim_resource(dev, i) == 0)
-				continue;
-
-			pci_claim_bridge_resource(dev, i);
+			pci_claim_resource(dev, i);
 		}
 	}
 
 	list_for_each_entry(child_bus, &bus->children, node)
 		pcibios_claim_one_bus(child_bus);
 }
-EXPORT_SYMBOL_GPL(pcibios_claim_one_bus);
 
 
 /* pcibios_finish_adding_to_bus
@@ -1452,21 +1476,11 @@ EXPORT_SYMBOL_GPL(pcibios_finish_adding_to_bus);
 
 int pcibios_enable_device(struct pci_dev *dev, int mask)
 {
-	struct pci_controller *phb = pci_bus_to_host(dev->bus);
-
-	if (phb->controller_ops.enable_device_hook)
-		if (!phb->controller_ops.enable_device_hook(dev))
+	if (ppc_md.pcibios_enable_device_hook)
+		if (ppc_md.pcibios_enable_device_hook(dev))
 			return -EINVAL;
 
 	return pci_enable_resources(dev, mask);
-}
-
-void pcibios_disable_device(struct pci_dev *dev)
-{
-	struct pci_controller *phb = pci_bus_to_host(dev->bus);
-
-	if (phb->controller_ops.disable_device)
-		phb->controller_ops.disable_device(dev);
 }
 
 resource_size_t pcibios_io_space_offset(struct pci_controller *hose)
@@ -1485,14 +1499,17 @@ static void pcibios_setup_phb_resources(struct pci_controller *hose,
 	res = &hose->io_resource;
 
 	if (!res->flags) {
-		pr_info("PCI: I/O resource not set for host"
+		printk(KERN_WARNING "PCI: I/O resource not set for host"
 		       " bridge %s (domain %d)\n",
 		       hose->dn->full_name, hose->global_number);
 	} else {
 		offset = pcibios_io_space_offset(hose);
 
-		pr_debug("PCI: PHB IO resource    = %pR off 0x%08llx\n",
-			 res, (unsigned long long)offset);
+		pr_debug("PCI: PHB IO resource    = %08llx-%08llx [%lx] off 0x%08llx\n",
+			 (unsigned long long)res->start,
+			 (unsigned long long)res->end,
+			 (unsigned long)res->flags,
+			 (unsigned long long)offset);
 		pci_add_resource_offset(resources, res, offset);
 	}
 
@@ -1509,8 +1526,11 @@ static void pcibios_setup_phb_resources(struct pci_controller *hose,
 		offset = hose->mem_offset[i];
 
 
-		pr_debug("PCI: PHB MEM resource %d = %pR off 0x%08llx\n", i,
-			 res, (unsigned long long)offset);
+		pr_debug("PCI: PHB MEM resource %d = %08llx-%08llx [%lx] off 0x%08llx\n", i,
+			 (unsigned long long)res->start,
+			 (unsigned long long)res->end,
+			 (unsigned long)res->flags,
+			 (unsigned long long)offset);
 
 		pci_add_resource_offset(resources, res, offset);
 	}
@@ -1580,6 +1600,7 @@ EARLY_PCI_OP(write, byte, u8)
 EARLY_PCI_OP(write, word, u16)
 EARLY_PCI_OP(write, dword, u32)
 
+extern int pci_bus_find_capability (struct pci_bus *bus, unsigned int devfn, int cap);
 int early_find_capability(struct pci_controller *hose, int bus, int devfn,
 			  int cap)
 {
@@ -1630,8 +1651,8 @@ void pcibios_scan_phb(struct pci_controller *hose)
 
 	/* Get probe mode and perform scan */
 	mode = PCI_PROBE_NORMAL;
-	if (node && hose->controller_ops.probe_mode)
-		mode = hose->controller_ops.probe_mode(bus);
+	if (node && ppc_md.pci_probe_mode)
+		mode = ppc_md.pci_probe_mode(bus);
 	pr_debug("    probe mode: %d\n", mode);
 	if (mode == PCI_PROBE_DEVTREE)
 		of_scan_bus(node, bus);
@@ -1655,7 +1676,6 @@ void pcibios_scan_phb(struct pci_controller *hose)
 			pcie_bus_configure_settings(child);
 	}
 }
-EXPORT_SYMBOL_GPL(pcibios_scan_phb);
 
 static void fixup_hide_host_resource_fsl(struct pci_dev *dev)
 {

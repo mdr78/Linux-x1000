@@ -198,6 +198,10 @@
 	status = "okay";
 };
 
+&pwm {
+	status = "okay";
+};
+
 &pinctrl0 {
 	gpio_leds: gpio-leds {
 		samsung,pins = "gpk-4", "gpk-5", "gpk-6", "gpk-7";

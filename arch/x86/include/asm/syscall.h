@@ -13,27 +13,15 @@
 #ifndef _ASM_X86_SYSCALL_H
 #define _ASM_X86_SYSCALL_H
 
-#include <uapi/linux/audit.h>
+#include <linux/audit.h>
 #include <linux/sched.h>
 #include <linux/err.h>
 #include <asm/asm-offsets.h>	/* For NR_syscalls */
 #include <asm/thread_info.h>	/* for TS_COMPAT */
 #include <asm/unistd.h>
 
-typedef asmlinkage long (*sys_call_ptr_t)(unsigned long, unsigned long,
-					  unsigned long, unsigned long,
-					  unsigned long, unsigned long);
+typedef void (*sys_call_ptr_t)(void);
 extern const sys_call_ptr_t sys_call_table[];
-
-#if defined(CONFIG_X86_32)
-#define ia32_sys_call_table sys_call_table
-#define __NR_syscall_compat_max __NR_syscall_max
-#define IA32_NR_syscalls NR_syscalls
-#endif
-
-#if defined(CONFIG_IA32_EMULATION)
-extern const sys_call_ptr_t ia32_sys_call_table[];
-#endif
 
 /*
  * Only the low 32 bits of orig_ax are meaningful, so we return int.
@@ -103,7 +91,8 @@ static inline void syscall_set_arguments(struct task_struct *task,
 	memcpy(&regs->bx + i, args, n * sizeof(args[0]));
 }
 
-static inline int syscall_get_arch(void)
+static inline int syscall_get_arch(struct task_struct *task,
+				   struct pt_regs *regs)
 {
 	return AUDIT_ARCH_I386;
 }
@@ -232,7 +221,8 @@ static inline void syscall_set_arguments(struct task_struct *task,
 		}
 }
 
-static inline int syscall_get_arch(void)
+static inline int syscall_get_arch(struct task_struct *task,
+				   struct pt_regs *regs)
 {
 #ifdef CONFIG_IA32_EMULATION
 	/*
@@ -244,7 +234,7 @@ static inline int syscall_get_arch(void)
 	 *
 	 * x32 tasks should be considered AUDIT_ARCH_X86_64.
 	 */
-	if (task_thread_info(current)->status & TS_COMPAT)
+	if (task_thread_info(task)->status & TS_COMPAT)
 		return AUDIT_ARCH_I386;
 #endif
 	/* Both x32 and x86_64 are considered "64-bit". */

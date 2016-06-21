@@ -22,17 +22,16 @@
 #include <linux/kdebug.h>
 #include <linux/percpu.h>
 #include <linux/context_tracking.h>
-#include <linux/uaccess.h>
 
 #include <asm/page.h>
 #include <asm/pgtable.h>
 #include <asm/openprom.h>
 #include <asm/oplib.h>
+#include <asm/uaccess.h>
 #include <asm/asi.h>
 #include <asm/lsu.h>
 #include <asm/sections.h>
 #include <asm/mmu_context.h>
-#include <asm/setup.h>
 
 int show_unhandled_signals = 1;
 
@@ -197,6 +196,9 @@ static void do_fault_siginfo(int code, int sig, struct pt_regs *regs,
 	force_sig_info(sig, &info, current);
 }
 
+extern int handle_ldf_stq(u32, struct pt_regs *);
+extern int handle_ld_nf(u32, struct pt_regs *);
+
 static unsigned int get_fault_insn(struct pt_regs *regs, unsigned int insn)
 {
 	if (!insn) {
@@ -330,7 +332,7 @@ asmlinkage void __kprobes do_sparc64_fault(struct pt_regs *regs)
 	 * If we're in an interrupt or have no user
 	 * context, we must not take the fault..
 	 */
-	if (faulthandler_disabled() || !mm)
+	if (in_atomic() || !mm)
 		goto intr_or_no_mm;
 
 	perf_sw_event(PERF_COUNT_SW_PAGE_FAULTS, 1, regs, address);
@@ -413,9 +415,8 @@ good_area:
 	 * that here.
 	 */
 	if ((fault_code & FAULT_CODE_ITLB) && !(vma->vm_flags & VM_EXEC)) {
-		WARN(address != regs->tpc,
-		     "address (%lx) != regs->tpc (%lx)\n", address, regs->tpc);
-		WARN_ON(regs->tstate & TSTATE_PRIV);
+		BUG_ON(address != regs->tpc);
+		BUG_ON(regs->tstate & TSTATE_PRIV);
 		goto bad_area;
 	}
 
@@ -447,8 +448,6 @@ good_area:
 	if (unlikely(fault & VM_FAULT_ERROR)) {
 		if (fault & VM_FAULT_OOM)
 			goto out_of_memory;
-		else if (fault & VM_FAULT_SIGSEGV)
-			goto bad_area;
 		else if (fault & VM_FAULT_SIGBUS)
 			goto do_sigbus;
 		BUG();

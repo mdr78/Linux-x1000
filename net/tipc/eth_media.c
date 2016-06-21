@@ -1,7 +1,7 @@
 /*
  * net/tipc/eth_media.c: Ethernet bearer support for TIPC
  *
- * Copyright (c) 2001-2007, 2013-2014, Ericsson AB
+ * Copyright (c) 2001-2007, 2013, Ericsson AB
  * Copyright (c) 2005-2008, 2011-2013, Wind River Systems
  * All rights reserved.
  *
@@ -37,48 +37,37 @@
 #include "core.h"
 #include "bearer.h"
 
-/* Convert Ethernet address (media address format) to string */
-static int tipc_eth_addr2str(struct tipc_media_addr *addr,
-			     char *strbuf, int bufsz)
+#define ETH_ADDR_OFFSET	4	/* message header offset of MAC address */
+
+/* convert Ethernet address to string */
+static int tipc_eth_addr2str(struct tipc_media_addr *a, char *str_buf,
+			     int str_size)
 {
-	if (bufsz < 18)	/* 18 = strlen("aa:bb:cc:dd:ee:ff\0") */
+	if (str_size < 18)	/* 18 = strlen("aa:bb:cc:dd:ee:ff\0") */
 		return 1;
 
-	sprintf(strbuf, "%pM", addr->value);
+	sprintf(str_buf, "%pM", a->value);
 	return 0;
 }
 
-/* Convert from media address format to discovery message addr format */
-static int tipc_eth_addr2msg(char *msg, struct tipc_media_addr *addr)
+/* convert Ethernet address format to message header format */
+static int tipc_eth_addr2msg(struct tipc_media_addr *a, char *msg_area)
 {
-	memset(msg, 0, TIPC_MEDIA_INFO_SIZE);
-	msg[TIPC_MEDIA_TYPE_OFFSET] = TIPC_MEDIA_TYPE_ETH;
-	memcpy(msg + TIPC_MEDIA_ADDR_OFFSET, addr->value, ETH_ALEN);
+	memset(msg_area, 0, TIPC_MEDIA_ADDR_SIZE);
+	msg_area[TIPC_MEDIA_TYPE_OFFSET] = TIPC_MEDIA_TYPE_ETH;
+	memcpy(msg_area + ETH_ADDR_OFFSET, a->value, ETH_ALEN);
 	return 0;
 }
 
-/* Convert raw mac address format to media addr format */
-static int tipc_eth_raw2addr(struct tipc_bearer *b,
-			     struct tipc_media_addr *addr,
-			     char *msg)
+/* convert message header address format to Ethernet format */
+static int tipc_eth_msg2addr(const struct tipc_bearer *tb_ptr,
+			     struct tipc_media_addr *a, char *msg_area)
 {
-	char bcast_mac[ETH_ALEN] = {0xff, 0xff, 0xff, 0xff, 0xff, 0xff};
+	if (msg_area[TIPC_MEDIA_TYPE_OFFSET] != TIPC_MEDIA_TYPE_ETH)
+		return 1;
 
-	memset(addr, 0, sizeof(*addr));
-	ether_addr_copy(addr->value, msg);
-	addr->media_id = TIPC_MEDIA_TYPE_ETH;
-	addr->broadcast = !memcmp(addr->value, bcast_mac, ETH_ALEN);
+	tipc_l2_media_addr_set(tb_ptr, a, msg_area + ETH_ADDR_OFFSET);
 	return 0;
-}
-
-/* Convert discovery msg addr format to Ethernet media addr format */
-static int tipc_eth_msg2addr(struct tipc_bearer *b,
-			     struct tipc_media_addr *addr,
-			     char *msg)
-{
-	/* Skip past preamble: */
-	msg += TIPC_MEDIA_ADDR_OFFSET;
-	return tipc_eth_raw2addr(b, addr, msg);
 }
 
 /* Ethernet media registration info */
@@ -89,7 +78,6 @@ struct tipc_media eth_media_info = {
 	.addr2str	= tipc_eth_addr2str,
 	.addr2msg	= tipc_eth_addr2msg,
 	.msg2addr	= tipc_eth_msg2addr,
-	.raw2addr	= tipc_eth_raw2addr,
 	.priority	= TIPC_DEF_LINK_PRI,
 	.tolerance	= TIPC_DEF_LINK_TOL,
 	.window		= TIPC_DEF_LINK_WIN,
@@ -97,3 +85,4 @@ struct tipc_media eth_media_info = {
 	.hwaddr_len	= ETH_ALEN,
 	.name		= "eth"
 };
+

@@ -15,9 +15,8 @@
  * of_get_phy_mode - Get phy mode for given device_node
  * @np:	Pointer to the given device_node
  *
- * The function gets phy interface string from property 'phy-mode' or
- * 'phy-connection-type', and return its index in phy_modes table, or errno in
- * error case.
+ * The function gets phy interface string from property 'phy-mode',
+ * and return its index in phy_modes table, or errno in error case.
  */
 int of_get_phy_mode(struct device_node *np)
 {
@@ -25,8 +24,6 @@ int of_get_phy_mode(struct device_node *np)
 	int err, i;
 
 	err = of_property_read_string(np, "phy-mode", &pm);
-	if (err < 0)
-		err = of_property_read_string(np, "phy-connection-type", &pm);
 	if (err < 0)
 		return err;
 
@@ -37,15 +34,6 @@ int of_get_phy_mode(struct device_node *np)
 	return -ENODEV;
 }
 EXPORT_SYMBOL_GPL(of_get_phy_mode);
-
-static const void *of_get_mac_addr(struct device_node *np, const char *name)
-{
-	struct property *pp = of_find_property(np, name, NULL);
-
-	if (pp && pp->length == ETH_ALEN && is_valid_ether_addr(pp->value))
-		return pp->value;
-	return NULL;
-}
 
 /**
  * Search the device tree for the best MAC address to use.  'mac-address' is
@@ -67,16 +55,20 @@ static const void *of_get_mac_addr(struct device_node *np, const char *name)
 */
 const void *of_get_mac_address(struct device_node *np)
 {
-	const void *addr;
+	struct property *pp;
 
-	addr = of_get_mac_addr(np, "mac-address");
-	if (addr)
-		return addr;
+	pp = of_find_property(np, "mac-address", NULL);
+	if (pp && (pp->length == 6) && is_valid_ether_addr(pp->value))
+		return pp->value;
 
-	addr = of_get_mac_addr(np, "local-mac-address");
-	if (addr)
-		return addr;
+	pp = of_find_property(np, "local-mac-address", NULL);
+	if (pp && (pp->length == 6) && is_valid_ether_addr(pp->value))
+		return pp->value;
 
-	return of_get_mac_addr(np, "address");
+	pp = of_find_property(np, "address", NULL);
+	if (pp && (pp->length == 6) && is_valid_ether_addr(pp->value))
+		return pp->value;
+
+	return NULL;
 }
 EXPORT_SYMBOL(of_get_mac_address);

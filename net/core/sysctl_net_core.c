@@ -24,10 +24,7 @@
 
 static int zero = 0;
 static int one = 1;
-static int min_sndbuf = SOCK_MIN_SNDBUF;
-static int min_rcvbuf = SOCK_MIN_RCVBUF;
-
-static int net_msg_warn;	/* Unused, but still a sysctl */
+static int ushort_max = USHRT_MAX;
 
 #ifdef CONFIG_RPS
 static int rps_sock_flow_sysctl(struct ctl_table *table, int write,
@@ -53,7 +50,7 @@ static int rps_sock_flow_sysctl(struct ctl_table *table, int write,
 
 	if (write) {
 		if (size) {
-			if (size > 1<<29) {
+			if (size > 1<<30) {
 				/* Enforce limit to prevent overflow */
 				mutex_unlock(&sock_flow_mutex);
 				return -EINVAL;
@@ -66,7 +63,7 @@ static int rps_sock_flow_sysctl(struct ctl_table *table, int write,
 					mutex_unlock(&sock_flow_mutex);
 					return -ENOMEM;
 				}
-				rps_cpu_mask = roundup_pow_of_two(nr_cpu_ids) - 1;
+
 				sock_table->mask = size - 1;
 			} else
 				sock_table = orig_sock_table;
@@ -156,7 +153,7 @@ write_unlock:
 		rcu_read_unlock();
 
 		len = min(sizeof(kbuf) - 1, *lenp);
-		len = scnprintf(kbuf, len, "%*pb", cpumask_pr_args(mask));
+		len = cpumask_scnprintf(kbuf, len, mask);
 		if (!len) {
 			*lenp = 0;
 			goto done;
@@ -218,18 +215,6 @@ static int set_default_qdisc(struct ctl_table *table, int write,
 }
 #endif
 
-static int proc_do_rss_key(struct ctl_table *table, int write,
-			   void __user *buffer, size_t *lenp, loff_t *ppos)
-{
-	struct ctl_table fake_table;
-	char buf[NETDEV_RSS_KEY_LEN * 3];
-
-	snprintf(buf, sizeof(buf), "%*phC", NETDEV_RSS_KEY_LEN, netdev_rss_key);
-	fake_table.data = buf;
-	fake_table.maxlen = sizeof(buf);
-	return proc_dostring(&fake_table, write, buffer, lenp, ppos);
-}
-
 static struct ctl_table net_core_table[] = {
 #ifdef CONFIG_NET
 	{
@@ -238,7 +223,7 @@ static struct ctl_table net_core_table[] = {
 		.maxlen		= sizeof(int),
 		.mode		= 0644,
 		.proc_handler	= proc_dointvec_minmax,
-		.extra1		= &min_sndbuf,
+		.extra1		= &one,
 	},
 	{
 		.procname	= "rmem_max",
@@ -246,7 +231,7 @@ static struct ctl_table net_core_table[] = {
 		.maxlen		= sizeof(int),
 		.mode		= 0644,
 		.proc_handler	= proc_dointvec_minmax,
-		.extra1		= &min_rcvbuf,
+		.extra1		= &one,
 	},
 	{
 		.procname	= "wmem_default",
@@ -254,7 +239,7 @@ static struct ctl_table net_core_table[] = {
 		.maxlen		= sizeof(int),
 		.mode		= 0644,
 		.proc_handler	= proc_dointvec_minmax,
-		.extra1		= &min_sndbuf,
+		.extra1		= &one,
 	},
 	{
 		.procname	= "rmem_default",
@@ -262,7 +247,7 @@ static struct ctl_table net_core_table[] = {
 		.maxlen		= sizeof(int),
 		.mode		= 0644,
 		.proc_handler	= proc_dointvec_minmax,
-		.extra1		= &min_rcvbuf,
+		.extra1		= &one,
 	},
 	{
 		.procname	= "dev_weight",
@@ -277,13 +262,6 @@ static struct ctl_table net_core_table[] = {
 		.maxlen		= sizeof(int),
 		.mode		= 0644,
 		.proc_handler	= proc_dointvec
-	},
-	{
-		.procname	= "netdev_rss_key",
-		.data		= &netdev_rss_key,
-		.maxlen		= sizeof(int),
-		.mode		= 0444,
-		.proc_handler	= proc_do_rss_key,
 	},
 #ifdef CONFIG_BPF_JIT
 	{
@@ -321,15 +299,6 @@ static struct ctl_table net_core_table[] = {
 		.maxlen		= sizeof(int),
 		.mode		= 0644,
 		.proc_handler	= proc_dointvec
-	},
-	{
-		.procname	= "tstamp_allow_data",
-		.data		= &sysctl_tstamp_allow_data,
-		.maxlen		= sizeof(int),
-		.mode		= 0644,
-		.proc_handler	= proc_dointvec_minmax,
-		.extra1		= &zero,
-		.extra2		= &one
 	},
 #ifdef CONFIG_RPS
 	{
@@ -402,6 +371,7 @@ static struct ctl_table netns_core_table[] = {
 		.maxlen		= sizeof(int),
 		.mode		= 0644,
 		.extra1		= &zero,
+		.extra2		= &ushort_max,
 		.proc_handler	= proc_dointvec_minmax
 	},
 	{ }

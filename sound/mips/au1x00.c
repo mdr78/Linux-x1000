@@ -37,7 +37,6 @@
 #include <linux/ioport.h>
 #include <linux/interrupt.h>
 #include <linux/init.h>
-#include <linux/platform_device.h>
 #include <linux/slab.h>
 #include <linux/module.h>
 #include <sound/core.h>
@@ -99,7 +98,6 @@ struct snd_au1000 {
 
 	struct snd_pcm *pcm;
 	struct audio_stream *stream[2];	/* playback & capture */
-	int dmaid[2];		/* tx(0)/rx(1) DMA ids */
 };
 
 /*--------------------------- Local Functions --------------------------------*/
@@ -467,17 +465,15 @@ snd_au1000_pcm_new(struct snd_au1000 *au1000)
 	spin_lock_init(&au1000->stream[CAPTURE]->dma_lock);
 
 	flags = claim_dma_lock();
-	au1000->stream[PLAYBACK]->dma = request_au1000_dma(au1000->dmaid[0],
+	if ((au1000->stream[PLAYBACK]->dma = request_au1000_dma(DMA_ID_AC97C_TX,
 			"AC97 TX", au1000_dma_interrupt, 0,
-			au1000->stream[PLAYBACK]);
-	if (au1000->stream[PLAYBACK]->dma < 0) {
+			au1000->stream[PLAYBACK])) < 0) {
 		release_dma_lock(flags);
 		return -EBUSY;
 	}
-	au1000->stream[CAPTURE]->dma = request_au1000_dma(au1000->dmaid[1],
+	if ((au1000->stream[CAPTURE]->dma = request_au1000_dma(DMA_ID_AC97C_RX,
 			"AC97 RX", au1000_dma_interrupt, 0,
-			au1000->stream[CAPTURE]);
-	if (au1000->stream[CAPTURE]->dma < 0){
+			au1000->stream[CAPTURE])) < 0){
 		release_dma_lock(flags);
 		return -EBUSY;
 	}
@@ -556,116 +552,26 @@ get the interrupt driven case to work efficiently */
 	spin_unlock(&au1000->ac97_lock);
 }
 
-/*------------------------------ Setup / Destroy ----------------------------*/
-
-static void snd_au1000_free(struct snd_card *card)
-{
-	struct snd_au1000 *au1000 = card->private_data;
-
-	if (au1000->stream[PLAYBACK]) {
-	  	if (au1000->stream[PLAYBACK]->dma >= 0)
-			free_au1000_dma(au1000->stream[PLAYBACK]->dma);
-		kfree(au1000->stream[PLAYBACK]);
-	}
-
-	if (au1000->stream[CAPTURE]) {
-		if (au1000->stream[CAPTURE]->dma >= 0)
-			free_au1000_dma(au1000->stream[CAPTURE]->dma);
-		kfree(au1000->stream[CAPTURE]);
-	}
-
-	if (au1000->ac97_res_port) {
-		/* put internal AC97 block into reset */
-		if (au1000->ac97_ioport) {
-			au1000->ac97_ioport->cntrl = AC97C_RS;
-			iounmap(au1000->ac97_ioport);
-			au1000->ac97_ioport = NULL;
-		}
-		release_and_free_resource(au1000->ac97_res_port);
-		au1000->ac97_res_port = NULL;
-	}
-}
-
-static struct snd_ac97_bus_ops ops = {
-	.write	= snd_au1000_ac97_write,
-	.read	= snd_au1000_ac97_read,
-};
-
-static int au1000_ac97_probe(struct platform_device *pdev)
+static int
+snd_au1000_ac97_new(struct snd_au1000 *au1000)
 {
 	int err;
-	void __iomem *io;
-	struct resource *r;
-	struct snd_card *card;
-	struct snd_au1000 *au1000;
 	struct snd_ac97_bus *pbus;
 	struct snd_ac97_template ac97;
+ 	static struct snd_ac97_bus_ops ops = {
+		.write = snd_au1000_ac97_write,
+		.read = snd_au1000_ac97_read,
+	};
 
-	err = snd_card_new(&pdev->dev, -1, "AC97", THIS_MODULE,
-			   sizeof(struct snd_au1000), &card);
-	if (err < 0)
-		return err;
+	if ((au1000->ac97_res_port = request_mem_region(CPHYSADDR(AC97C_CONFIG),
+	       		0x100000, "Au1x00 AC97")) == NULL) {
+		snd_printk(KERN_ERR "ALSA AC97: can't grap AC97 port\n");
+		return -EBUSY;
+	}
+	au1000->ac97_ioport = (struct au1000_ac97_reg *)
+		KSEG1ADDR(au1000->ac97_res_port->start);
 
-	au1000 = card->private_data;
-	au1000->card = card;
 	spin_lock_init(&au1000->ac97_lock);
-
-	/* from here on let ALSA call the special freeing function */
-	card->private_free = snd_au1000_free;
-
-	/* TX DMA ID */
-	r = platform_get_resource(pdev, IORESOURCE_DMA, 0);
-	if (!r) {
-		err = -ENODEV;
-		snd_printk(KERN_INFO "no TX DMA platform resource!\n");
-		goto out;
-	}
-	au1000->dmaid[0] = r->start;
-
-	/* RX DMA ID */
-	r = platform_get_resource(pdev, IORESOURCE_DMA, 1);
-	if (!r) {
-		err = -ENODEV;
-		snd_printk(KERN_INFO "no RX DMA platform resource!\n");
-		goto out;
-	}
-	au1000->dmaid[1] = r->start;
-
-	au1000->stream[PLAYBACK] = kmalloc(sizeof(struct audio_stream),
-					   GFP_KERNEL);
-	if (!au1000->stream[PLAYBACK]) {
-		err = -ENOMEM;
-		goto out;
-	}
-	au1000->stream[PLAYBACK]->dma = -1;
-
-	au1000->stream[CAPTURE] = kmalloc(sizeof(struct audio_stream),
-					  GFP_KERNEL);
-	if (!au1000->stream[CAPTURE]) {
-		err = -ENOMEM;
-		goto out;
-	}
-	au1000->stream[CAPTURE]->dma = -1;
-
-	r = platform_get_resource(pdev, IORESOURCE_MEM, 0);
-	if (!r) {
-		err = -ENODEV;
-		goto out;
-	}
-
-	err = -EBUSY;
-	au1000->ac97_res_port = request_mem_region(r->start, resource_size(r),
-						   pdev->name);
-	if (!au1000->ac97_res_port) {
-		snd_printk(KERN_ERR "ALSA AC97: can't grab AC97 port\n");
-		goto out;
-	}
-
-	io = ioremap(r->start, resource_size(r));
-	if (!io)
-		goto out;
-
-	au1000->ac97_ioport = (struct au1000_ac97_reg *)io;
 
 	/* configure pins for AC'97
 	TODO: move to board_setup.c */
@@ -684,51 +590,107 @@ static int au1000_ac97_probe(struct platform_device *pdev)
 	mdelay(5);
 
 	/* Initialise AC97 middle-layer */
-	err = snd_ac97_bus(au1000->card, 0, &ops, au1000, &pbus);
-	if (err < 0)
-		goto out;
+	if ((err = snd_ac97_bus(au1000->card, 0, &ops, au1000, &pbus)) < 0)
+ 		return err;
 
 	memset(&ac97, 0, sizeof(ac97));
 	ac97.private_data = au1000;
-	err = snd_ac97_mixer(pbus, &ac97, &au1000->ac97);
-	if (err < 0)
-		goto out;
+	if ((err = snd_ac97_mixer(pbus, &ac97, &au1000->ac97)) < 0)
+		return err;
 
-	err = snd_au1000_pcm_new(au1000);
+	return 0;
+}
+
+/*------------------------------ Setup / Destroy ----------------------------*/
+
+void
+snd_au1000_free(struct snd_card *card)
+{
+	struct snd_au1000 *au1000 = card->private_data;
+
+	if (au1000->ac97_res_port) {
+		/* put internal AC97 block into reset */
+		au1000->ac97_ioport->cntrl = AC97C_RS;
+		au1000->ac97_ioport = NULL;
+		release_and_free_resource(au1000->ac97_res_port);
+	}
+
+	if (au1000->stream[PLAYBACK]) {
+	  	if (au1000->stream[PLAYBACK]->dma >= 0)
+			free_au1000_dma(au1000->stream[PLAYBACK]->dma);
+		kfree(au1000->stream[PLAYBACK]);
+	}
+
+	if (au1000->stream[CAPTURE]) {
+		if (au1000->stream[CAPTURE]->dma >= 0)
+			free_au1000_dma(au1000->stream[CAPTURE]->dma);
+		kfree(au1000->stream[CAPTURE]);
+	}
+}
+
+
+static struct snd_card *au1000_card;
+
+static int __init
+au1000_init(void)
+{
+	int err;
+	struct snd_card *card;
+	struct snd_au1000 *au1000;
+
+	err = snd_card_create(-1, "AC97", THIS_MODULE,
+			      sizeof(struct snd_au1000), &card);
 	if (err < 0)
-		goto out;
+		return err;
+
+	card->private_free = snd_au1000_free;
+	au1000 = card->private_data;
+	au1000->card = card;
+
+	au1000->stream[PLAYBACK] = kmalloc(sizeof(struct audio_stream), GFP_KERNEL);
+	au1000->stream[CAPTURE ] = kmalloc(sizeof(struct audio_stream), GFP_KERNEL);
+	/* so that snd_au1000_free will work as intended */
+ 	au1000->ac97_res_port = NULL;
+	if (au1000->stream[PLAYBACK])
+		au1000->stream[PLAYBACK]->dma = -1;
+	if (au1000->stream[CAPTURE ])
+		au1000->stream[CAPTURE ]->dma = -1;
+
+	if (au1000->stream[PLAYBACK] == NULL ||
+	    au1000->stream[CAPTURE ] == NULL) {
+		snd_card_free(card);
+		return -ENOMEM;
+	}
+
+	if ((err = snd_au1000_ac97_new(au1000)) < 0 ) {
+		snd_card_free(card);
+		return err;
+	}
+
+	if ((err = snd_au1000_pcm_new(au1000)) < 0) {
+		snd_card_free(card);
+		return err;
+	}
 
 	strcpy(card->driver, "Au1000-AC97");
 	strcpy(card->shortname, "AMD Au1000-AC97");
 	sprintf(card->longname, "AMD Au1000--AC97 ALSA Driver");
 
-	err = snd_card_register(card);
-	if (err < 0)
-		goto out;
+	if ((err = snd_card_register(card)) < 0) {
+		snd_card_free(card);
+		return err;
+	}
 
 	printk(KERN_INFO "ALSA AC97: Driver Initialized\n");
-
-	platform_set_drvdata(pdev, card);
-
+	au1000_card = card;
 	return 0;
-
- out:
-	snd_card_free(card);
-	return err;
 }
 
-static int au1000_ac97_remove(struct platform_device *pdev)
+static void __exit au1000_exit(void)
 {
-	return snd_card_free(platform_get_drvdata(pdev));
+	snd_card_free(au1000_card);
 }
 
-struct platform_driver au1000_ac97c_driver = {
-	.driver	= {
-		.name	= "au1000-ac97c",
-		.owner	= THIS_MODULE,
-	},
-	.probe		= au1000_ac97_probe,
-	.remove		= au1000_ac97_remove,
-};
+module_init(au1000_init);
+module_exit(au1000_exit);
 
-module_platform_driver(au1000_ac97c_driver);

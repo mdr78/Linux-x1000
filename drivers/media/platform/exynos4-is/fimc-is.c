@@ -161,69 +161,78 @@ static void fimc_is_disable_clocks(struct fimc_is *is)
 	}
 }
 
-static int fimc_is_parse_sensor_config(struct fimc_is *is, unsigned int index,
-						struct device_node *node)
+static int fimc_is_parse_sensor_config(struct fimc_is_sensor *sensor,
+				       struct device_node *np)
 {
-	struct fimc_is_sensor *sensor = &is->sensor[index];
 	u32 tmp = 0;
 	int ret;
 
-	sensor->drvdata = fimc_is_sensor_get_drvdata(node);
-	if (!sensor->drvdata) {
-		dev_err(&is->pdev->dev, "no driver data found for: %s\n",
-							 node->full_name);
-		return -EINVAL;
-	}
-
-	node = of_graph_get_next_endpoint(node, NULL);
-	if (!node)
+	np = of_graph_get_next_endpoint(np, NULL);
+	if (!np)
 		return -ENXIO;
-
-	node = of_graph_get_remote_port(node);
-	if (!node)
+	np = of_graph_get_remote_port(np);
+	if (!np)
 		return -ENXIO;
 
 	/* Use MIPI-CSIS channel id to determine the ISP I2C bus index. */
-	ret = of_property_read_u32(node, "reg", &tmp);
-	if (ret < 0) {
-		dev_err(&is->pdev->dev, "reg property not found at: %s\n",
-							 node->full_name);
-		return ret;
-	}
-
+	ret = of_property_read_u32(np, "reg", &tmp);
 	sensor->i2c_bus = tmp - FIMC_INPUT_MIPI_CSI2_0;
-	return 0;
+
+	return ret;
 }
 
 static int fimc_is_register_subdevs(struct fimc_is *is)
 {
-	struct device_node *i2c_bus, *child;
-	int ret, index = 0;
+	struct device_node *adapter, *child;
+	int ret;
 
 	ret = fimc_isp_subdev_create(&is->isp);
 	if (ret < 0)
 		return ret;
 
-	/* Initialize memory allocator context for the ISP DMA. */
-	is->isp.alloc_ctx = is->alloc_ctx;
+	for_each_compatible_node(adapter, NULL, FIMC_IS_I2C_COMPATIBLE) {
+		if (!of_find_device_by_node(adapter)) {
+			of_node_put(adapter);
+			return -EPROBE_DEFER;
+		}
 
-	for_each_compatible_node(i2c_bus, NULL, FIMC_IS_I2C_COMPATIBLE) {
-		for_each_available_child_of_node(i2c_bus, child) {
-			ret = fimc_is_parse_sensor_config(is, index, child);
+		for_each_available_child_of_node(adapter, child) {
+			struct i2c_client *client;
+			struct v4l2_subdev *sd;
 
-			if (ret < 0 || index >= FIMC_IS_SENSORS_NUM) {
-				of_node_put(child);
-				return ret;
+			client = of_find_i2c_device_by_node(child);
+			if (!client)
+				goto e_retry;
+
+			sd = i2c_get_clientdata(client);
+			if (!sd)
+				goto e_retry;
+
+			/* FIXME: Add support for multiple sensors. */
+			if (WARN_ON(is->sensor))
+				continue;
+
+			is->sensor = sd_to_fimc_is_sensor(sd);
+
+			if (fimc_is_parse_sensor_config(is->sensor, child)) {
+				dev_warn(&is->pdev->dev, "DT parse error: %s\n",
+							 child->full_name);
 			}
-			index++;
+			pr_debug("%s(): registered subdev: %p\n",
+				 __func__, sd->name);
 		}
 	}
 	return 0;
+
+e_retry:
+	of_node_put(child);
+	return -EPROBE_DEFER;
 }
 
 static int fimc_is_unregister_subdevs(struct fimc_is *is)
 {
 	fimc_isp_subdev_destroy(&is->isp);
+	is->sensor = NULL;
 	return 0;
 }
 
@@ -367,9 +376,6 @@ static void fimc_is_free_cpu_memory(struct fimc_is *is)
 {
 	struct device *dev = &is->pdev->dev;
 
-	if (is->memory.vaddr == NULL)
-		return;
-
 	dma_free_coherent(dev, is->memory.size, is->memory.vaddr,
 			  is->memory.paddr);
 }
@@ -388,7 +394,7 @@ static void fimc_is_load_firmware(const struct firmware *fw, void *context)
 	mutex_lock(&is->lock);
 
 	if (fw->size < FIMC_IS_FW_SIZE_MIN || fw->size > FIMC_IS_FW_SIZE_MAX) {
-		dev_err(dev, "wrong firmware size: %zu\n", fw->size);
+		dev_err(dev, "wrong firmware size: %d\n", fw->size);
 		goto done;
 	}
 
@@ -416,7 +422,7 @@ static void fimc_is_load_firmware(const struct firmware *fw, void *context)
 
 	dev_info(dev, "loaded firmware: %s, rev. %s\n",
 		 is->fw.info, is->fw.version);
-	dev_dbg(dev, "FW size: %zu, paddr: %pad\n", fw->size, &is->memory.paddr);
+	dev_dbg(dev, "FW size: %d, paddr: %#x\n", fw->size, is->memory.paddr);
 
 	is->is_shared_region->chip_id = 0xe4412;
 	is->is_shared_region->chip_rev_no = 1;
@@ -428,7 +434,8 @@ static void fimc_is_load_firmware(const struct firmware *fw, void *context)
 	 * needed around for copying to the IS working memory every
 	 * time before the Cortex-A5 is restarted.
 	 */
-	release_firmware(is->fw.f_w);
+	if (is->fw.f_w)
+		release_firmware(is->fw.f_w);
 	is->fw.f_w = fw;
 done:
 	mutex_unlock(&is->lock);
@@ -640,7 +647,7 @@ static int fimc_is_hw_open_sensor(struct fimc_is *is,
 	fimc_is_hw_set_intgr0_gd0(is);
 
 	return fimc_is_wait_event(is, IS_ST_OPEN_SENSOR, 1,
-				  sensor->drvdata->open_timeout);
+				  FIMC_IS_SENSOR_OPEN_TIMEOUT);
 }
 
 
@@ -654,8 +661,8 @@ int fimc_is_hw_initialize(struct fimc_is *is)
 	u32 prev_id;
 	int i, ret;
 
-	/* Sensor initialization. Only one sensor is currently supported. */
-	ret = fimc_is_hw_open_sensor(is, &is->sensor[0]);
+	/* Sensor initialization. */
+	ret = fimc_is_hw_open_sensor(is, is->sensor);
 	if (ret < 0)
 		return ret;
 
@@ -692,9 +699,9 @@ int fimc_is_hw_initialize(struct fimc_is *is)
 		return -EIO;
 	}
 
-	pr_debug("shared region: %pad, parameter region: %pad\n",
-		 &is->memory.paddr + FIMC_IS_SHARED_REGION_OFFSET,
-		 &is->is_dma_p_region);
+	pr_debug("shared region: %#x, parameter region: %#x\n",
+		 is->memory.paddr + FIMC_IS_SHARED_REGION_OFFSET,
+		 is->is_dma_p_region);
 
 	is->setfile.sub_index = 0;
 
@@ -813,9 +820,9 @@ static int fimc_is_probe(struct platform_device *pdev)
 		return -ENOMEM;
 
 	is->irq = irq_of_parse_and_map(dev->of_node, 0);
-	if (!is->irq) {
+	if (is->irq < 0) {
 		dev_err(dev, "no irq found\n");
-		return -EINVAL;
+		return is->irq;
 	}
 
 	ret = fimc_is_get_clocks(is);
@@ -936,7 +943,8 @@ static int fimc_is_remove(struct platform_device *pdev)
 	vb2_dma_contig_cleanup_ctx(is->alloc_ctx);
 	fimc_is_put_clocks(is);
 	fimc_is_debugfs_remove(is);
-	release_firmware(is->fw.f_w);
+	if (is->fw.f_w)
+		release_firmware(is->fw.f_w);
 	fimc_is_free_cpu_memory(is);
 
 	return 0;
@@ -960,6 +968,7 @@ static struct platform_driver fimc_is_driver = {
 	.driver = {
 		.of_match_table	= fimc_is_of_match,
 		.name		= FIMC_IS_DRV_NAME,
+		.owner		= THIS_MODULE,
 		.pm		= &fimc_is_pm_ops,
 	}
 };
@@ -968,20 +977,27 @@ static int fimc_is_module_init(void)
 {
 	int ret;
 
-	ret = fimc_is_register_i2c_driver();
+	ret = fimc_is_register_sensor_driver();
 	if (ret < 0)
 		return ret;
 
-	ret = platform_driver_register(&fimc_is_driver);
-
+	ret = fimc_is_register_i2c_driver();
 	if (ret < 0)
-		fimc_is_unregister_i2c_driver();
+		goto err_sens;
 
+	ret = platform_driver_register(&fimc_is_driver);
+	if (!ret)
+		return ret;
+
+	fimc_is_unregister_i2c_driver();
+err_sens:
+	fimc_is_unregister_sensor_driver();
 	return ret;
 }
 
 static void fimc_is_module_exit(void)
 {
+	fimc_is_unregister_sensor_driver();
 	fimc_is_unregister_i2c_driver();
 	platform_driver_unregister(&fimc_is_driver);
 }

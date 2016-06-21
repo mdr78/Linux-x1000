@@ -16,9 +16,7 @@
 #include <linux/debugfs.h>
 #include <linux/of.h>
 #include <linux/of_fdt.h>
-#include <linux/of_platform.h>
 
-#include <asm/bootinfo.h>
 #include <asm/page.h>
 #include <asm/prom.h>
 
@@ -38,7 +36,7 @@ char *mips_get_machine_name(void)
 	return mips_machine_name;
 }
 
-#ifdef CONFIG_USE_OF
+#ifdef CONFIG_OF
 void __init early_init_dt_add_memory_arch(u64 base, u64 size)
 {
 	return add_memory_region(base, size, BOOT_MEM_RAM);
@@ -49,31 +47,11 @@ void * __init early_init_dt_alloc_memory_arch(u64 size, u64 align)
 	return __alloc_bootmem(size, align, __pa(MAX_DMA_ADDRESS));
 }
 
-void __init __dt_setup_arch(void *bph)
+void __init __dt_setup_arch(struct boot_param_header *bph)
 {
 	if (!early_init_dt_scan(bph))
 		return;
 
 	mips_set_machine_name(of_flat_dt_get_machine_name());
 }
-
-int __init __dt_register_buses(const char *bus0, const char *bus1)
-{
-	static struct of_device_id of_ids[3];
-
-	if (!of_have_populated_dt())
-		panic("device tree not present");
-
-	strlcpy(of_ids[0].compatible, bus0, sizeof(of_ids[0].compatible));
-	if (bus1) {
-		strlcpy(of_ids[1].compatible, bus1,
-			sizeof(of_ids[1].compatible));
-	}
-
-	if (of_platform_populate(NULL, of_ids, NULL, NULL))
-		panic("failed to populate DT");
-
-	return 0;
-}
-
 #endif

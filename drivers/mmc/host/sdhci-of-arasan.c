@@ -20,7 +20,6 @@
  */
 
 #include <linux/module.h>
-#include <linux/of_device.h>
 #include "sdhci-pltfm.h"
 
 #define SDHCI_ARASAN_CLK_CTRL_OFFSET	0x2c
@@ -53,19 +52,12 @@ static unsigned int sdhci_arasan_get_timeout_clock(struct sdhci_host *host)
 }
 
 static struct sdhci_ops sdhci_arasan_ops = {
-	.set_clock = sdhci_set_clock,
 	.get_max_clock = sdhci_pltfm_clk_get_max_clock,
 	.get_timeout_clock = sdhci_arasan_get_timeout_clock,
-	.set_bus_width = sdhci_set_bus_width,
-	.reset = sdhci_reset,
-	.set_uhs_signaling = sdhci_set_uhs_signaling,
 };
 
 static struct sdhci_pltfm_data sdhci_arasan_pdata = {
 	.ops = &sdhci_arasan_ops,
-	.quirks = SDHCI_QUIRK_CAP_CLOCK_BASE_BROKEN,
-	.quirks2 = SDHCI_QUIRK2_PRESET_VALUE_BROKEN |
-			SDHCI_QUIRK2_CLOCK_DIV_ZERO_BROKEN,
 };
 
 #ifdef CONFIG_PM_SLEEP
@@ -169,12 +161,8 @@ static int sdhci_arasan_probe(struct platform_device *pdev)
 	host = sdhci_pltfm_init(pdev, &sdhci_arasan_pdata, 0);
 	if (IS_ERR(host)) {
 		ret = PTR_ERR(host);
+		dev_err(&pdev->dev, "platform init failed (%u)\n", ret);
 		goto clk_disable_all;
-	}
-
-	if (of_device_is_compatible(pdev->dev.of_node, "arasan,sdhci-4.9a")) {
-		host->quirks |= SDHCI_QUIRK_NO_HISPD_BIT;
-		host->quirks2 |= SDHCI_QUIRK2_HOST_NO_CMD23;
 	}
 
 	sdhci_get_of_property(pdev);
@@ -182,15 +170,11 @@ static int sdhci_arasan_probe(struct platform_device *pdev)
 	pltfm_host->priv = sdhci_arasan;
 	pltfm_host->clk = clk_xin;
 
-	ret = mmc_of_parse(host->mmc);
-	if (ret) {
-		dev_err(&pdev->dev, "parsing dt failed (%u)\n", ret);
-		goto clk_disable_all;
-	}
-
 	ret = sdhci_add_host(host);
-	if (ret)
+	if (ret) {
+		dev_err(&pdev->dev, "platform register failed (%u)\n", ret);
 		goto err_pltfm_free;
+	}
 
 	return 0;
 
@@ -210,6 +194,7 @@ static int sdhci_arasan_remove(struct platform_device *pdev)
 	struct sdhci_pltfm_host *pltfm_host = sdhci_priv(host);
 	struct sdhci_arasan_data *sdhci_arasan = pltfm_host->priv;
 
+	clk_disable_unprepare(pltfm_host->clk);
 	clk_disable_unprepare(sdhci_arasan->clk_ahb);
 
 	return sdhci_pltfm_unregister(pdev);
@@ -217,8 +202,6 @@ static int sdhci_arasan_remove(struct platform_device *pdev)
 
 static const struct of_device_id sdhci_arasan_of_match[] = {
 	{ .compatible = "arasan,sdhci-8.9a" },
-	{ .compatible = "arasan,sdhci-5.1" },
-	{ .compatible = "arasan,sdhci-4.9a" },
 	{ }
 };
 MODULE_DEVICE_TABLE(of, sdhci_arasan_of_match);
@@ -226,6 +209,7 @@ MODULE_DEVICE_TABLE(of, sdhci_arasan_of_match);
 static struct platform_driver sdhci_arasan_driver = {
 	.driver = {
 		.name = "sdhci-arasan",
+		.owner = THIS_MODULE,
 		.of_match_table = sdhci_arasan_of_match,
 		.pm = &sdhci_arasan_dev_pm_ops,
 	},

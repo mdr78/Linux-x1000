@@ -29,6 +29,18 @@ static int pxa2xx_spi_map_dma_buffer(struct driver_data *drv_data,
 	struct sg_table *sgt;
 	void *buf, *pbuf;
 
+	/*
+	 * Some DMA controllers have problems transferring buffers that are
+	 * not multiple of 4 bytes. So we truncate the transfer so that it
+	 * is suitable for such controllers, and handle the trailing bytes
+	 * manually after the DMA completes.
+	 *
+	 * REVISIT: It would be better if this information could be
+	 * retrieved directly from the DMA device in a similar way than
+	 * ->copy_align etc. is done.
+	 */
+	len = ALIGN(drv_data->len, 4);
+
 	if (dir == DMA_TO_DEVICE) {
 		dmadev = drv_data->tx_chan->device->dev;
 		sgt = &drv_data->tx_sgt;
@@ -111,38 +123,39 @@ static void pxa2xx_spi_dma_transfer_complete(struct driver_data *drv_data,
 	 * by using ->dma_running.
 	 */
 	if (atomic_dec_and_test(&drv_data->dma_running)) {
+		void __iomem *reg = drv_data->ioaddr;
+
 		/*
 		 * If the other CPU is still handling the ROR interrupt we
 		 * might not know about the error yet. So we re-check the
 		 * ROR bit here before we clear the status register.
 		 */
 		if (!error) {
-			u32 status = pxa2xx_spi_read(drv_data, SSSR)
-				     & drv_data->mask_sr;
+			u32 status = read_SSSR(reg) & drv_data->mask_sr;
 			error = status & SSSR_ROR;
 		}
 
 		/* Clear status & disable interrupts */
-		pxa2xx_spi_write(drv_data, SSCR1,
-				 pxa2xx_spi_read(drv_data, SSCR1)
-				 & ~drv_data->dma_cr1);
+		write_SSCR1(read_SSCR1(reg) & ~drv_data->dma_cr1, reg);
 		write_SSSR_CS(drv_data, drv_data->clear_sr);
 		if (!pxa25x_ssp_comp(drv_data))
-			pxa2xx_spi_write(drv_data, SSTO, 0);
+			write_SSTO(0, reg);
 
 		if (!error) {
 			pxa2xx_spi_unmap_dma_buffers(drv_data);
 
+			/* Handle the last bytes of unaligned transfer */
 			drv_data->tx += drv_data->tx_map_len;
+			drv_data->write(drv_data);
+
 			drv_data->rx += drv_data->rx_map_len;
+			drv_data->read(drv_data);
 
 			msg->actual_length += drv_data->len;
 			msg->state = pxa2xx_spi_next_transfer(drv_data);
 		} else {
 			/* In case we got an error we disable the SSP now */
-			pxa2xx_spi_write(drv_data, SSCR0,
-					 pxa2xx_spi_read(drv_data, SSCR0)
-					 & ~SSCR0_SSE);
+			write_SSCR0(read_SSCR0(reg) & ~SSCR0_SSE, reg);
 
 			msg->state = ERROR_STATE;
 		}
@@ -250,7 +263,7 @@ irqreturn_t pxa2xx_spi_dma_transfer(struct driver_data *drv_data)
 {
 	u32 status;
 
-	status = pxa2xx_spi_read(drv_data, SSSR) & drv_data->mask_sr;
+	status = read_SSSR(drv_data->ioaddr) & drv_data->mask_sr;
 	if (status & SSSR_ROR) {
 		dev_err(&drv_data->pdev->dev, "FIFO overrun\n");
 
@@ -344,6 +357,10 @@ void pxa2xx_spi_dma_release(struct driver_data *drv_data)
 	}
 }
 
+void pxa2xx_spi_dma_resume(struct driver_data *drv_data)
+{
+}
+
 int pxa2xx_spi_set_dma_burst_and_threshold(struct chip_data *chip,
 					   struct spi_device *spi,
 					   u8 bits_per_word, u32 *burst_code,
@@ -356,7 +373,7 @@ int pxa2xx_spi_set_dma_burst_and_threshold(struct chip_data *chip,
 	 * otherwise we use the default. Also we use the default FIFO
 	 * thresholds for now.
 	 */
-	*burst_code = chip_info ? chip_info->dma_burst_size : 1;
+	*burst_code = chip_info ? chip_info->dma_burst_size : 16;
 	*threshold = SSCR1_RxTresh(RX_THRESH_DFLT)
 		   | SSCR1_TxTresh(TX_THRESH_DFLT);
 

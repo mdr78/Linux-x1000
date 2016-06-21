@@ -57,12 +57,11 @@
 #define O2_SD_UHS2_L1_CTRL	0x35C
 #define O2_SD_FUNC_REG3		0x3E0
 #define O2_SD_FUNC_REG4		0x3E4
-#define O2_SD_LED_ENABLE	BIT(6)
-#define O2_SD_FREG0_LEDOFF	BIT(13)
-#define O2_SD_FREG4_ENABLE_CLK_SET	BIT(22)
 
 #define O2_SD_VENDOR_SETTING	0x110
 #define O2_SD_VENDOR_SETTING2	0x1C8
+
+extern void sdhci_pci_o2_fujin2_pci_init(struct sdhci_pci_chip *chip);
 
 extern int sdhci_pci_o2_probe_slot(struct sdhci_pci_slot *slot);
 

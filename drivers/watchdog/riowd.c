@@ -10,6 +10,7 @@
 #include <linux/types.h>
 #include <linux/fs.h>
 #include <linux/errno.h>
+#include <linux/init.h>
 #include <linux/miscdevice.h>
 #include <linux/watchdog.h>
 #include <linux/of.h>
@@ -237,6 +238,7 @@ MODULE_DEVICE_TABLE(of, riowd_match);
 static struct platform_driver riowd_driver = {
 	.driver = {
 		.name = DRIVER_NAME,
+		.owner = THIS_MODULE,
 		.of_match_table = riowd_match,
 	},
 	.probe		= riowd_probe,

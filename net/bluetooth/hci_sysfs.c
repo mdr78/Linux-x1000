@@ -49,7 +49,14 @@ static struct attribute *bt_link_attrs[] = {
 	NULL
 };
 
-ATTRIBUTE_GROUPS(bt_link);
+static struct attribute_group bt_link_group = {
+	.attrs = bt_link_attrs,
+};
+
+static const struct attribute_group *bt_link_groups[] = {
+	&bt_link_group,
+	NULL
+};
 
 static void bt_link_release(struct device *dev)
 {
@@ -175,7 +182,14 @@ static struct attribute *bt_host_attrs[] = {
 	NULL
 };
 
-ATTRIBUTE_GROUPS(bt_host);
+static struct attribute_group bt_host_group = {
+	.attrs = bt_host_attrs,
+};
+
+static const struct attribute_group *bt_host_groups[] = {
+	&bt_host_group,
+	NULL
+};
 
 static void bt_host_release(struct device *dev)
 {

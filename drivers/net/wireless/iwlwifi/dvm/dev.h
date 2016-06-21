@@ -669,8 +669,6 @@ struct iwl_priv {
 	/* ieee device used by generic ieee processing code */
 	struct ieee80211_hw *hw;
 
-	struct napi_struct *napi;
-
 	struct list_head calib_results;
 
 	struct workqueue_struct *workqueue;
@@ -680,8 +678,9 @@ struct iwl_priv {
 	enum ieee80211_band band;
 	u8 valid_contexts;
 
-	void (*rx_handlers[REPLY_MAX])(struct iwl_priv *priv,
-				       struct iwl_rx_cmd_buffer *rxb);
+	int (*rx_handlers[REPLY_MAX])(struct iwl_priv *priv,
+				       struct iwl_rx_cmd_buffer *rxb,
+				       struct iwl_device_cmd *cmd);
 
 	struct iwl_notif_wait_data notif_wait;
 
@@ -709,6 +708,7 @@ struct iwl_priv {
 	unsigned long reload_jiffies;
 	int reload_count;
 	bool ucode_loaded;
+	bool init_ucode_run;		/* Don't run init uCode again */
 
 	u8 plcp_delta_threshold;
 
@@ -888,11 +888,9 @@ struct iwl_priv {
 
 	struct iwl_event_log event_log;
 
-#ifdef CONFIG_IWLWIFI_LEDS
 	struct led_classdev led;
 	unsigned long blink_on, blink_off;
 	bool led_registered;
-#endif
 
 	/* WoWLAN GTK rekey data */
 	u8 kck[NL80211_KCK_LEN], kek[NL80211_KEK_LEN];

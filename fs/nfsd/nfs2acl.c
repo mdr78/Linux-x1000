@@ -42,25 +42,25 @@ static __be32 nfsacld_proc_getacl(struct svc_rqst * rqstp,
 	if (nfserr)
 		RETURN_STATUS(nfserr);
 
-	inode = d_inode(fh->fh_dentry);
+	inode = fh->fh_dentry->d_inode;
 
-	if (argp->mask & ~NFS_ACL_MASK)
+	if (argp->mask & ~(NFS_ACL|NFS_ACLCNT|NFS_DFACL|NFS_DFACLCNT))
 		RETURN_STATUS(nfserr_inval);
 	resp->mask = argp->mask;
 
 	nfserr = fh_getattr(fh, &resp->stat);
 	if (nfserr)
-		RETURN_STATUS(nfserr);
+		goto fail;
 
 	if (resp->mask & (NFS_ACL|NFS_ACLCNT)) {
 		acl = get_acl(inode, ACL_TYPE_ACCESS);
-		if (acl == NULL) {
-			/* Solaris returns the inode's minimum ACL. */
-			acl = posix_acl_from_mode(inode->i_mode, GFP_KERNEL);
-		}
 		if (IS_ERR(acl)) {
 			nfserr = nfserrno(PTR_ERR(acl));
 			goto fail;
+		}
+		if (acl == NULL) {
+			/* Solaris returns the inode's minimum ACL. */
+			acl = posix_acl_from_mode(inode->i_mode, GFP_KERNEL);
 		}
 		resp->acl_access = acl;
 	}
@@ -103,7 +103,7 @@ static __be32 nfsacld_proc_setacl(struct svc_rqst * rqstp,
 	if (nfserr)
 		goto out;
 
-	inode = d_inode(fh->fh_dentry);
+	inode = fh->fh_dentry->d_inode;
 	if (!IS_POSIXACL(inode) || !inode->i_op->set_acl) {
 		error = -EOPNOTSUPP;
 		goto out_errno;
@@ -182,8 +182,7 @@ static __be32 nfsacld_proc_access(struct svc_rqst *rqstp, struct nfsd3_accessarg
 static int nfsaclsvc_decode_getaclargs(struct svc_rqst *rqstp, __be32 *p,
 		struct nfsd3_getaclargs *argp)
 {
-	p = nfs2svc_decode_fh(p, &argp->fh);
-	if (!p)
+	if (!(p = nfs2svc_decode_fh(p, &argp->fh)))
 		return 0;
 	argp->mask = ntohl(*p); p++;
 
@@ -198,11 +197,10 @@ static int nfsaclsvc_decode_setaclargs(struct svc_rqst *rqstp, __be32 *p,
 	unsigned int base;
 	int n;
 
-	p = nfs2svc_decode_fh(p, &argp->fh);
-	if (!p)
+	if (!(p = nfs2svc_decode_fh(p, &argp->fh)))
 		return 0;
 	argp->mask = ntohl(*p++);
-	if (argp->mask & ~NFS_ACL_MASK ||
+	if (argp->mask & ~(NFS_ACL|NFS_ACLCNT|NFS_DFACL|NFS_DFACLCNT) ||
 	    !xdr_argsize_check(rqstp, p))
 		return 0;
 
@@ -220,8 +218,7 @@ static int nfsaclsvc_decode_setaclargs(struct svc_rqst *rqstp, __be32 *p,
 static int nfsaclsvc_decode_fhandleargs(struct svc_rqst *rqstp, __be32 *p,
 		struct nfsd_fhandle *argp)
 {
-	p = nfs2svc_decode_fh(p, &argp->fh);
-	if (!p)
+	if (!(p = nfs2svc_decode_fh(p, &argp->fh)))
 		return 0;
 	return xdr_argsize_check(rqstp, p);
 }
@@ -229,8 +226,7 @@ static int nfsaclsvc_decode_fhandleargs(struct svc_rqst *rqstp, __be32 *p,
 static int nfsaclsvc_decode_accessargs(struct svc_rqst *rqstp, __be32 *p,
 		struct nfsd3_accessargs *argp)
 {
-	p = nfs2svc_decode_fh(p, &argp->fh);
-	if (!p)
+	if (!(p = nfs2svc_decode_fh(p, &argp->fh)))
 		return 0;
 	argp->access = ntohl(*p++);
 
@@ -266,9 +262,9 @@ static int nfsaclsvc_encode_getaclres(struct svc_rqst *rqstp, __be32 *p,
 	 * nfsd_dispatch actually ensures the following cannot happen.
 	 * However, it seems fragile to depend on that.
 	 */
-	if (dentry == NULL || d_really_is_negative(dentry))
+	if (dentry == NULL || dentry->d_inode == NULL)
 		return 0;
-	inode = d_inode(dentry);
+	inode = dentry->d_inode;
 
 	p = nfs2svc_encode_fattr(rqstp, p, &resp->fh, &resp->stat);
 	*p++ = htonl(resp->mask);
@@ -293,7 +289,9 @@ static int nfsaclsvc_encode_getaclres(struct svc_rqst *rqstp, __be32 *p,
 				  resp->acl_default,
 				  resp->mask & NFS_DFACL,
 				  NFS_ACL_DEFAULT);
-	return (n > 0);
+	if (n <= 0)
+		return 0;
+	return 1;
 }
 
 static int nfsaclsvc_encode_attrstatres(struct svc_rqst *rqstp, __be32 *p,

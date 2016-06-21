@@ -480,8 +480,10 @@ static void rt73usb_config_filter(struct rt2x00_dev *rt2x00dev,
 			   !(filter_flags & FIF_PLCPFAIL));
 	rt2x00_set_field32(&reg, TXRX_CSR0_DROP_CONTROL,
 			   !(filter_flags & (FIF_CONTROL | FIF_PSPOLL)));
-	rt2x00_set_field32(&reg, TXRX_CSR0_DROP_NOT_TO_ME, 1);
+	rt2x00_set_field32(&reg, TXRX_CSR0_DROP_NOT_TO_ME,
+			   !(filter_flags & FIF_PROMISC_IN_BSS));
 	rt2x00_set_field32(&reg, TXRX_CSR0_DROP_TO_DS,
+			   !(filter_flags & FIF_PROMISC_IN_BSS) &&
 			   !rt2x00dev->intf_ap_count);
 	rt2x00_set_field32(&reg, TXRX_CSR0_DROP_VERSION_ERROR, 1);
 	rt2x00_set_field32(&reg, TXRX_CSR0_DROP_MULTICAST,
@@ -1293,7 +1295,7 @@ static int rt73usb_wait_bbp_ready(struct rt2x00_dev *rt2x00dev)
 	unsigned int i;
 	u8 value;
 
-	for (i = 0; i < REGISTER_USB_BUSY_COUNT; i++) {
+	for (i = 0; i < REGISTER_BUSY_COUNT; i++) {
 		rt73usb_bbp_read(rt2x00dev, 0, &value);
 		if ((value != 0xff) && (value != 0x00))
 			return 0;
@@ -1595,14 +1597,13 @@ static void rt73usb_clear_beacon(struct queue_entry *entry)
 {
 	struct rt2x00_dev *rt2x00dev = entry->queue->rt2x00dev;
 	unsigned int beacon_base;
-	u32 orig_reg, reg;
+	u32 reg;
 
 	/*
 	 * Disable beaconing while we are reloading the beacon data,
 	 * otherwise we might be sending out invalid data.
 	 */
-	rt2x00usb_register_read(rt2x00dev, TXRX_CSR9, &orig_reg);
-	reg = orig_reg;
+	rt2x00usb_register_read(rt2x00dev, TXRX_CSR9, &reg);
 	rt2x00_set_field32(&reg, TXRX_CSR9_BEACON_GEN, 0);
 	rt2x00usb_register_write(rt2x00dev, TXRX_CSR9, reg);
 
@@ -1613,9 +1614,10 @@ static void rt73usb_clear_beacon(struct queue_entry *entry)
 	rt2x00usb_register_write(rt2x00dev, beacon_base, 0);
 
 	/*
-	 * Restore beaconing state.
+	 * Enable beaconing again.
 	 */
-	rt2x00usb_register_write(rt2x00dev, TXRX_CSR9, orig_reg);
+	rt2x00_set_field32(&reg, TXRX_CSR9_BEACON_GEN, 1);
+	rt2x00usb_register_write(rt2x00dev, TXRX_CSR9, reg);
 }
 
 static int rt73usb_get_tx_data_len(struct queue_entry *entry)
@@ -2105,15 +2107,16 @@ static int rt73usb_probe_hw_mode(struct rt2x00_dev *rt2x00dev)
 	/*
 	 * Initialize all hw fields.
 	 *
-	 * Don't set IEEE80211_HOST_BROADCAST_PS_BUFFERING unless we are
+	 * Don't set IEEE80211_HW_HOST_BROADCAST_PS_BUFFERING unless we are
 	 * capable of sending the buffered frames out after the DTIM
 	 * transmission using rt2x00lib_beacondone. This will send out
 	 * multicast and broadcast traffic immediately instead of buffering it
 	 * infinitly and thus dropping it after some time.
 	 */
-	ieee80211_hw_set(rt2x00dev->hw, PS_NULLFUNC_STACK);
-	ieee80211_hw_set(rt2x00dev->hw, SIGNAL_DBM);
-	ieee80211_hw_set(rt2x00dev->hw, SUPPORTS_PS);
+	rt2x00dev->hw->flags =
+	    IEEE80211_HW_SIGNAL_DBM |
+	    IEEE80211_HW_SUPPORTS_PS |
+	    IEEE80211_HW_PS_NULLFUNC_STACK;
 
 	SET_IEEE80211_DEV(rt2x00dev->hw, rt2x00dev->dev);
 	SET_IEEE80211_PERM_ADDR(rt2x00dev->hw,

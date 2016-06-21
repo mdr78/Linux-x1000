@@ -506,10 +506,12 @@ static int snd_galaxy_probe(struct device *dev, unsigned int n)
 	u8 type;
 	int err;
 
-	err = snd_card_new(dev, index[n], id[n], THIS_MODULE,
-			   sizeof(*galaxy), &card);
+	err = snd_card_create(index[n], id[n], THIS_MODULE, sizeof *galaxy,
+			      &card);
 	if (err < 0)
 		return err;
+
+	snd_card_set_dev(card, dev);
 
 	card->private_free = snd_galaxy_free;
 	galaxy = card->private_data;
@@ -569,7 +571,7 @@ static int snd_galaxy_probe(struct device *dev, unsigned int n)
 	if (err < 0)
 		goto error;
 
-	err = snd_wss_pcm(chip, 0);
+	err = snd_wss_pcm(chip, 0, NULL);
 	if (err < 0)
 		goto error;
 
@@ -577,7 +579,7 @@ static int snd_galaxy_probe(struct device *dev, unsigned int n)
 	if (err < 0)
 		goto error;
 
-	err = snd_wss_timer(chip, 0);
+	err = snd_wss_timer(chip, 0, NULL);
 	if (err < 0)
 		goto error;
 

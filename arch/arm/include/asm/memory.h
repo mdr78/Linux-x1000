@@ -18,6 +18,8 @@
 #include <linux/types.h>
 #include <linux/sizes.h>
 
+#include <asm/cache.h>
+
 #ifdef CONFIG_NEED_MACH_MEMORY_H
 #include <mach/memory.h>
 #endif
@@ -76,12 +78,12 @@
  */
 #define XIP_VIRT_ADDR(physaddr)  (MODULES_VADDR + ((physaddr) & 0x000fffff))
 
-#if !defined(CONFIG_SMP) && !defined(CONFIG_ARM_LPAE)
 /*
  * Allow 16MB-aligned ioremap pages
  */
 #define IOREMAP_MAX_ORDER	24
-#endif
+
+#define CONSISTENT_END		(0xffe00000UL)
 
 #else /* CONFIG_MMU */
 
@@ -91,7 +93,9 @@
  * of this define that was meant to.
  * Fortunately, there is no reference for this in noMMU mode, for now.
  */
-#define TASK_SIZE		UL(0xffffffff)
+#ifndef TASK_SIZE
+#define TASK_SIZE		(CONFIG_DRAM_SIZE)
+#endif
 
 #ifndef TASK_UNMAPPED_BASE
 #define TASK_UNMAPPED_BASE	UL(0x00000000)
@@ -121,18 +125,40 @@
 #endif
 
 /*
+ * Convert a physical address to a Page Frame Number and back
+ */
+#define	__phys_to_pfn(paddr)	((unsigned long)((paddr) >> PAGE_SHIFT))
+#define	__pfn_to_phys(pfn)	((phys_addr_t)(pfn) << PAGE_SHIFT)
+
+/*
  * Convert a page to/from a physical address
  */
 #define page_to_phys(page)	(__pfn_to_phys(page_to_pfn(page)))
 #define phys_to_page(phys)	(pfn_to_page(__phys_to_pfn(phys)))
 
 /*
+ * Minimum guaranted alignment in pgd_alloc().  The page table pointers passed
+ * around in head.S and proc-*.S are shifted by this amount, in order to
+ * leave spare high bits for systems with physical address extension.  This
+ * does not fully accomodate the 40-bit addressing capability of ARM LPAE, but
+ * gives us about 38-bits or so.
+ */
+#ifdef CONFIG_ARM_LPAE
+#define ARCH_PGD_SHIFT		L1_CACHE_SHIFT
+#else
+#define ARCH_PGD_SHIFT		0
+#endif
+#define ARCH_PGD_MASK		((1 << ARCH_PGD_SHIFT) - 1)
+
+/*
  * PLAT_PHYS_OFFSET is the offset (from zero) of the start of physical
- * memory.  This is used for XIP and NoMMU kernels, and on platforms that don't
- * have CONFIG_ARM_PATCH_PHYS_VIRT. Assembly code must always use
+ * memory.  This is used for XIP and NoMMU kernels, or by kernels which
+ * have their own mach/memory.h.  Assembly code must always use
  * PLAT_PHYS_OFFSET and not PHYS_OFFSET.
  */
+#ifndef PLAT_PHYS_OFFSET
 #define PLAT_PHYS_OFFSET	UL(CONFIG_PHYS_OFFSET)
+#endif
 
 #ifndef __ASSEMBLY__
 
@@ -140,17 +166,9 @@
  * Physical vs virtual RAM address space conversion.  These are
  * private definitions which should NOT be used outside memory.h
  * files.  Use virt_to_phys/phys_to_virt/__pa/__va instead.
- *
- * PFNs are used to describe any physical page; this means
- * PFN 0 == physical address 0.
  */
-#if defined(__virt_to_phys)
-#define PHYS_OFFSET	PLAT_PHYS_OFFSET
-#define PHYS_PFN_OFFSET	((unsigned long)(PHYS_OFFSET >> PAGE_SHIFT))
-
-#define virt_to_pfn(kaddr) (__pa(kaddr) >> PAGE_SHIFT)
-
-#elif defined(CONFIG_ARM_PATCH_PHYS_VIRT)
+#ifndef __virt_to_phys
+#ifdef CONFIG_ARM_PATCH_PHYS_VIRT
 
 /*
  * Constants used to force the right instruction encodings and shifts
@@ -159,17 +177,12 @@
 #define __PV_BITS_31_24	0x81000000
 #define __PV_BITS_7_0	0x81
 
-extern unsigned long __pv_phys_pfn_offset;
+extern u64 __pv_phys_offset;
 extern u64 __pv_offset;
 extern void fixup_pv_table(const void *, unsigned long);
 extern const void *__pv_table_begin, *__pv_table_end;
 
-#define PHYS_OFFSET	((phys_addr_t)__pv_phys_pfn_offset << PAGE_SHIFT)
-#define PHYS_PFN_OFFSET	(__pv_phys_pfn_offset)
-
-#define virt_to_pfn(kaddr) \
-	((((unsigned long)(kaddr) - PAGE_OFFSET) >> PAGE_SHIFT) + \
-	 PHYS_PFN_OFFSET)
+#define PHYS_OFFSET __pv_phys_offset
 
 #define __pv_stub(from,to,instr,type)			\
 	__asm__("@ __pv_stub\n"				\
@@ -230,7 +243,6 @@ static inline unsigned long __phys_to_virt(phys_addr_t x)
 #else
 
 #define PHYS_OFFSET	PLAT_PHYS_OFFSET
-#define PHYS_PFN_OFFSET	((unsigned long)(PHYS_OFFSET >> PAGE_SHIFT))
 
 static inline phys_addr_t __virt_to_phys(unsigned long x)
 {
@@ -242,11 +254,18 @@ static inline unsigned long __phys_to_virt(phys_addr_t x)
 	return x - PHYS_OFFSET + PAGE_OFFSET;
 }
 
-#define virt_to_pfn(kaddr) \
-	((((unsigned long)(kaddr) - PAGE_OFFSET) >> PAGE_SHIFT) + \
-	 PHYS_PFN_OFFSET)
-
 #endif
+#endif
+
+/*
+ * PFNs are used to describe any physical page; this means
+ * PFN 0 == physical address 0.
+ *
+ * This is the PFN of the first RAM page in the kernel
+ * direct-mapped view.  We assume this is the first page
+ * of RAM in the mem_map as well.
+ */
+#define PHYS_PFN_OFFSET	((unsigned long)(PHYS_OFFSET >> PAGE_SHIFT))
 
 /*
  * These are *only* valid on the kernel direct mapped RAM memory.
@@ -254,13 +273,11 @@ static inline unsigned long __phys_to_virt(phys_addr_t x)
  * translation for translating DMA addresses.  Use the driver
  * DMA support - see dma-mapping.h.
  */
-#define virt_to_phys virt_to_phys
 static inline phys_addr_t virt_to_phys(const volatile void *x)
 {
 	return __virt_to_phys((unsigned long)(x));
 }
 
-#define phys_to_virt phys_to_virt
 static inline void *phys_to_virt(phys_addr_t x)
 {
 	return (void *)__phys_to_virt(x);
@@ -271,7 +288,7 @@ static inline void *phys_to_virt(phys_addr_t x)
  */
 #define __pa(x)			__virt_to_phys((unsigned long)(x))
 #define __va(x)			((void *)__phys_to_virt((phys_addr_t)(x)))
-#define pfn_to_kaddr(pfn)	__va((phys_addr_t)(pfn) << PAGE_SHIFT)
+#define pfn_to_kaddr(pfn)	__va((pfn) << PAGE_SHIFT)
 
 extern phys_addr_t (*arch_virt_to_idmap)(unsigned long x);
 
@@ -282,7 +299,7 @@ extern phys_addr_t (*arch_virt_to_idmap)(unsigned long x);
  */
 static inline phys_addr_t __virt_to_idmap(unsigned long x)
 {
-	if (IS_ENABLED(CONFIG_MMU) && arch_virt_to_idmap)
+	if (arch_virt_to_idmap)
 		return arch_virt_to_idmap(x);
 	else
 		return __virt_to_phys(x);
@@ -304,13 +321,11 @@ static inline phys_addr_t __virt_to_idmap(unsigned long x)
 #endif
 
 #ifdef CONFIG_VIRT_TO_BUS
-#define virt_to_bus virt_to_bus
 static inline __deprecated unsigned long virt_to_bus(void *x)
 {
 	return __virt_to_bus((unsigned long)x);
 }
 
-#define bus_to_virt bus_to_virt
 static inline __deprecated void *bus_to_virt(unsigned long x)
 {
 	return (void *)__bus_to_virt(x);
@@ -328,9 +343,9 @@ static inline __deprecated void *bus_to_virt(unsigned long x)
  */
 #define ARCH_PFN_OFFSET		PHYS_PFN_OFFSET
 
-#define virt_to_page(kaddr)	pfn_to_page(virt_to_pfn(kaddr))
+#define virt_to_page(kaddr)	pfn_to_page(__pa(kaddr) >> PAGE_SHIFT)
 #define virt_addr_valid(kaddr)	(((unsigned long)(kaddr) >= PAGE_OFFSET && (unsigned long)(kaddr) < (unsigned long)high_memory) \
-					&& pfn_valid(virt_to_pfn(kaddr)))
+					&& pfn_valid(__pa(kaddr) >> PAGE_SHIFT) )
 
 #endif
 

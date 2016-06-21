@@ -30,7 +30,6 @@
 #include <sound/tpa6130a2-plat.h>
 #include <sound/soc.h>
 #include <sound/tlv.h>
-#include <linux/of.h>
 #include <linux/of_gpio.h>
 
 #include "tpa6130a2.h"
@@ -259,7 +258,8 @@ static int tpa6130a2_put_volsw(struct snd_kcontrol *kcontrol,
  * TPA6130 volume. From -59.5 to 4 dB with increasing step size when going
  * down in gain.
  */
-static const DECLARE_TLV_DB_RANGE(tpa6130_tlv,
+static const unsigned int tpa6130_tlv[] = {
+	TLV_DB_RANGE_HEAD(10),
 	0, 1, TLV_DB_SCALE_ITEM(-5950, 600, 0),
 	2, 3, TLV_DB_SCALE_ITEM(-5000, 250, 0),
 	4, 5, TLV_DB_SCALE_ITEM(-4550, 160, 0),
@@ -269,8 +269,8 @@ static const DECLARE_TLV_DB_RANGE(tpa6130_tlv,
 	12, 13, TLV_DB_SCALE_ITEM(-3040, 180, 0),
 	14, 20, TLV_DB_SCALE_ITEM(-2710, 110, 0),
 	21, 37, TLV_DB_SCALE_ITEM(-1960, 74, 0),
-	38, 63, TLV_DB_SCALE_ITEM(-720, 45, 0)
-);
+	38, 63, TLV_DB_SCALE_ITEM(-720, 45, 0),
+};
 
 static const struct snd_kcontrol_new tpa6130a2_controls[] = {
 	SOC_SINGLE_EXT_TLV("TPA6130A2 Headphone Playback Volume",
@@ -279,11 +279,12 @@ static const struct snd_kcontrol_new tpa6130a2_controls[] = {
 		       tpa6130_tlv),
 };
 
-static const DECLARE_TLV_DB_RANGE(tpa6140_tlv,
+static const unsigned int tpa6140_tlv[] = {
+	TLV_DB_RANGE_HEAD(3),
 	0, 8, TLV_DB_SCALE_ITEM(-5900, 400, 0),
 	9, 16, TLV_DB_SCALE_ITEM(-2500, 200, 0),
-	17, 31, TLV_DB_SCALE_ITEM(-1000, 100, 0)
-);
+	17, 31, TLV_DB_SCALE_ITEM(-1000, 100, 0),
+};
 
 static const struct snd_kcontrol_new tpa6140a2_controls[] = {
 	SOC_SINGLE_EXT_TLV("TPA6140A2 Headphone Playback Volume",
@@ -379,8 +380,10 @@ static int tpa6130a2_probe(struct i2c_client *client,
 	dev = &client->dev;
 
 	data = devm_kzalloc(&client->dev, sizeof(*data), GFP_KERNEL);
-	if (!data)
+	if (data == NULL) {
+		dev_err(dev, "Can not allocate memory\n");
 		return -ENOMEM;
+	}
 
 	if (pdata) {
 		data->power_gpio = pdata->power_gpio;
@@ -486,6 +489,7 @@ MODULE_DEVICE_TABLE(of, tpa6130a2_of_match);
 static struct i2c_driver tpa6130a2_i2c_driver = {
 	.driver = {
 		.name = "tpa6130a2",
+		.owner = THIS_MODULE,
 		.of_match_table = of_match_ptr(tpa6130a2_of_match),
 	},
 	.probe = tpa6130a2_probe,

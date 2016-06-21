@@ -21,7 +21,7 @@
 #include <linux/pci.h>
 #include <linux/sched.h>
 #include <linux/uaccess.h>
-#include <linux/dmaengine.h>
+
 #include <linux/mic_common.h>
 #include "../common/mic_dev.h"
 #include "mic_device.h"
@@ -29,148 +29,52 @@
 #include "mic_virtio.h"
 
 /*
- * Size of the internal buffer used during DMA's as an intermediate buffer
- * for copy to/from user.
+ * Initiates the copies across the PCIe bus from card memory to
+ * a user space buffer.
  */
-#define MIC_INT_DMA_BUF_SIZE PAGE_ALIGN(64 * 1024ULL)
-
-static int mic_sync_dma(struct mic_device *mdev, dma_addr_t dst,
-			dma_addr_t src, size_t len)
+static int mic_virtio_copy_to_user(struct mic_vdev *mvdev,
+		void __user *ubuf, size_t len, u64 addr)
 {
-	int err = 0;
-	struct dma_async_tx_descriptor *tx;
-	struct dma_chan *mic_ch = mdev->dma_ch[0];
-
-	if (!mic_ch) {
-		err = -EBUSY;
-		goto error;
-	}
-
-	tx = mic_ch->device->device_prep_dma_memcpy(mic_ch, dst, src, len,
-						    DMA_PREP_FENCE);
-	if (!tx) {
-		err = -ENOMEM;
-		goto error;
-	} else {
-		dma_cookie_t cookie = tx->tx_submit(tx);
-
-		err = dma_submit_error(cookie);
-		if (err)
-			goto error;
-		err = dma_sync_wait(mic_ch, cookie);
-	}
-error:
-	if (err)
-		dev_err(&mdev->pdev->dev, "%s %d err %d\n",
+	int err;
+	void __iomem *dbuf = mvdev->mdev->aper.va + addr;
+	/*
+	 * We are copying from IO below an should ideally use something
+	 * like copy_to_user_fromio(..) if it existed.
+	 */
+	if (copy_to_user(ubuf, (void __force *)dbuf, len)) {
+		err = -EFAULT;
+		dev_err(mic_dev(mvdev), "%s %d err %d\n",
 			__func__, __LINE__, err);
-	return err;
-}
-
-/*
- * Initiates the copies across the PCIe bus from card memory to a user
- * space buffer. When transfers are done using DMA, source/destination
- * addresses and transfer length must follow the alignment requirements of
- * the MIC DMA engine.
- */
-static int mic_virtio_copy_to_user(struct mic_vdev *mvdev, void __user *ubuf,
-				   size_t len, u64 daddr, size_t dlen,
-				   int vr_idx)
-{
-	struct mic_device *mdev = mvdev->mdev;
-	void __iomem *dbuf = mdev->aper.va + daddr;
-	struct mic_vringh *mvr = &mvdev->mvr[vr_idx];
-	size_t dma_alignment = 1 << mdev->dma_ch[0]->device->copy_align;
-	size_t dma_offset;
-	size_t partlen;
-	int err;
-
-	dma_offset = daddr - round_down(daddr, dma_alignment);
-	daddr -= dma_offset;
-	len += dma_offset;
-
-	while (len) {
-		partlen = min_t(size_t, len, MIC_INT_DMA_BUF_SIZE);
-
-		err = mic_sync_dma(mdev, mvr->buf_da, daddr,
-				   ALIGN(partlen, dma_alignment));
-		if (err)
-			goto err;
-
-		if (copy_to_user(ubuf, mvr->buf + dma_offset,
-				 partlen - dma_offset)) {
-			err = -EFAULT;
-			goto err;
-		}
-		daddr += partlen;
-		ubuf += partlen;
-		dbuf += partlen;
-		mvdev->in_bytes_dma += partlen;
-		mvdev->in_bytes += partlen;
-		len -= partlen;
-		dma_offset = 0;
+		goto err;
 	}
-	return 0;
+	mvdev->in_bytes += len;
+	err = 0;
 err:
-	dev_err(mic_dev(mvdev), "%s %d err %d\n", __func__, __LINE__, err);
 	return err;
 }
 
 /*
- * Initiates copies across the PCIe bus from a user space buffer to card
- * memory. When transfers are done using DMA, source/destination addresses
- * and transfer length must follow the alignment requirements of the MIC
- * DMA engine.
+ * Initiates copies across the PCIe bus from a user space
+ * buffer to card memory.
  */
-static int mic_virtio_copy_from_user(struct mic_vdev *mvdev, void __user *ubuf,
-				     size_t len, u64 daddr, size_t dlen,
-				     int vr_idx)
+static int mic_virtio_copy_from_user(struct mic_vdev *mvdev,
+		void __user *ubuf, size_t len, u64 addr)
 {
-	struct mic_device *mdev = mvdev->mdev;
-	void __iomem *dbuf = mdev->aper.va + daddr;
-	struct mic_vringh *mvr = &mvdev->mvr[vr_idx];
-	size_t dma_alignment = 1 << mdev->dma_ch[0]->device->copy_align;
-	size_t partlen;
 	int err;
-
-	if (daddr & (dma_alignment - 1)) {
-		mvdev->tx_dst_unaligned += len;
-		goto memcpy;
-	} else if (ALIGN(len, dma_alignment) > dlen) {
-		mvdev->tx_len_unaligned += len;
-		goto memcpy;
-	}
-
-	while (len) {
-		partlen = min_t(size_t, len, MIC_INT_DMA_BUF_SIZE);
-
-		if (copy_from_user(mvr->buf, ubuf, partlen)) {
-			err = -EFAULT;
-			goto err;
-		}
-		err = mic_sync_dma(mdev, daddr, mvr->buf_da,
-				   ALIGN(partlen, dma_alignment));
-		if (err)
-			goto err;
-		daddr += partlen;
-		ubuf += partlen;
-		dbuf += partlen;
-		mvdev->out_bytes_dma += partlen;
-		mvdev->out_bytes += partlen;
-		len -= partlen;
-	}
-memcpy:
+	void __iomem *dbuf = mvdev->mdev->aper.va + addr;
 	/*
 	 * We are copying to IO below and should ideally use something
 	 * like copy_from_user_toio(..) if it existed.
 	 */
 	if (copy_from_user((void __force *)dbuf, ubuf, len)) {
 		err = -EFAULT;
+		dev_err(mic_dev(mvdev), "%s %d err %d\n",
+			__func__, __LINE__, err);
 		goto err;
 	}
 	mvdev->out_bytes += len;
-	return 0;
+	err = 0;
 err:
-	dev_err(mic_dev(mvdev), "%s %d err %d\n", __func__, __LINE__, err);
 	return err;
 }
 
@@ -206,8 +110,7 @@ static inline u32 mic_vringh_iov_consumed(struct vringh_kiov *iov)
  * way to override the VRINGH xfer(..) routines as of v3.10.
  */
 static int mic_vringh_copy(struct mic_vdev *mvdev, struct vringh_kiov *iov,
-			void __user *ubuf, size_t len, bool read, int vr_idx,
-			size_t *out_len)
+	void __user *ubuf, size_t len, bool read, size_t *out_len)
 {
 	int ret = 0;
 	size_t partlen, tot_len = 0;
@@ -215,15 +118,13 @@ static int mic_vringh_copy(struct mic_vdev *mvdev, struct vringh_kiov *iov,
 	while (len && iov->i < iov->used) {
 		partlen = min(iov->iov[iov->i].iov_len, len);
 		if (read)
-			ret = mic_virtio_copy_to_user(mvdev, ubuf, partlen,
-						(u64)iov->iov[iov->i].iov_base,
-						iov->iov[iov->i].iov_len,
-						vr_idx);
+			ret = mic_virtio_copy_to_user(mvdev,
+				ubuf, partlen,
+				(u64)iov->iov[iov->i].iov_base);
 		else
-			ret = mic_virtio_copy_from_user(mvdev, ubuf, partlen,
-						(u64)iov->iov[iov->i].iov_base,
-						iov->iov[iov->i].iov_len,
-						vr_idx);
+			ret = mic_virtio_copy_from_user(mvdev,
+				ubuf, partlen,
+				(u64)iov->iov[iov->i].iov_base);
 		if (ret) {
 			dev_err(mic_dev(mvdev), "%s %d err %d\n",
 				__func__, __LINE__, ret);
@@ -291,8 +192,8 @@ static int _mic_virtio_copy(struct mic_vdev *mvdev,
 			ubuf = iov.iov_base;
 		}
 		/* Issue all the read descriptors first */
-		ret = mic_vringh_copy(mvdev, riov, ubuf, len, MIC_VRINGH_READ,
-				      copy->vr_idx, &out_len);
+		ret = mic_vringh_copy(mvdev, riov, ubuf, len,
+			MIC_VRINGH_READ, &out_len);
 		if (ret) {
 			dev_err(mic_dev(mvdev), "%s %d err %d\n",
 				__func__, __LINE__, ret);
@@ -302,8 +203,8 @@ static int _mic_virtio_copy(struct mic_vdev *mvdev,
 		ubuf += out_len;
 		copy->out_len += out_len;
 		/* Issue the write descriptors next */
-		ret = mic_vringh_copy(mvdev, wiov, ubuf, len, !MIC_VRINGH_READ,
-				      copy->vr_idx, &out_len);
+		ret = mic_vringh_copy(mvdev, wiov, ubuf, len,
+			!MIC_VRINGH_READ, &out_len);
 		if (ret) {
 			dev_err(mic_dev(mvdev), "%s %d err %d\n",
 				__func__, __LINE__, ret);
@@ -439,7 +340,7 @@ void mic_virtio_reset_devices(struct mic_device *mdev)
 	struct list_head *pos, *tmp;
 	struct mic_vdev *mvdev;
 
-	dev_dbg(&mdev->pdev->dev, "%s\n",  __func__);
+	dev_dbg(mdev->sdev->parent, "%s\n",  __func__);
 
 	list_for_each_safe(pos, tmp, &mdev->vdev_list) {
 		mvdev = list_entry(pos, struct mic_vdev, list);
@@ -685,25 +586,19 @@ int mic_virtio_add_device(struct mic_vdev *mvdev,
 		mvr->head = USHRT_MAX;
 		mvr->mvdev = mvdev;
 		mvr->vrh.notify = mic_notify;
-		dev_dbg(&mdev->pdev->dev,
+		dev_dbg(mdev->sdev->parent,
 			"%s %d index %d va %p info %p vr_size 0x%x\n",
 			__func__, __LINE__, i, vr->va, vr->info, vr_size);
-		mvr->buf = (void *)__get_free_pages(GFP_KERNEL,
-					get_order(MIC_INT_DMA_BUF_SIZE));
-		mvr->buf_da = mic_map_single(mvdev->mdev, mvr->buf,
-					  MIC_INT_DMA_BUF_SIZE);
 	}
 
 	snprintf(irqname, sizeof(irqname), "mic%dvirtio%d", mdev->id,
 		 mvdev->virtio_id);
 	mvdev->virtio_db = mic_next_db(mdev);
-	mvdev->virtio_cookie = mic_request_threaded_irq(mdev,
-					       mic_virtio_intr_handler,
-					       NULL, irqname, mvdev,
-					       mvdev->virtio_db, MIC_INTR_DB);
+	mvdev->virtio_cookie = mic_request_irq(mdev, mic_virtio_intr_handler,
+			irqname, mvdev, mvdev->virtio_db, MIC_INTR_DB);
 	if (IS_ERR(mvdev->virtio_cookie)) {
 		ret = PTR_ERR(mvdev->virtio_cookie);
-		dev_dbg(&mdev->pdev->dev, "request irq failed\n");
+		dev_dbg(mdev->sdev->parent, "request irq failed\n");
 		goto err;
 	}
 
@@ -719,7 +614,7 @@ int mic_virtio_add_device(struct mic_vdev *mvdev,
 	smp_wmb();
 	dd->type = type;
 
-	dev_dbg(&mdev->pdev->dev, "Added virtio device id %d\n", dd->type);
+	dev_dbg(mdev->sdev->parent, "Added virtio device id %d\n", dd->type);
 
 	db = bootparam->h2c_config_db;
 	if (db != -1)
@@ -754,7 +649,7 @@ void mic_virtio_del_device(struct mic_vdev *mvdev)
 	db = bootparam->h2c_config_db;
 	if (db == -1)
 		goto skip_hot_remove;
-	dev_dbg(&mdev->pdev->dev,
+	dev_dbg(mdev->sdev->parent,
 		"Requesting hot remove id %d\n", mvdev->virtio_id);
 	mvdev->dc->config_change = MIC_VIRTIO_PARAM_DEV_REMOVE;
 	mdev->ops->send_intr(mdev, db);
@@ -764,7 +659,7 @@ void mic_virtio_del_device(struct mic_vdev *mvdev)
 		if (ret)
 			break;
 	}
-	dev_dbg(&mdev->pdev->dev,
+	dev_dbg(mdev->sdev->parent,
 		"Device id %d config_change %d guest_ack %d retry %d\n",
 		mvdev->virtio_id, mvdev->dc->config_change,
 		mvdev->dc->guest_ack, retry);
@@ -776,11 +671,6 @@ skip_hot_remove:
 	vqconfig = mic_vq_config(mvdev->dd);
 	for (i = 0; i < mvdev->dd->num_vq; i++) {
 		struct mic_vringh *mvr = &mvdev->mvr[i];
-
-		mic_unmap_single(mvdev->mdev, mvr->buf_da,
-				 MIC_INT_DMA_BUF_SIZE);
-		free_pages((unsigned long)mvr->buf,
-			   get_order(MIC_INT_DMA_BUF_SIZE));
 		vringh_kiov_cleanup(&mvr->riov);
 		vringh_kiov_cleanup(&mvr->wiov);
 		mic_unmap_single(mdev, le64_to_cpu(vqconfig[i].address),
@@ -793,7 +683,7 @@ skip_hot_remove:
 		tmp_mvdev = list_entry(pos, struct mic_vdev, list);
 		if (tmp_mvdev == mvdev) {
 			list_del(pos);
-			dev_dbg(&mdev->pdev->dev,
+			dev_dbg(mdev->sdev->parent,
 				"Removing virtio device id %d\n",
 				mvdev->virtio_id);
 			break;

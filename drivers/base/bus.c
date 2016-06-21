@@ -10,7 +10,6 @@
  *
  */
 
-#include <linux/async.h>
 #include <linux/device.h>
 #include <linux/module.h>
 #include <linux/errno.h>
@@ -255,15 +254,13 @@ static ssize_t store_drivers_probe(struct bus_type *bus,
 				   const char *buf, size_t count)
 {
 	struct device *dev;
-	int err = -EINVAL;
 
 	dev = bus_find_device_by_name(bus, NULL, buf);
 	if (!dev)
 		return -ENODEV;
-	if (bus_rescan_devices_helper(dev, NULL) == 0)
-		err = count;
-	put_device(dev);
-	return err;
+	if (bus_rescan_devices_helper(dev, NULL) != 0)
+		return -EINVAL;
+	return count;
 }
 
 static struct device *next_device(struct klist_iter *i)
@@ -516,11 +513,11 @@ int bus_add_device(struct device *dev)
 			goto out_put;
 		error = device_add_groups(dev, bus->dev_groups);
 		if (error)
-			goto out_id;
+			goto out_groups;
 		error = sysfs_create_link(&bus->p->devices_kset->kobj,
 						&dev->kobj, dev_name(dev));
 		if (error)
-			goto out_groups;
+			goto out_id;
 		error = sysfs_create_link(&dev->kobj,
 				&dev->bus->p->subsys.kobj, "subsystem");
 		if (error)
@@ -550,12 +547,15 @@ void bus_probe_device(struct device *dev)
 {
 	struct bus_type *bus = dev->bus;
 	struct subsys_interface *sif;
+	int ret;
 
 	if (!bus)
 		return;
 
-	if (bus->p->drivers_autoprobe)
-		device_initial_probe(dev);
+	if (bus->p->drivers_autoprobe) {
+		ret = device_attach(dev);
+		WARN_ON(ret < 0);
+	}
 
 	mutex_lock(&bus->p->mutex);
 	list_for_each_entry(sif, &bus->p->interfaces, node)
@@ -657,17 +657,6 @@ static ssize_t uevent_store(struct device_driver *drv, const char *buf,
 }
 static DRIVER_ATTR_WO(uevent);
 
-static void driver_attach_async(void *_drv, async_cookie_t cookie)
-{
-	struct device_driver *drv = _drv;
-	int ret;
-
-	ret = driver_attach(drv);
-
-	pr_debug("bus: '%s': driver %s async attach completed: %d\n",
-		 drv->bus->name, drv->name, ret);
-}
-
 /**
  * bus_add_driver - Add a driver to the bus.
  * @drv: driver.
@@ -700,15 +689,9 @@ int bus_add_driver(struct device_driver *drv)
 
 	klist_add_tail(&priv->knode_bus, &bus->p->klist_drivers);
 	if (drv->bus->p->drivers_autoprobe) {
-		if (driver_allows_async_probing(drv)) {
-			pr_debug("bus: '%s': probing driver %s asynchronously\n",
-				drv->bus->name, drv->name);
-			async_schedule(driver_attach_async, drv);
-		} else {
-			error = driver_attach(drv);
-			if (error)
-				goto out_unregister;
-		}
+		error = driver_attach(drv);
+		if (error)
+			goto out_unregister;
 	}
 	module_add_driver(drv->owner, drv);
 
@@ -1235,7 +1218,7 @@ err_dev:
  * with the name of the subsystem. The root device can carry subsystem-
  * wide attributes. All registered devices are below this single root
  * device and are named after the subsystem with a simple enumeration
- * number appended. The registered devices are not explicitly named;
+ * number appended. The registered devices are not explicitely named;
  * only 'id' in the device needs to be set.
  *
  * Do not use this interface for anything new, it exists for compatibility

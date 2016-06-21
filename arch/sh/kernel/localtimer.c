@@ -32,11 +32,16 @@ static DEFINE_PER_CPU(struct clock_event_device, local_clockevent);
  */
 void local_timer_interrupt(void)
 {
-	struct clock_event_device *clk = this_cpu_ptr(&local_clockevent);
+	struct clock_event_device *clk = &__get_cpu_var(local_clockevent);
 
 	irq_enter();
 	clk->event_handler(clk);
 	irq_exit();
+}
+
+static void dummy_timer_set_mode(enum clock_event_mode mode,
+				 struct clock_event_device *clk)
+{
 }
 
 void local_timer_setup(unsigned int cpu)
@@ -49,6 +54,7 @@ void local_timer_setup(unsigned int cpu)
 				  CLOCK_EVT_FEAT_DUMMY;
 	clk->rating		= 400;
 	clk->mult		= 1;
+	clk->set_mode		= dummy_timer_set_mode;
 	clk->broadcast		= smp_timer_broadcast;
 	clk->cpumask		= cpumask_of(cpu);
 

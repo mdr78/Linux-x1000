@@ -142,9 +142,21 @@ static void __init boot_flags_init(char *commands)
 				process_switch(*commands++);
 			continue;
 		}
-		if (!strncmp(commands, "mem=", 4))
-			cmdline_memory_size = memparse(commands + 4, &commands);
-
+		if (!strncmp(commands, "mem=", 4)) {
+			/*
+			 * "mem=XXX[kKmM]" overrides the PROM-reported
+			 * memory size.
+			 */
+			cmdline_memory_size = simple_strtoul(commands + 4,
+							     &commands, 0);
+			if (*commands == 'K' || *commands == 'k') {
+				cmdline_memory_size <<= 10;
+				commands++;
+			} else if (*commands=='M' || *commands=='m') {
+				cmdline_memory_size <<= 20;
+				commands++;
+			}
+		}
 		while (*commands && *commands != ' ')
 			commands++;
 	}
@@ -255,24 +267,6 @@ void sun4v_patch_2insn_range(struct sun4v_2insn_patch_entry *start,
 	}
 }
 
-void sun_m7_patch_2insn_range(struct sun4v_2insn_patch_entry *start,
-			     struct sun4v_2insn_patch_entry *end)
-{
-	while (start < end) {
-		unsigned long addr = start->addr;
-
-		*(unsigned int *) (addr +  0) = start->insns[0];
-		wmb();
-		__asm__ __volatile__("flush	%0" : : "r" (addr +  0));
-
-		*(unsigned int *) (addr +  4) = start->insns[1];
-		wmb();
-		__asm__ __volatile__("flush	%0" : : "r" (addr +  4));
-
-		start++;
-	}
-}
-
 static void __init sun4v_patch(void)
 {
 	extern void sun4v_hvapi_init(void);
@@ -285,9 +279,6 @@ static void __init sun4v_patch(void)
 
 	sun4v_patch_2insn_range(&__sun4v_2insn_patch,
 				&__sun4v_2insn_patch_end);
-	if (sun4v_chip_type == SUN4V_CHIP_SPARC_M7)
-		sun_m7_patch_2insn_range(&__sun_m7_2insn_patch,
-					 &__sun_m7_2insn_patch_end);
 
 	sun4v_hvapi_init();
 }
@@ -380,8 +371,7 @@ static const char *hwcaps[] = {
 	 */
 	"mul32", "div32", "fsmuld", "v8plus", "popc", "vis", "vis2",
 	"ASIBlkInit", "fmaf", "vis3", "hpc", "random", "trans", "fjfmau",
-	"ima", "cspare", "pause", "cbcond", NULL /*reserved for crypto */,
-	"adp",
+	"ima", "cspare", "pause", "cbcond",
 };
 
 static const char *crypto_hwcaps[] = {
@@ -397,7 +387,7 @@ void cpucap_info(struct seq_file *m)
 	seq_puts(m, "cpucaps\t\t: ");
 	for (i = 0; i < ARRAY_SIZE(hwcaps); i++) {
 		unsigned long bit = 1UL << i;
-		if (hwcaps[i] && (caps & bit)) {
+		if (caps & bit) {
 			seq_printf(m, "%s%s",
 				   printed ? "," : "", hwcaps[i]);
 			printed++;
@@ -451,7 +441,7 @@ static void __init report_hwcaps(unsigned long caps)
 
 	for (i = 0; i < ARRAY_SIZE(hwcaps); i++) {
 		unsigned long bit = 1UL << i;
-		if (hwcaps[i] && (caps & bit))
+		if (caps & bit)
 			report_one_hwcap(&printed, hwcaps[i]);
 	}
 	if (caps & HWCAP_SPARC_CRYPTO)
@@ -486,7 +476,7 @@ static unsigned long __init mdesc_cpu_hwcap_list(void)
 		for (i = 0; i < ARRAY_SIZE(hwcaps); i++) {
 			unsigned long bit = 1UL << i;
 
-			if (hwcaps[i] && !strcmp(prop, hwcaps[i])) {
+			if (!strcmp(prop, hwcaps[i])) {
 				caps |= bit;
 				break;
 			}

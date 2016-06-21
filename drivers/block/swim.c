@@ -549,7 +549,7 @@ static void redo_fd_request(struct request_queue *q)
 		case READ:
 			err = floppy_read_sectors(fs, blk_rq_pos(req),
 						  blk_rq_cur_sectors(req),
-						  bio_data(req->bio));
+						  req->buffer);
 			break;
 		}
 	done:
@@ -971,6 +971,7 @@ static struct platform_driver swim_driver = {
 	.remove = swim_remove,
 	.driver   = {
 		.name	= CARDNAME,
+		.owner	= THIS_MODULE,
 	},
 };
 

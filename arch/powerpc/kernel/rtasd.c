@@ -150,8 +150,8 @@ static void printk_log_rtas(char *buf, int len)
 		struct rtas_error_log *errlog = (struct rtas_error_log *)buf;
 
 		printk(RTAS_DEBUG "event: %d, Type: %s, Severity: %d\n",
-		       error_log_cnt, rtas_event_type(rtas_error_type(errlog)),
-		       rtas_error_severity(errlog));
+		       error_log_cnt, rtas_event_type(errlog->type),
+		       errlog->severity);
 	}
 }
 
@@ -159,16 +159,14 @@ static int log_rtas_len(char * buf)
 {
 	int len;
 	struct rtas_error_log *err;
-	uint32_t extended_log_length;
 
 	/* rtas fixed header */
 	len = 8;
 	err = (struct rtas_error_log *)buf;
-	extended_log_length = rtas_error_extended_log_length(err);
-	if (rtas_error_extended(err) && extended_log_length) {
+	if (err->extended && err->extended_log_length) {
 
 		/* extended header */
-		len += extended_log_length;
+		len += err->extended_log_length;
 	}
 
 	if (rtas_error_log_max == 0)
@@ -286,7 +284,7 @@ static void prrn_work_fn(struct work_struct *work)
 
 static DECLARE_WORK(prrn_work, prrn_work_fn);
 
-static void prrn_schedule_update(u32 scope)
+void prrn_schedule_update(u32 scope)
 {
 	flush_work(&prrn_work);
 	prrn_update_scope = scope;
@@ -295,13 +293,15 @@ static void prrn_schedule_update(u32 scope)
 
 static void handle_rtas_event(const struct rtas_error_log *log)
 {
-	if (rtas_error_type(log) != RTAS_TYPE_PRRN || !prrn_is_enabled())
-		return;
+	if (log->type == RTAS_TYPE_PRRN) {
+		/* For PRRN Events the extended log length is used to denote
+		 * the scope for calling rtas update-nodes.
+		 */
+		if (prrn_is_enabled())
+			prrn_schedule_update(log->extended_log_length);
+	}
 
-	/* For PRRN Events the extended log length is used to denote
-	 * the scope for calling rtas update-nodes.
-	 */
-	prrn_schedule_update(rtas_error_extended_log_length(log));
+	return;
 }
 
 #else

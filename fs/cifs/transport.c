@@ -99,9 +99,9 @@ DeleteMidQEntry(struct mid_q_entry *midEntry)
 	   something is wrong, unless it is quite a slow link or server */
 	if ((now - midEntry->when_alloc) > HZ) {
 		if ((cifsFYI & CIFS_TIMER) && (midEntry->command != command)) {
-			pr_debug(" CIFS slow rsp: cmd %d mid %llu",
+			printk(KERN_DEBUG " CIFS slow rsp: cmd %d mid %llu",
 			       midEntry->command, midEntry->mid);
-			pr_info(" A: 0x%lx S: 0x%lx R: 0x%lx\n",
+			printk(" A: 0x%lx S: 0x%lx R: 0x%lx\n",
 			       now - midEntry->when_alloc,
 			       now - midEntry->when_sent,
 			       now - midEntry->when_received);
@@ -448,15 +448,6 @@ wait_for_free_request(struct TCP_Server_Info *server, const int timeout,
 	return wait_for_free_credits(server, timeout, val);
 }
 
-int
-cifs_wait_mtu_credits(struct TCP_Server_Info *server, unsigned int size,
-		      unsigned int *num, unsigned int *credits)
-{
-	*num = size;
-	*credits = 0;
-	return 0;
-}
-
 static int allocate_mid(struct cifs_ses *ses, struct smb_hdr *in_buf,
 			struct mid_q_entry **ppmidQ)
 {
@@ -540,23 +531,20 @@ cifs_call_async(struct TCP_Server_Info *server, struct smb_rqst *rqst,
 {
 	int rc, timeout, optype;
 	struct mid_q_entry *mid;
-	unsigned int credits = 0;
 
 	timeout = flags & CIFS_TIMEOUT_MASK;
 	optype = flags & CIFS_OP_MASK;
 
-	if ((flags & CIFS_HAS_CREDITS) == 0) {
-		rc = wait_for_free_request(server, timeout, optype);
-		if (rc)
-			return rc;
-		credits = 1;
-	}
+	rc = wait_for_free_request(server, timeout, optype);
+	if (rc)
+		return rc;
 
 	mutex_lock(&server->srv_mutex);
 	mid = server->ops->setup_async_request(server, rqst);
 	if (IS_ERR(mid)) {
 		mutex_unlock(&server->srv_mutex);
-		add_credits_and_wake_if(server, credits, optype);
+		add_credits(server, 1, optype);
+		wake_up(&server->request_q);
 		return PTR_ERR(mid);
 	}
 
@@ -576,17 +564,16 @@ cifs_call_async(struct TCP_Server_Info *server, struct smb_rqst *rqst,
 	cifs_in_send_dec(server);
 	cifs_save_when_sent(mid);
 
-	if (rc < 0) {
+	if (rc < 0)
 		server->sequence_number -= 2;
-		cifs_delete_mid(mid);
-	}
-
 	mutex_unlock(&server->srv_mutex);
 
 	if (rc == 0)
 		return 0;
 
-	add_credits_and_wake_if(server, credits, optype);
+	cifs_delete_mid(mid);
+	add_credits(server, 1, optype);
+	wake_up(&server->request_q);
 	return rc;
 }
 
@@ -646,9 +633,7 @@ cifs_sync_mid_result(struct mid_q_entry *mid, struct TCP_Server_Info *server)
 	}
 	spin_unlock(&GlobalMid_Lock);
 
-	mutex_lock(&server->srv_mutex);
 	DeleteMidQEntry(mid);
-	mutex_unlock(&server->srv_mutex);
 	return rc;
 }
 

@@ -71,23 +71,18 @@ void mutex_remove_waiter(struct mutex *lock, struct mutex_waiter *waiter,
 
 void debug_mutex_unlock(struct mutex *lock)
 {
-	if (likely(debug_locks)) {
-		DEBUG_LOCKS_WARN_ON(lock->magic != lock);
+	if (unlikely(!debug_locks))
+		return;
 
-		if (!lock->owner)
-			DEBUG_LOCKS_WARN_ON(!lock->owner);
-		else
-			DEBUG_LOCKS_WARN_ON(lock->owner != current);
+	DEBUG_LOCKS_WARN_ON(lock->magic != lock);
 
-		DEBUG_LOCKS_WARN_ON(!lock->wait_list.prev && !lock->wait_list.next);
-	}
+	if (!lock->owner)
+		DEBUG_LOCKS_WARN_ON(!lock->owner);
+	else
+		DEBUG_LOCKS_WARN_ON(lock->owner != current);
 
-	/*
-	 * __mutex_slowpath_needs_to_unlock() is explicitly 0 for debug
-	 * mutexes so that we can do it here after we've verified state.
-	 */
+	DEBUG_LOCKS_WARN_ON(!lock->wait_list.prev && !lock->wait_list.next);
 	mutex_clear_owner(lock);
-	atomic_set(&lock->count, 1);
 }
 
 void debug_mutex_init(struct mutex *lock, const char *name,

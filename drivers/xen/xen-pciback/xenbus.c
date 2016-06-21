@@ -44,6 +44,7 @@ static struct xen_pcibk_device *alloc_pdev(struct xenbus_device *xdev)
 	dev_dbg(&xdev->dev, "allocated pdev @ 0x%p\n", pdev);
 
 	pdev->xdev = xdev;
+	dev_set_drvdata(&xdev->dev, pdev);
 
 	mutex_init(&pdev->dev_lock);
 
@@ -57,9 +58,6 @@ static struct xen_pcibk_device *alloc_pdev(struct xenbus_device *xdev)
 		kfree(pdev);
 		pdev = NULL;
 	}
-
-	dev_set_drvdata(&xdev->dev, pdev);
-
 out:
 	return pdev;
 }
@@ -95,8 +93,6 @@ static void free_pdev(struct xen_pcibk_device *pdev)
 
 	xen_pcibk_disconnect(pdev);
 
-	/* N.B. This calls pcistub_put_pci_dev which does the FLR on all
-	 * of the PCIe devices. */
 	xen_pcibk_release_devices(pdev);
 
 	dev_set_drvdata(&pdev->xdev->dev, NULL);
@@ -115,7 +111,7 @@ static int xen_pcibk_do_attach(struct xen_pcibk_device *pdev, int gnt_ref,
 		"Attaching to frontend resources - gnt_ref=%d evtchn=%d\n",
 		gnt_ref, remote_evtchn);
 
-	err = xenbus_map_ring_valloc(pdev->xdev, &gnt_ref, 1, &vaddr);
+	err = xenbus_map_ring_valloc(pdev->xdev, gnt_ref, &vaddr);
 	if (err < 0) {
 		xenbus_dev_fatal(pdev->xdev, err,
 				"Error mapping other domain page in ours.");
@@ -176,7 +172,6 @@ static int xen_pcibk_attach(struct xen_pcibk_device *pdev)
 				 "version mismatch (%s/%s) with pcifront - "
 				 "halting " DRV_NAME,
 				 magic, XEN_PCI_MAGIC);
-		err = -EFAULT;
 		goto out;
 	}
 
@@ -249,7 +244,7 @@ static int xen_pcibk_export_device(struct xen_pcibk_device *pdev,
 	if (err)
 		goto out;
 
-	dev_info(&dev->dev, "registering for %d\n", pdev->xdev->otherend_id);
+	dev_dbg(&dev->dev, "registering for %d\n", pdev->xdev->otherend_id);
 	if (xen_register_device_domain_owner(dev,
 					     pdev->xdev->otherend_id) != 0) {
 		dev_err(&dev->dev, "Stealing ownership from dom%d.\n",
@@ -291,9 +286,7 @@ static int xen_pcibk_remove_device(struct xen_pcibk_device *pdev,
 	dev_dbg(&dev->dev, "unregistering for %d\n", pdev->xdev->otherend_id);
 	xen_unregister_device_domain_owner(dev);
 
-	/* N.B. This ends up calling pcistub_put_pci_dev which ends up
-	 * doing the FLR. */
-	xen_pcibk_release_pci_dev(pdev, dev, true /* use the lock. */);
+	xen_pcibk_release_pci_dev(pdev, dev);
 
 out:
 	return err;
@@ -721,13 +714,11 @@ static const struct xenbus_device_id xen_pcibk_ids[] = {
 	{""},
 };
 
-static struct xenbus_driver xen_pcibk_driver = {
-	.name                   = DRV_NAME,
-	.ids                    = xen_pcibk_ids,
+static DEFINE_XENBUS_DRIVER(xen_pcibk, DRV_NAME,
 	.probe			= xen_pcibk_xenbus_probe,
 	.remove			= xen_pcibk_xenbus_remove,
 	.otherend_changed	= xen_pcibk_frontend_changed,
-};
+);
 
 const struct xen_pcibk_backend *__read_mostly xen_pcibk_backend;
 

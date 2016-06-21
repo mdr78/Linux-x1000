@@ -28,6 +28,10 @@
 
 #include "stmmac.h"
 
+static int enable_msi = 1;
+module_param(enable_msi, int, S_IRUGO | S_IWUSR);
+MODULE_PARM_DESC(enable_msi, "Enable PCI MSI mode");
+
 /*
  * This struct is used to associate PCI Function of MAC controller on a board,
  * discovered via DMI, with the address of PHY connected to the MAC. The
@@ -138,6 +142,61 @@ static struct stmmac_pci_dmi_data quark_pci_dmi_data[] = {
 		.func = 6,
 		.phy_addr = 1,
 	},
+	{
+		.name = "ClantonHill",
+		.func = 6,
+		.phy_addr = 1,
+	},
+	{
+		.name = "ClantonHill",
+		.func = 7,
+		.phy_addr = 1,
+	},
+	{
+		.name = "ClantonPeakSVP",
+		.func = 6,
+		.phy_addr = 3,
+	},
+	{
+		.name = "ClantonPeakSVP",
+		.func = 7,
+		.phy_addr = 1,
+	},
+	{
+		.name = "CrossHill",
+		.func = 6,
+		.phy_addr = 1,
+	},
+	{
+		.name = "CrossHill",
+		.func = 7,
+		.phy_addr = 1,
+	},
+	{
+		.name = "RelianceCreek",
+		.func = 6,
+		.phy_addr = 1,
+	},
+	{
+		.name = "RelianceCreek",
+		.func = 7,
+		.phy_addr = 1,
+	},
+	{
+		.name = "RelianceCreekSPU",
+		.func = 6,
+		.phy_addr = 1,
+	},
+	{
+		.name = "RelianceCreekSPU",
+		.func = 7,
+		.phy_addr = 1,
+	},
+	{
+		.name = "KipsBay",
+		.func = 6,
+		.phy_addr = 1,
+	},
 	{}
 };
 
@@ -163,7 +222,9 @@ static int stmmac_pci_probe(struct pci_dev *pdev,
 {
 	struct stmmac_pci_info *info = (struct stmmac_pci_info *)id->driver_data;
 	struct plat_stmmacenet_data *plat;
-	struct stmmac_resources res;
+	struct stmmac_priv *priv;
+	void __iomem *stmmac_ioaddr = NULL;
+
 	int i;
 	int ret;
 
@@ -212,14 +273,33 @@ static int stmmac_pci_probe(struct pci_dev *pdev,
 	} else
 		stmmac_default_data(plat);
 
-	pci_enable_msi(pdev);
+	if (enable_msi == 1) {
+		ret = pci_enable_msi(pdev);
+		if (ret)
+			dev_info(&pdev->dev, "stmmac MSI mode NOT enabled\n");
+		else
+			dev_info(&pdev->dev, "stmmac MSI mode enabled\n");
+	}
 
-	memset(&res, 0, sizeof(res));
-	res.addr = pcim_iomap_table(pdev)[i];
-	res.wol_irq = pdev->irq;
-	res.irq = pdev->irq;
+	stmmac_ioaddr = pcim_iomap_table(pdev)[i];
+	if (!stmmac_ioaddr) {
+		dev_err(&pdev->dev, "%s: main driver iomap failed\n", __func__);
+		return -ENOMEM;
+	}
 
-	return stmmac_dvr_probe(&pdev->dev, plat, &res);
+	priv = stmmac_dvr_probe(&pdev->dev, plat, stmmac_ioaddr);
+	if (IS_ERR(priv)) {
+		dev_err(&pdev->dev, "%s: main driver probe failed\n", __func__);
+		return PTR_ERR(priv);
+	}
+	priv->dev->irq = pdev->irq;
+	priv->wol_irq = pdev->irq;
+
+	pci_set_drvdata(pdev, priv->dev);
+
+	dev_dbg(&pdev->dev, "STMMAC PCI driver registration completed\n");
+
+	return 0;
 }
 
 /**
@@ -260,7 +340,7 @@ static SIMPLE_DEV_PM_OPS(stmmac_pm_ops, stmmac_pci_suspend, stmmac_pci_resume);
 #define STMMAC_QUARK_ID  0x0937
 #define STMMAC_DEVICE_ID 0x1108
 
-static const struct pci_device_id stmmac_id_table[] = {
+static DEFINE_PCI_DEVICE_TABLE(stmmac_id_table) = {
 	{PCI_DEVICE(STMMAC_VENDOR_ID, STMMAC_DEVICE_ID)},
 	{PCI_DEVICE(PCI_VENDOR_ID_STMICRO, PCI_DEVICE_ID_STMICRO_MAC)},
 	{PCI_VDEVICE(INTEL, STMMAC_QUARK_ID), (kernel_ulong_t)&quark_pci_info},

@@ -38,7 +38,7 @@
 
 #include "mpc83xx.h"
 
-static const struct of_device_id mpc834x_itx_ids[] __initconst = {
+static struct of_device_id __initdata mpc834x_itx_ids[] = {
 	{ .compatible = "fsl,pq2pro-localbus", },
 	{},
 };

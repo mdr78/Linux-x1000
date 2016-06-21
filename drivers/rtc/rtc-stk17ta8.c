@@ -214,7 +214,8 @@ static irqreturn_t stk17ta8_rtc_interrupt(int irq, void *dev_id)
 			events |= RTC_UF;
 		else
 			events |= RTC_AF;
-		rtc_update_irq(pdata->rtc, 1, events);
+		if (likely(pdata->rtc))
+			rtc_update_irq(pdata->rtc, 1, events);
 	}
 	spin_unlock(&pdata->lock);
 	return events ? IRQ_HANDLED : IRQ_NONE;
@@ -254,7 +255,7 @@ static ssize_t stk17ta8_nvram_read(struct file *filp, struct kobject *kobj,
 	void __iomem *ioaddr = pdata->ioaddr;
 	ssize_t count;
 
-	for (count = 0; count < size; count++)
+	for (count = 0; size > 0 && pos < RTC_OFFSET; count++, size--)
 		*buf++ = readb(ioaddr + pos++);
 	return count;
 }
@@ -269,7 +270,7 @@ static ssize_t stk17ta8_nvram_write(struct file *filp, struct kobject *kobj,
 	void __iomem *ioaddr = pdata->ioaddr;
 	ssize_t count;
 
-	for (count = 0; count < size; count++)
+	for (count = 0; size > 0 && pos < RTC_OFFSET; count++, size--)
 		writeb(*buf++, ioaddr + pos++);
 	return count;
 }
@@ -358,6 +359,7 @@ static struct platform_driver stk17ta8_rtc_driver = {
 	.remove		= stk17ta8_rtc_remove,
 	.driver		= {
 		.name	= "stk17ta8",
+		.owner	= THIS_MODULE,
 	},
 };
 

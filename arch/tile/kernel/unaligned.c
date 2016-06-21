@@ -25,7 +25,6 @@
 #include <linux/module.h>
 #include <linux/compat.h>
 #include <linux/prctl.h>
-#include <linux/context_tracking.h>
 #include <asm/cacheflush.h>
 #include <asm/traps.h>
 #include <asm/uaccess.h>
@@ -183,7 +182,18 @@ static void find_regs(tilegx_bundle_bits bundle, uint64_t *rd, uint64_t *ra,
 	int i;
 	uint64_t reg;
 	uint64_t reg_map = 0, alias_reg_map = 0, map;
-	bool alias = false;
+	bool alias;
+
+	*ra = -1;
+	*rb = -1;
+
+	if (rd)
+		*rd = -1;
+
+	*clob1 = -1;
+	*clob2 = -1;
+	*clob3 = -1;
+	alias = false;
 
 	/*
 	 * Parse fault bundle, find potential used registers and mark
@@ -559,7 +569,7 @@ void jit_bundle_gen(struct pt_regs *regs, tilegx_bundle_bits bundle,
 	tilegx_bundle_bits bundle_2 = 0;
 	/* If bundle_2_enable = false, bundle_2 is fnop/nop operation. */
 	bool     bundle_2_enable = true;
-	uint64_t ra = -1, rb = -1, rd = -1, clob1 = -1, clob2 = -1, clob3 = -1;
+	uint64_t ra, rb, rd = -1, clob1, clob2, clob3;
 	/*
 	 * Indicate if the unalign access
 	 * instruction's registers hit with
@@ -970,7 +980,8 @@ void jit_bundle_gen(struct pt_regs *regs, tilegx_bundle_bits bundle,
 		unaligned_fixup_count++;
 
 		if (unaligned_printk) {
-			pr_info("%s/%d - Unalign fixup for kernel access to userspace %lx\n",
+			pr_info("%s/%d. Unalign fixup for kernel access "
+				"to userspace %lx.",
 				current->comm, current->pid, regs->regs[ra]);
 		}
 
@@ -985,7 +996,7 @@ void jit_bundle_gen(struct pt_regs *regs, tilegx_bundle_bits bundle,
 			.si_addr = (unsigned char __user *)0
 		};
 		if (unaligned_printk)
-			pr_info("Unalign bundle: unexp @%llx, %llx\n",
+			pr_info("Unalign bundle: unexp @%llx, %llx",
 				(unsigned long long)regs->pc,
 				(unsigned long long)bundle);
 
@@ -1370,7 +1381,8 @@ void jit_bundle_gen(struct pt_regs *regs, tilegx_bundle_bits bundle,
 		frag.bundle = bundle;
 
 		if (unaligned_printk) {
-			pr_info("%s/%d, Unalign fixup: pc=%lx bundle=%lx %d %d %d %d %d %d %d %d\n",
+			pr_info("%s/%d, Unalign fixup: pc=%lx "
+				"bundle=%lx %d %d %d %d %d %d %d %d.",
 				current->comm, current->pid,
 				(unsigned long)frag.pc,
 				(unsigned long)frag.bundle,
@@ -1379,8 +1391,8 @@ void jit_bundle_gen(struct pt_regs *regs, tilegx_bundle_bits bundle,
 				(int)y1_lr, (int)y1_br, (int)x1_add);
 
 			for (k = 0; k < n; k += 2)
-				pr_info("[%d] %016llx %016llx\n",
-					k, (unsigned long long)frag.insn[k],
+				pr_info("[%d] %016llx %016llx", k,
+					(unsigned long long)frag.insn[k],
 					(unsigned long long)frag.insn[k+1]);
 		}
 
@@ -1401,7 +1413,7 @@ void jit_bundle_gen(struct pt_regs *regs, tilegx_bundle_bits bundle,
 				.si_addr = (void __user *)&jit_code_area[idx]
 			};
 
-			pr_warn("Unalign fixup: pid=%d %s jit_code_area=%llx\n",
+			pr_warn("Unalign fixup: pid=%d %s jit_code_area=%llx",
 				current->pid, current->comm,
 				(unsigned long long)&jit_code_area[idx]);
 
@@ -1449,7 +1461,6 @@ void jit_bundle_gen(struct pt_regs *regs, tilegx_bundle_bits bundle,
 
 void do_unaligned(struct pt_regs *regs, int vecnum)
 {
-	enum ctx_state prev_state = exception_enter();
 	tilegx_bundle_bits __user  *pc;
 	tilegx_bundle_bits bundle;
 	struct thread_info *info = current_thread_info();
@@ -1485,15 +1496,16 @@ void do_unaligned(struct pt_regs *regs, int vecnum)
 			/* If exception came from kernel, try fix it up. */
 			if (fixup_exception(regs)) {
 				if (unaligned_printk)
-					pr_info("Unalign fixup: %d %llx @%llx\n",
+					pr_info("Unalign fixup: %d %llx @%llx",
 						(int)unaligned_fixup,
 						(unsigned long long)regs->ex1,
 						(unsigned long long)regs->pc);
-			} else {
-				/* Not fixable. Go panic. */
-				panic("Unalign exception in Kernel. pc=%lx",
-				      regs->pc);
+				return;
 			}
+			/* Not fixable. Go panic. */
+			panic("Unalign exception in Kernel. pc=%lx",
+			      regs->pc);
+			return;
 		} else {
 			/*
 			 * Try to fix the exception. If we can't, panic the
@@ -1502,8 +1514,8 @@ void do_unaligned(struct pt_regs *regs, int vecnum)
 			bundle = GX_INSN_BSWAP(
 				*((tilegx_bundle_bits *)(regs->pc)));
 			jit_bundle_gen(regs, bundle, align_ctl);
+			return;
 		}
-		goto done;
 	}
 
 	/*
@@ -1518,7 +1530,7 @@ void do_unaligned(struct pt_regs *regs, int vecnum)
 		};
 
 		if (unaligned_printk)
-			pr_info("Unalign fixup: %d %llx @%llx\n",
+			pr_info("Unalign fixup: %d %llx @%llx",
 				(int)unaligned_fixup,
 				(unsigned long long)regs->ex1,
 				(unsigned long long)regs->pc);
@@ -1527,7 +1539,7 @@ void do_unaligned(struct pt_regs *regs, int vecnum)
 
 		trace_unhandled_signal("unaligned fixup trap", regs, 0, SIGBUS);
 		force_sig_info(info.si_signo, &info, current);
-		goto done;
+		return;
 	}
 
 
@@ -1544,7 +1556,7 @@ void do_unaligned(struct pt_regs *regs, int vecnum)
 		trace_unhandled_signal("segfault in unalign fixup", regs,
 				       (unsigned long)info.si_addr, SIGSEGV);
 		force_sig_info(info.si_signo, &info, current);
-		goto done;
+		return;
 	}
 
 	if (!info->unalign_jit_base) {
@@ -1578,23 +1590,20 @@ void do_unaligned(struct pt_regs *regs, int vecnum)
 						    0);
 
 		if (IS_ERR((void __force *)user_page)) {
-			pr_err("Out of kernel pages trying do_mmap\n");
-			goto done;
+			pr_err("Out of kernel pages trying do_mmap.\n");
+			return;
 		}
 
 		/* Save the address in the thread_info struct */
 		info->unalign_jit_base = user_page;
 		if (unaligned_printk)
-			pr_info("Unalign bundle: %d:%d, allocate page @%llx\n",
+			pr_info("Unalign bundle: %d:%d, allocate page @%llx",
 				raw_smp_processor_id(), current->pid,
 				(unsigned long long)user_page);
 	}
 
 	/* Generate unalign JIT */
 	jit_bundle_gen(regs, GX_INSN_BSWAP(bundle), align_ctl);
-
-done:
-	exception_exit(prev_state);
 }
 
 #endif /* __tilegx__ */

@@ -42,7 +42,7 @@ static irqreturn_t mailbox_interrupt(int irq, void *dev_id)
 	cvmx_write_csr(CVMX_CIU_MBOX_CLRX(coreid), action);
 
 	if (action & SMP_CALL_FUNCTION)
-		generic_smp_call_function_interrupt();
+		smp_call_function_interrupt();
 	if (action & SMP_RESCHEDULE_YOURSELF)
 		scheduler_ipi();
 
@@ -72,7 +72,7 @@ static inline void octeon_send_ipi_mask(const struct cpumask *mask,
 {
 	unsigned int i;
 
-	for_each_cpu(i, mask)
+	for_each_cpu_mask(i, *mask)
 		octeon_send_ipi_single(i, action);
 }
 
@@ -84,14 +84,9 @@ static void octeon_smp_hotplug_setup(void)
 #ifdef CONFIG_HOTPLUG_CPU
 	struct linux_app_boot_info *labi;
 
-	if (!setup_max_cpus)
-		return;
-
 	labi = (struct linux_app_boot_info *)PHYS_TO_XKSEG_CACHED(LABI_ADDR_IN_BOOTLOADER);
-	if (labi->labi_signature != LABI_SIGNATURE) {
-		pr_info("The bootloader on this board does not support HOTPLUG_CPU.");
-		return;
-	}
+	if (labi->labi_signature != LABI_SIGNATURE)
+		panic("The bootloader version on this board is incorrect.");
 
 	octeon_bootloader_entry_addr = labi->InitTLBStart_addr;
 #endif
@@ -134,8 +129,7 @@ static void octeon_smp_setup(void)
 	 * will assign CPU numbers for possible cores as well.	Cores
 	 * are always consecutively numberd from 0.
 	 */
-	for (id = 0; setup_max_cpus && octeon_bootloader_entry_addr &&
-		     id < num_cores && id < NR_CPUS; id++) {
+	for (id = 0; id < num_cores && id < NR_CPUS; id++) {
 		if (!(core_mask & (1 << id))) {
 			set_cpu_possible(cpus, true);
 			__cpu_number_map[id] = cpus;
@@ -198,6 +192,14 @@ static void octeon_init_secondary(void)
  */
 void octeon_prepare_cpus(unsigned int max_cpus)
 {
+#ifdef CONFIG_HOTPLUG_CPU
+	struct linux_app_boot_info *labi;
+
+	labi = (struct linux_app_boot_info *)PHYS_TO_XKSEG_CACHED(LABI_ADDR_IN_BOOTLOADER);
+
+	if (labi->labi_signature != LABI_SIGNATURE)
+		panic("The bootloader version on this board is incorrect.");
+#endif
 	/*
 	 * Only the low order mailbox bits are used for IPIs, leave
 	 * the other bits alone.
@@ -216,11 +218,35 @@ void octeon_prepare_cpus(unsigned int max_cpus)
  */
 static void octeon_smp_finish(void)
 {
+#ifdef CONFIG_CAVIUM_GDB
+	unsigned long tmp;
+	/* Pulse MCD0 signal on Ctrl-C to stop all the cores. Also set the MCD0
+	   to be not masked by this core so we know the signal is received by
+	   someone */
+	asm volatile ("dmfc0 %0, $22\n"
+		      "ori   %0, %0, 0x9100\n" "dmtc0 %0, $22\n" : "=r" (tmp));
+#endif
+
 	octeon_user_io_init();
 
 	/* to generate the first CPU timer interrupt */
 	write_c0_compare(read_c0_count() + mips_hpt_frequency / HZ);
 	local_irq_enable();
+}
+
+/**
+ * Hook for after all CPUs are online
+ */
+static void octeon_cpus_done(void)
+{
+#ifdef CONFIG_CAVIUM_GDB
+	unsigned long tmp;
+	/* Pulse MCD0 signal on Ctrl-C to stop all the cores. Also set the MCD0
+	   to be not masked by this core so we know the signal is received by
+	   someone */
+	asm volatile ("dmfc0 %0, $22\n"
+		      "ori   %0, %0, 0x9100\n" "dmtc0 %0, $22\n" : "=r" (tmp));
+#endif
 }
 
 #ifdef CONFIG_HOTPLUG_CPU
@@ -235,12 +261,11 @@ static int octeon_cpu_disable(void)
 	if (cpu == 0)
 		return -EBUSY;
 
-	if (!octeon_bootloader_entry_addr)
-		return -ENOTSUPP;
-
 	set_cpu_online(cpu, false);
-	cpumask_clear_cpu(cpu, &cpu_callin_map);
+	cpu_clear(cpu, cpu_callin_map);
+	local_irq_disable();
 	octeon_fixup_irqs();
+	local_irq_enable();
 
 	flush_cache_all();
 	local_flush_tlb_all();
@@ -380,6 +405,7 @@ struct plat_smp_ops octeon_smp_ops = {
 	.send_ipi_mask		= octeon_send_ipi_mask,
 	.init_secondary		= octeon_init_secondary,
 	.smp_finish		= octeon_smp_finish,
+	.cpus_done		= octeon_cpus_done,
 	.boot_secondary		= octeon_boot_secondary,
 	.smp_setup		= octeon_smp_setup,
 	.prepare_cpus		= octeon_prepare_cpus,

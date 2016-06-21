@@ -92,6 +92,7 @@ il4965_check_abort_status(struct il_priv *il, u8 frame_count, u32 status)
  * EEPROM
  */
 struct il_mod_params il4965_mod_params = {
+	.amsdu_size_8K = 1,
 	.restart_fw = 1,
 	/* the rest are 0 by default */
 };
@@ -670,7 +671,7 @@ il4965_hdl_rx(struct il_priv *il, struct il_rx_buf *rxb)
 	}
 
 	if ((unlikely(phy_res->cfg_phy_cnt > 20))) {
-		D_DROP("dsp size out of range [0,20]: %d\n",
+		D_DROP("dsp size out of range [0,20]: %d/n",
 		       phy_res->cfg_phy_cnt);
 		return;
 	}
@@ -4273,7 +4274,17 @@ il4965_rx_handle(struct il_priv *il)
 		len = le32_to_cpu(pkt->len_n_flags) & IL_RX_FRAME_SIZE_MSK;
 		len += sizeof(u32);	/* account for status word */
 
-		reclaim = il_need_reclaim(il, pkt);
+		/* Reclaim a command buffer only if this packet is a response
+		 *   to a (driver-originated) command.
+		 * If the packet (e.g. Rx frame) originated from uCode,
+		 *   there is no command buffer to reclaim.
+		 * Ucode should set SEQ_RX_FRAME bit if ucode-originated,
+		 *   but apparently a few don't get set; catch them here. */
+		reclaim = !(pkt->hdr.sequence & SEQ_RX_FRAME) &&
+		    (pkt->hdr.cmd != N_RX_PHY) && (pkt->hdr.cmd != N_RX) &&
+		    (pkt->hdr.cmd != N_RX_MPDU) &&
+		    (pkt->hdr.cmd != N_COMPRESSED_BA) &&
+		    (pkt->hdr.cmd != N_STATS) && (pkt->hdr.cmd != C_TX);
 
 		/* Based on type of command response or notification,
 		 *   handle those that need handling via function in
@@ -4633,7 +4644,7 @@ il4965_store_tx_power(struct device *d, struct device_attribute *attr,
 	else {
 		ret = il_set_tx_power(il, val, false);
 		if (ret)
-			IL_ERR("failed setting tx power (0x%08x).\n", ret);
+			IL_ERR("failed setting tx power (0x%d).\n", ret);
 		else
 			ret = count;
 	}
@@ -5751,16 +5762,15 @@ il4965_mac_setup_register(struct il_priv *il, u32 max_probe_length)
 	hw->rate_control_algorithm = "iwl-4965-rs";
 
 	/* Tell mac80211 our characteristics */
-	ieee80211_hw_set(hw, SUPPORTS_DYNAMIC_PS);
-	ieee80211_hw_set(hw, SUPPORTS_PS);
-	ieee80211_hw_set(hw, REPORTS_TX_ACK_STATUS);
-	ieee80211_hw_set(hw, SPECTRUM_MGMT);
-	ieee80211_hw_set(hw, NEED_DTIM_BEFORE_ASSOC);
-	ieee80211_hw_set(hw, SIGNAL_DBM);
-	ieee80211_hw_set(hw, AMPDU_AGGREGATION);
+	hw->flags =
+	    IEEE80211_HW_SIGNAL_DBM | IEEE80211_HW_AMPDU_AGGREGATION |
+	    IEEE80211_HW_NEED_DTIM_BEFORE_ASSOC | IEEE80211_HW_SPECTRUM_MGMT |
+	    IEEE80211_HW_REPORTS_TX_ACK_STATUS | IEEE80211_HW_SUPPORTS_PS |
+	    IEEE80211_HW_SUPPORTS_DYNAMIC_PS;
 	if (il->cfg->sku & IL_SKU_N)
-		hw->wiphy->features |= NL80211_FEATURE_DYNAMIC_SMPS |
-				       NL80211_FEATURE_STATIC_SMPS;
+		hw->flags |=
+		    IEEE80211_HW_SUPPORTS_DYNAMIC_SMPS |
+		    IEEE80211_HW_SUPPORTS_STATIC_SMPS;
 
 	hw->sta_data_size = sizeof(struct il_station_priv);
 	hw->vif_data_size = sizeof(struct il_vif_priv);
@@ -5984,7 +5994,7 @@ int
 il4965_mac_ampdu_action(struct ieee80211_hw *hw, struct ieee80211_vif *vif,
 			enum ieee80211_ampdu_mlme_action action,
 			struct ieee80211_sta *sta, u16 tid, u16 * ssn,
-			u8 buf_size, bool amsdu)
+			u8 buf_size)
 {
 	struct il_priv *il = hw->priv;
 	int ret = -EINVAL;
@@ -6065,7 +6075,7 @@ il4965_mac_sta_add(struct ieee80211_hw *hw, struct ieee80211_vif *vif,
 }
 
 void
-il4965_mac_channel_switch(struct ieee80211_hw *hw, struct ieee80211_vif *vif,
+il4965_mac_channel_switch(struct ieee80211_hw *hw,
 			  struct ieee80211_channel_switch *ch_switch)
 {
 	struct il_priv *il = hw->priv;
@@ -6168,7 +6178,7 @@ il4965_configure_filter(struct ieee80211_hw *hw, unsigned int changed_flags,
 	D_MAC80211("Enter: changed: 0x%x, total: 0x%x\n", changed_flags,
 		   *total_flags);
 
-	CHK(FIF_OTHER_BSS, RXON_FILTER_PROMISC_MSK);
+	CHK(FIF_OTHER_BSS | FIF_PROMISC_IN_BSS, RXON_FILTER_PROMISC_MSK);
 	/* Setting _just_ RXON_FILTER_CTL2HOST_MSK causes FH errors */
 	CHK(FIF_CONTROL, RXON_FILTER_CTL2HOST_MSK | RXON_FILTER_PROMISC_MSK);
 	CHK(FIF_BCN_PRBRESP_PROMISC, RXON_FILTER_BCON_AWARE_MSK);
@@ -6194,7 +6204,7 @@ il4965_configure_filter(struct ieee80211_hw *hw, unsigned int changed_flags,
 	 * filters into the device.
 	 */
 	*total_flags &=
-	    FIF_OTHER_BSS | FIF_ALLMULTI |
+	    FIF_OTHER_BSS | FIF_ALLMULTI | FIF_PROMISC_IN_BSS |
 	    FIF_BCN_PRBRESP_PROMISC | FIF_CONTROL;
 }
 
@@ -6249,10 +6259,13 @@ il4965_setup_deferred_work(struct il_priv *il)
 
 	INIT_WORK(&il->txpower_work, il4965_bg_txpower_work);
 
-	setup_timer(&il->stats_periodic, il4965_bg_stats_periodic,
-		    (unsigned long)il);
+	init_timer(&il->stats_periodic);
+	il->stats_periodic.data = (unsigned long)il;
+	il->stats_periodic.function = il4965_bg_stats_periodic;
 
-	setup_timer(&il->watchdog, il_bg_watchdog, (unsigned long)il);
+	init_timer(&il->watchdog);
+	il->watchdog.data = (unsigned long)il;
+	il->watchdog.function = il_bg_watchdog;
 
 	tasklet_init(&il->irq_tasklet,
 		     (void (*)(unsigned long))il4965_irq_tasklet,
@@ -6798,7 +6811,7 @@ il4965_txq_set_sched(struct il_priv *il, u32 mask)
  *****************************************************************************/
 
 /* Hardware specific file defines the PCI IDs table for that hardware module */
-static const struct pci_device_id il4965_hw_card_ids[] = {
+static DEFINE_PCI_DEVICE_TABLE(il4965_hw_card_ids) = {
 	{IL_PCI_DEVICE(0x4229, PCI_ANY_ID, il4965_cfg)},
 	{IL_PCI_DEVICE(0x4230, PCI_ANY_ID, il4965_cfg)},
 	{0}
@@ -6863,6 +6876,6 @@ module_param_named(11n_disable, il4965_mod_params.disable_11n, int, S_IRUGO);
 MODULE_PARM_DESC(11n_disable, "disable 11n functionality");
 module_param_named(amsdu_size_8K, il4965_mod_params.amsdu_size_8K, int,
 		   S_IRUGO);
-MODULE_PARM_DESC(amsdu_size_8K, "enable 8K amsdu size (default 0 [disabled])");
+MODULE_PARM_DESC(amsdu_size_8K, "enable 8K amsdu size");
 module_param_named(fw_restart, il4965_mod_params.restart_fw, int, S_IRUGO);
 MODULE_PARM_DESC(fw_restart, "restart firmware in case of error");

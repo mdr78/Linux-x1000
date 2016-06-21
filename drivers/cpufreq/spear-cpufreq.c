@@ -19,7 +19,6 @@
 #include <linux/init.h>
 #include <linux/module.h>
 #include <linux/of_device.h>
-#include <linux/platform_device.h>
 #include <linux/slab.h>
 #include <linux/types.h>
 
@@ -164,10 +163,11 @@ static struct cpufreq_driver spear_cpufreq_driver = {
 	.target_index	= spear_cpufreq_target,
 	.get		= cpufreq_generic_get,
 	.init		= spear_cpufreq_init,
+	.exit		= cpufreq_generic_exit,
 	.attr		= cpufreq_generic_attr,
 };
 
-static int spear_cpufreq_probe(struct platform_device *pdev)
+static int spear_cpufreq_driver_init(void)
 {
 	struct device_node *np;
 	const struct property *prop;
@@ -195,15 +195,18 @@ static int spear_cpufreq_probe(struct platform_device *pdev)
 	cnt = prop->length / sizeof(u32);
 	val = prop->value;
 
-	freq_tbl = kzalloc(sizeof(*freq_tbl) * (cnt + 1), GFP_KERNEL);
+	freq_tbl = kmalloc(sizeof(*freq_tbl) * (cnt + 1), GFP_KERNEL);
 	if (!freq_tbl) {
 		ret = -ENOMEM;
 		goto out_put_node;
 	}
 
-	for (i = 0; i < cnt; i++)
+	for (i = 0; i < cnt; i++) {
+		freq_tbl[i].driver_data = i;
 		freq_tbl[i].frequency = be32_to_cpup(val++);
+	}
 
+	freq_tbl[i].driver_data = i;
 	freq_tbl[i].frequency = CPUFREQ_TABLE_END;
 
 	spear_cpufreq.freq_tbl = freq_tbl;
@@ -232,14 +235,7 @@ out_put_node:
 	of_node_put(np);
 	return ret;
 }
-
-static struct platform_driver spear_cpufreq_platdrv = {
-	.driver = {
-		.name	= "spear-cpufreq",
-	},
-	.probe		= spear_cpufreq_probe,
-};
-module_platform_driver(spear_cpufreq_platdrv);
+late_initcall(spear_cpufreq_driver_init);
 
 MODULE_AUTHOR("Deepak Sikri <deepak.sikri@st.com>");
 MODULE_DESCRIPTION("SPEAr CPUFreq driver");

@@ -16,7 +16,6 @@
 #include <linux/completion.h>
 #include <linux/kobject.h>
 #include <linux/notifier.h>
-#include <linux/spinlock.h>
 #include <linux/sysfs.h>
 
 /*********************************************************************
@@ -51,21 +50,23 @@ struct cpufreq_cpuinfo {
 	unsigned int		transition_latency;
 };
 
-struct cpufreq_user_policy {
+struct cpufreq_real_policy {
 	unsigned int		min;    /* in kHz */
 	unsigned int		max;    /* in kHz */
+	unsigned int		policy; /* see above */
+	struct cpufreq_governor	*governor; /* see below */
 };
 
 struct cpufreq_policy {
 	/* CPUs sharing clock, require sw coordination */
 	cpumask_var_t		cpus;	/* Online CPUs only */
 	cpumask_var_t		related_cpus; /* Online + Offline CPUs */
-	cpumask_var_t		real_cpus; /* Related and present */
 
 	unsigned int		shared_type; /* ACPI: ANY or ALL affected CPUs
 						should set cpufreq */
-	unsigned int		cpu;    /* cpu managing this policy, must be online */
-
+	unsigned int		cpu;    /* cpu nr of CPU managing this policy */
+	unsigned int		last_cpu; /* cpu nr of previous CPU that managed
+					   * this policy */
 	struct clk		*clk;
 	struct cpufreq_cpuinfo	cpuinfo;/* see above */
 
@@ -73,21 +74,15 @@ struct cpufreq_policy {
 	unsigned int		max;    /* in kHz */
 	unsigned int		cur;    /* in kHz, only needed if cpufreq
 					 * governors are used */
-	unsigned int		restore_freq; /* = policy->cur before transition */
-	unsigned int		suspend_freq; /* freq to set during suspend */
-
 	unsigned int		policy; /* see above */
-	unsigned int		last_policy; /* policy before unplug */
 	struct cpufreq_governor	*governor; /* see below */
 	void			*governor_data;
 	bool			governor_enabled; /* governor start/stop flag */
-	char			last_governor[CPUFREQ_NAME_LEN]; /* last governor used */
 
 	struct work_struct	update; /* if update_policy() needs to be
 					 * called, but you're in IRQ context */
 
-	struct cpufreq_user_policy user_policy;
-	struct cpufreq_frequency_table	*freq_table;
+	struct cpufreq_real_policy	user_policy;
 
 	struct list_head        policy_list;
 	struct kobject		kobj;
@@ -106,18 +101,6 @@ struct cpufreq_policy {
 	 *     __cpufreq_governor(data, CPUFREQ_GOV_POLICY_EXIT);
 	 */
 	struct rw_semaphore	rwsem;
-
-	/* Synchronization for frequency transitions */
-	bool			transition_ongoing; /* Tracks transition status */
-	spinlock_t		transition_lock;
-	wait_queue_head_t	transition_wait;
-	struct task_struct	*transition_task; /* Task which is doing the transition */
-
-	/* cpufreq-stats */
-	struct cpufreq_stats	*stats;
-
-	/* For cpufreq driver's internal use */
-	void			*driver_data;
 };
 
 /* Only for ACPI */
@@ -127,14 +110,9 @@ struct cpufreq_policy {
 #define CPUFREQ_SHARED_TYPE_ANY	 (3) /* Freq can be set from any dependent CPU*/
 
 #ifdef CONFIG_CPU_FREQ
-struct cpufreq_policy *cpufreq_cpu_get_raw(unsigned int cpu);
 struct cpufreq_policy *cpufreq_cpu_get(unsigned int cpu);
 void cpufreq_cpu_put(struct cpufreq_policy *policy);
 #else
-static inline struct cpufreq_policy *cpufreq_cpu_get_raw(unsigned int cpu)
-{
-	return NULL;
-}
 static inline struct cpufreq_policy *cpufreq_cpu_get(unsigned int cpu)
 {
 	return NULL;
@@ -149,6 +127,10 @@ static inline bool policy_is_shared(struct cpufreq_policy *policy)
 
 /* /sys/devices/system/cpu/cpufreq: entry point for global variables */
 extern struct kobject *cpufreq_global_kobject;
+int cpufreq_get_global_kobject(void);
+void cpufreq_put_global_kobject(void);
+int cpufreq_sysfs_create_file(const struct attribute *attr);
+void cpufreq_sysfs_remove_file(const struct attribute *attr);
 
 #ifdef CONFIG_CPU_FREQ
 unsigned int cpufreq_get(unsigned int cpu);
@@ -183,7 +165,6 @@ static inline void disable_cpufreq(void) { }
 
 #define CPUFREQ_RELATION_L 0  /* lowest frequency at or above target */
 #define CPUFREQ_RELATION_H 1  /* highest frequency below or at target */
-#define CPUFREQ_RELATION_C 2  /* closest frequency to target */
 
 struct freq_attr {
 	struct attribute attr;
@@ -221,66 +202,36 @@ __ATTR(_name, 0644, show_##_name, store_##_name)
 
 
 struct cpufreq_driver {
-	char		name[CPUFREQ_NAME_LEN];
-	u8		flags;
-	void		*driver_data;
+	char			name[CPUFREQ_NAME_LEN];
+	u8			flags;
 
 	/* needed by all drivers */
-	int		(*init)(struct cpufreq_policy *policy);
-	int		(*verify)(struct cpufreq_policy *policy);
+	int	(*init)		(struct cpufreq_policy *policy);
+	int	(*verify)	(struct cpufreq_policy *policy);
 
 	/* define one out of two */
-	int		(*setpolicy)(struct cpufreq_policy *policy);
-
-	/*
-	 * On failure, should always restore frequency to policy->restore_freq
-	 * (i.e. old freq).
-	 */
-	int		(*target)(struct cpufreq_policy *policy,
-				  unsigned int target_freq,
-				  unsigned int relation);	/* Deprecated */
-	int		(*target_index)(struct cpufreq_policy *policy,
-					unsigned int index);
-	/*
-	 * Only for drivers with target_index() and CPUFREQ_ASYNC_NOTIFICATION
-	 * unset.
-	 *
-	 * get_intermediate should return a stable intermediate frequency
-	 * platform wants to switch to and target_intermediate() should set CPU
-	 * to to that frequency, before jumping to the frequency corresponding
-	 * to 'index'. Core will take care of sending notifications and driver
-	 * doesn't have to handle them in target_intermediate() or
-	 * target_index().
-	 *
-	 * Drivers can return '0' from get_intermediate() in case they don't
-	 * wish to switch to intermediate frequency for some target frequency.
-	 * In that case core will directly call ->target_index().
-	 */
-	unsigned int	(*get_intermediate)(struct cpufreq_policy *policy,
-					    unsigned int index);
-	int		(*target_intermediate)(struct cpufreq_policy *policy,
-					       unsigned int index);
+	int	(*setpolicy)	(struct cpufreq_policy *policy);
+	int	(*target)	(struct cpufreq_policy *policy,	/* Deprecated */
+				 unsigned int target_freq,
+				 unsigned int relation);
+	int	(*target_index)	(struct cpufreq_policy *policy,
+				 unsigned int index);
 
 	/* should be defined, if possible */
-	unsigned int	(*get)(unsigned int cpu);
+	unsigned int	(*get)	(unsigned int cpu);
 
 	/* optional */
-	int		(*bios_limit)(int cpu, unsigned int *limit);
+	int	(*bios_limit)	(int cpu, unsigned int *limit);
 
-	int		(*exit)(struct cpufreq_policy *policy);
-	void		(*stop_cpu)(struct cpufreq_policy *policy);
-	int		(*suspend)(struct cpufreq_policy *policy);
-	int		(*resume)(struct cpufreq_policy *policy);
-
-	/* Will be called after the driver is fully initialized */
-	void		(*ready)(struct cpufreq_policy *policy);
-
-	struct freq_attr **attr;
+	int	(*exit)		(struct cpufreq_policy *policy);
+	int	(*suspend)	(struct cpufreq_policy *policy);
+	int	(*resume)	(struct cpufreq_policy *policy);
+	struct freq_attr	**attr;
 
 	/* platform specific boost support code */
-	bool		boost_supported;
-	bool		boost_enabled;
-	int		(*set_boost)(int state);
+	bool                    boost_supported;
+	bool                    boost_enabled;
+	int     (*set_boost)    (int state);
 };
 
 /* flags */
@@ -321,7 +272,6 @@ int cpufreq_register_driver(struct cpufreq_driver *driver_data);
 int cpufreq_unregister_driver(struct cpufreq_driver *driver_data);
 
 const char *cpufreq_get_current_driver(void);
-void *cpufreq_get_driver_data(void);
 
 static inline void cpufreq_verify_within_limits(struct cpufreq_policy *policy,
 		unsigned int min, unsigned int max)
@@ -346,15 +296,6 @@ cpufreq_verify_within_cpu_limits(struct cpufreq_policy *policy)
 			policy->cpuinfo.max_freq);
 }
 
-#ifdef CONFIG_CPU_FREQ
-void cpufreq_suspend(void);
-void cpufreq_resume(void);
-int cpufreq_generic_suspend(struct cpufreq_policy *policy);
-#else
-static inline void cpufreq_suspend(void) {}
-static inline void cpufreq_resume(void) {}
-#endif
-
 /*********************************************************************
  *                     CPUFREQ NOTIFIER INTERFACE                    *
  *********************************************************************/
@@ -368,18 +309,20 @@ static inline void cpufreq_resume(void) {}
 
 /* Policy Notifiers  */
 #define CPUFREQ_ADJUST			(0)
-#define CPUFREQ_NOTIFY			(1)
-#define CPUFREQ_START			(2)
-#define CPUFREQ_CREATE_POLICY		(3)
-#define CPUFREQ_REMOVE_POLICY		(4)
+#define CPUFREQ_INCOMPATIBLE		(1)
+#define CPUFREQ_NOTIFY			(2)
+#define CPUFREQ_START			(3)
+#define CPUFREQ_UPDATE_POLICY_CPU	(4)
+#define CPUFREQ_CREATE_POLICY		(5)
+#define CPUFREQ_REMOVE_POLICY		(6)
 
 #ifdef CONFIG_CPU_FREQ
 int cpufreq_register_notifier(struct notifier_block *nb, unsigned int list);
 int cpufreq_unregister_notifier(struct notifier_block *nb, unsigned int list);
 
-void cpufreq_freq_transition_begin(struct cpufreq_policy *policy,
-		struct cpufreq_freqs *freqs);
-void cpufreq_freq_transition_end(struct cpufreq_policy *policy,
+void cpufreq_notify_transition(struct cpufreq_policy *policy,
+		struct cpufreq_freqs *freqs, unsigned int state);
+void cpufreq_notify_post_transition(struct cpufreq_policy *policy,
 		struct cpufreq_freqs *freqs, int transition_failed);
 
 #else /* CONFIG_CPU_FREQ */
@@ -493,38 +436,15 @@ extern struct cpufreq_governor cpufreq_gov_conservative;
  *                     FREQUENCY TABLE HELPERS                       *
  *********************************************************************/
 
-/* Special Values of .frequency field */
-#define CPUFREQ_ENTRY_INVALID	~0u
-#define CPUFREQ_TABLE_END	~1u
-/* Special Values of .flags field */
-#define CPUFREQ_BOOST_FREQ	(1 << 0)
+#define CPUFREQ_ENTRY_INVALID ~0
+#define CPUFREQ_TABLE_END     ~1
+#define CPUFREQ_BOOST_FREQ    ~2
 
 struct cpufreq_frequency_table {
-	unsigned int	flags;
 	unsigned int	driver_data; /* driver specific data, not used by core */
 	unsigned int	frequency; /* kHz - doesn't need to be in ascending
 				    * order */
 };
-
-#if defined(CONFIG_CPU_FREQ) && defined(CONFIG_PM_OPP)
-int dev_pm_opp_init_cpufreq_table(struct device *dev,
-				  struct cpufreq_frequency_table **table);
-void dev_pm_opp_free_cpufreq_table(struct device *dev,
-				   struct cpufreq_frequency_table **table);
-#else
-static inline int dev_pm_opp_init_cpufreq_table(struct device *dev,
-						struct cpufreq_frequency_table
-						**table)
-{
-	return -EINVAL;
-}
-
-static inline void dev_pm_opp_free_cpufreq_table(struct device *dev,
-						 struct cpufreq_frequency_table
-						 **table)
-{
-}
-#endif
 
 static inline bool cpufreq_next_valid(struct cpufreq_frequency_table **pos)
 {
@@ -570,14 +490,13 @@ int cpufreq_frequency_table_target(struct cpufreq_policy *policy,
 int cpufreq_frequency_table_get_index(struct cpufreq_policy *policy,
 		unsigned int freq);
 
+void cpufreq_frequency_table_update_policy_cpu(struct cpufreq_policy *policy);
 ssize_t cpufreq_show_cpus(const struct cpumask *mask, char *buf);
 
 #ifdef CONFIG_CPU_FREQ
 int cpufreq_boost_trigger_state(int state);
 int cpufreq_boost_supported(void);
 int cpufreq_boost_enabled(void);
-int cpufreq_enable_boost_support(void);
-bool policy_has_boost_freq(struct cpufreq_policy *policy);
 #else
 static inline int cpufreq_boost_trigger_state(int state)
 {
@@ -591,24 +510,16 @@ static inline int cpufreq_boost_enabled(void)
 {
 	return 0;
 }
-
-static inline int cpufreq_enable_boost_support(void)
-{
-	return -EINVAL;
-}
-
-static inline bool policy_has_boost_freq(struct cpufreq_policy *policy)
-{
-	return false;
-}
 #endif
 /* the following funtion is for cpufreq core use only */
 struct cpufreq_frequency_table *cpufreq_frequency_get_table(unsigned int cpu);
 
 /* the following are really really optional */
 extern struct freq_attr cpufreq_freq_attr_scaling_available_freqs;
-extern struct freq_attr cpufreq_freq_attr_scaling_boost_freqs;
 extern struct freq_attr *cpufreq_generic_attr[];
+void cpufreq_frequency_table_get_attr(struct cpufreq_frequency_table *table,
+				      unsigned int cpu);
+void cpufreq_frequency_table_put_attr(unsigned int cpu);
 int cpufreq_table_validate_and_show(struct cpufreq_policy *policy,
 				      struct cpufreq_frequency_table *table);
 
@@ -616,4 +527,10 @@ unsigned int cpufreq_generic_get(unsigned int cpu);
 int cpufreq_generic_init(struct cpufreq_policy *policy,
 		struct cpufreq_frequency_table *table,
 		unsigned int transition_latency);
+static inline int cpufreq_generic_exit(struct cpufreq_policy *policy)
+{
+	cpufreq_frequency_table_put_attr(policy->cpu);
+	return 0;
+}
+
 #endif /* _LINUX_CPUFREQ_H */

@@ -13,8 +13,14 @@
 #include <linux/init.h>
 #include <linux/linkage.h>
 #include <linux/threads.h>
-#include <asm/assembler.h>
 #include <asm/memory.h>
+
+#ifdef CONFIG_SMP
+ENTRY(shmobile_invalidate_start)
+	bl	v7_invalidate_l1
+	b	secondary_startup
+ENDPROC(shmobile_invalidate_start)
+#endif
 
 /*
  * Reset vector for secondary CPUs.
@@ -72,7 +78,7 @@ shmobile_smp_boot_next:
 
 shmobile_smp_boot_found:
 	ldr	r0, [r7, r1, lsl #2]
-	ret	r9
+	mov	pc, r9
 ENDPROC(shmobile_smp_boot)
 
 ENTRY(shmobile_smp_sleep)

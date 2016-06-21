@@ -28,8 +28,7 @@
 
 #include "udf_sb.h"
 
-static int udf_translate_to_linux(uint8_t *, int, uint8_t *, int, uint8_t *,
-				  int);
+static int udf_translate_to_linux(uint8_t *, uint8_t *, int, uint8_t *, int);
 
 static int udf_char_to_ustr(struct ustr *dest, const uint8_t *src, int strlen)
 {
@@ -68,16 +67,21 @@ int udf_build_ustr(struct ustr *dest, dstring *ptr, int size)
 /*
  * udf_build_ustr_exact
  */
-static void udf_build_ustr_exact(struct ustr *dest, dstring *ptr, int exactsize)
+static int udf_build_ustr_exact(struct ustr *dest, dstring *ptr, int exactsize)
 {
+	if ((!dest) || (!ptr) || (!exactsize))
+		return -1;
+
 	memset(dest, 0, sizeof(struct ustr));
 	dest->u_cmpID = ptr[0];
 	dest->u_len = exactsize - 1;
 	memcpy(dest->u_name, ptr + 1, exactsize - 1);
+
+	return 0;
 }
 
 /*
- * udf_CS0toUTF8
+ * udf_ocu_to_utf8
  *
  * PURPOSE
  *	Convert OSTA Compressed Unicode to the UTF-8 equivalent.
@@ -89,7 +93,7 @@ static void udf_build_ustr_exact(struct ustr *dest, dstring *ptr, int exactsize)
  * 				both of type "struct ustr *"
  *
  * POST-CONDITIONS
- *	<return>		>= 0 on success.
+ *	<return>		Zero on success.
  *
  * HISTORY
  *	November 12, 1997 - Andrew E. Mileski
@@ -112,7 +116,7 @@ int udf_CS0toUTF8(struct ustr *utf_o, const struct ustr *ocu_i)
 		memset(utf_o, 0, sizeof(struct ustr));
 		pr_err("unknown compression code (%d) stri=%s\n",
 		       cmp_id, ocu_i->u_name);
-		return -EINVAL;
+		return 0;
 	}
 
 	ocu = ocu_i->u_name;
@@ -128,15 +132,11 @@ int udf_CS0toUTF8(struct ustr *utf_o, const struct ustr *ocu_i)
 		if (c < 0x80U)
 			utf_o->u_name[utf_o->u_len++] = (uint8_t)c;
 		else if (c < 0x800U) {
-			if (utf_o->u_len > (UDF_NAME_LEN - 4))
-				break;
 			utf_o->u_name[utf_o->u_len++] =
 						(uint8_t)(0xc0 | (c >> 6));
 			utf_o->u_name[utf_o->u_len++] =
 						(uint8_t)(0x80 | (c & 0x3f));
 		} else {
-			if (utf_o->u_len > (UDF_NAME_LEN - 5))
-				break;
 			utf_o->u_name[utf_o->u_len++] =
 						(uint8_t)(0xe0 | (c >> 12));
 			utf_o->u_name[utf_o->u_len++] =
@@ -153,7 +153,7 @@ int udf_CS0toUTF8(struct ustr *utf_o, const struct ustr *ocu_i)
 
 /*
  *
- * udf_UTF8toCS0
+ * udf_utf8_to_ocu
  *
  * PURPOSE
  *	Convert UTF-8 to the OSTA Compressed Unicode equivalent.
@@ -177,22 +177,17 @@ int udf_CS0toUTF8(struct ustr *utf_o, const struct ustr *ocu_i)
 static int udf_UTF8toCS0(dstring *ocu, struct ustr *utf, int length)
 {
 	unsigned c, i, max_val, utf_char;
-	int utf_cnt, u_len, u_ch;
+	int utf_cnt, u_len;
 
 	memset(ocu, 0, sizeof(dstring) * length);
 	ocu[0] = 8;
 	max_val = 0xffU;
-	u_ch = 1;
 
 try_again:
 	u_len = 0U;
 	utf_char = 0U;
 	utf_cnt = 0U;
 	for (i = 0U; i < utf->u_len; i++) {
-		/* Name didn't fit? */
-		if (u_len + 1 + u_ch >= length)
-			return 0;
-
 		c = (uint8_t)utf->u_name[i];
 
 		/* Complete a multi-byte UTF-8 character */
@@ -234,7 +229,6 @@ try_again:
 			if (max_val == 0xffU) {
 				max_val = 0xffffU;
 				ocu[0] = (uint8_t)0x10U;
-				u_ch = 2;
 				goto try_again;
 			}
 			goto error_out;
@@ -275,7 +269,7 @@ static int udf_CS0toNLS(struct nls_table *nls, struct ustr *utf_o,
 		memset(utf_o, 0, sizeof(struct ustr));
 		pr_err("unknown compression code (%d) stri=%s\n",
 		       cmp_id, ocu_i->u_name);
-		return -EINVAL;
+		return 0;
 	}
 
 	ocu = ocu_i->u_name;
@@ -287,7 +281,7 @@ static int udf_CS0toNLS(struct nls_table *nls, struct ustr *utf_o,
 			c = (c << 8) | ocu[i++];
 
 		len = nls->uni2char(c, &utf_o->u_name[utf_o->u_len],
-				    UDF_NAME_LEN - 2 - utf_o->u_len);
+				    UDF_NAME_LEN - utf_o->u_len);
 		/* Valid character? */
 		if (len >= 0)
 			utf_o->u_len += len;
@@ -305,19 +299,15 @@ static int udf_NLStoCS0(struct nls_table *nls, dstring *ocu, struct ustr *uni,
 	int len;
 	unsigned i, max_val;
 	uint16_t uni_char;
-	int u_len, u_ch;
+	int u_len;
 
 	memset(ocu, 0, sizeof(dstring) * length);
 	ocu[0] = 8;
 	max_val = 0xffU;
-	u_ch = 1;
 
 try_again:
 	u_len = 0U;
 	for (i = 0U; i < uni->u_len; i++) {
-		/* Name didn't fit? */
-		if (u_len + 1 + u_ch >= length)
-			return 0;
 		len = nls->char2uni(&uni->u_name[i], uni->u_len - i, &uni_char);
 		if (!len)
 			continue;
@@ -330,7 +320,6 @@ try_again:
 		if (uni_char > max_val) {
 			max_val = 0xffffU;
 			ocu[0] = (uint8_t)0x10U;
-			u_ch = 2;
 			goto try_again;
 		}
 
@@ -344,55 +333,46 @@ try_again:
 	return u_len + 1;
 }
 
-int udf_get_filename(struct super_block *sb, uint8_t *sname, int slen,
-		     uint8_t *dname, int dlen)
+int udf_get_filename(struct super_block *sb, uint8_t *sname, uint8_t *dname,
+		     int flen)
 {
 	struct ustr *filename, *unifilename;
-	int ret;
-
-	if (!slen)
-		return -EIO;
+	int len = 0;
 
 	filename = kmalloc(sizeof(struct ustr), GFP_NOFS);
 	if (!filename)
-		return -ENOMEM;
+		return 0;
 
 	unifilename = kmalloc(sizeof(struct ustr), GFP_NOFS);
-	if (!unifilename) {
-		ret = -ENOMEM;
+	if (!unifilename)
 		goto out1;
-	}
 
-	udf_build_ustr_exact(unifilename, sname, slen);
+	if (udf_build_ustr_exact(unifilename, sname, flen))
+		goto out2;
+
 	if (UDF_QUERY_FLAG(sb, UDF_FLAG_UTF8)) {
-		ret = udf_CS0toUTF8(filename, unifilename);
-		if (ret < 0) {
+		if (!udf_CS0toUTF8(filename, unifilename)) {
 			udf_debug("Failed in udf_get_filename: sname = %s\n",
 				  sname);
 			goto out2;
 		}
 	} else if (UDF_QUERY_FLAG(sb, UDF_FLAG_NLS_MAP)) {
-		ret = udf_CS0toNLS(UDF_SB(sb)->s_nls_map, filename,
-				   unifilename);
-		if (ret < 0) {
+		if (!udf_CS0toNLS(UDF_SB(sb)->s_nls_map, filename,
+				  unifilename)) {
 			udf_debug("Failed in udf_get_filename: sname = %s\n",
 				  sname);
 			goto out2;
 		}
 	} else
-		BUG();
+		goto out2;
 
-	ret = udf_translate_to_linux(dname, dlen,
-				     filename->u_name, filename->u_len,
+	len = udf_translate_to_linux(dname, filename->u_name, filename->u_len,
 				     unifilename->u_name, unifilename->u_len);
-	/* Zero length filename isn't valid... */
-	if (ret == 0)
-		ret = -EINVAL;
 out2:
 	kfree(unifilename);
 out1:
 	kfree(filename);
-	return ret;
+	return len;
 }
 
 int udf_put_filename(struct super_block *sb, const uint8_t *sname,
@@ -423,17 +403,16 @@ int udf_put_filename(struct super_block *sb, const uint8_t *sname,
 #define EXT_MARK		'.'
 #define CRC_MARK		'#'
 #define EXT_SIZE 		5
-/* Number of chars we need to store generated CRC to make filename unique */
-#define CRC_LEN			5
 
-static int udf_translate_to_linux(uint8_t *newName, int newLen,
-				  uint8_t *udfName, int udfLen,
-				  uint8_t *fidName, int fidNameLen)
+static int udf_translate_to_linux(uint8_t *newName, uint8_t *udfName,
+				  int udfLen, uint8_t *fidName,
+				  int fidNameLen)
 {
 	int index, newIndex = 0, needsCRC = 0;
 	int extIndex = 0, newExtIndex = 0, hasExt = 0;
 	unsigned short valueCRC;
 	uint8_t curr;
+	const uint8_t hexChar[] = "0123456789ABCDEF";
 
 	if (udfName[0] == '.' &&
 	    (udfLen == 1 || (udfLen == 2 && udfName[1] == '.'))) {
@@ -461,7 +440,7 @@ static int udf_translate_to_linux(uint8_t *newName, int newLen,
 					newExtIndex = newIndex;
 				}
 			}
-			if (newIndex < newLen)
+			if (newIndex < 256)
 				newName[newIndex++] = curr;
 			else
 				needsCRC = 1;
@@ -489,19 +468,19 @@ static int udf_translate_to_linux(uint8_t *newName, int newLen,
 				}
 				ext[localExtIndex++] = curr;
 			}
-			maxFilenameLen = newLen - CRC_LEN - localExtIndex;
+			maxFilenameLen = 250 - localExtIndex;
 			if (newIndex > maxFilenameLen)
 				newIndex = maxFilenameLen;
 			else
 				newIndex = newExtIndex;
-		} else if (newIndex > newLen - CRC_LEN)
-			newIndex = newLen - CRC_LEN;
+		} else if (newIndex > 250)
+			newIndex = 250;
 		newName[newIndex++] = CRC_MARK;
 		valueCRC = crc_itu_t(0, fidName, fidNameLen);
-		newName[newIndex++] = hex_asc_upper_hi(valueCRC >> 8);
-		newName[newIndex++] = hex_asc_upper_lo(valueCRC >> 8);
-		newName[newIndex++] = hex_asc_upper_hi(valueCRC);
-		newName[newIndex++] = hex_asc_upper_lo(valueCRC);
+		newName[newIndex++] = hexChar[(valueCRC & 0xf000) >> 12];
+		newName[newIndex++] = hexChar[(valueCRC & 0x0f00) >> 8];
+		newName[newIndex++] = hexChar[(valueCRC & 0x00f0) >> 4];
+		newName[newIndex++] = hexChar[(valueCRC & 0x000f)];
 
 		if (hasExt) {
 			newName[newIndex++] = EXT_MARK;

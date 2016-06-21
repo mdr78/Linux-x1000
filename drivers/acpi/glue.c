@@ -13,7 +13,6 @@
 #include <linux/slab.h>
 #include <linux/rwsem.h>
 #include <linux/acpi.h>
-#include <linux/dma-mapping.h>
 
 #include "internal.h"
 
@@ -168,9 +167,8 @@ int acpi_bind_one(struct device *dev, struct acpi_device *acpi_dev)
 	struct list_head *physnode_list;
 	unsigned int node_id;
 	int retval = -EINVAL;
-	enum dev_dma_attr attr;
 
-	if (has_acpi_companion(dev)) {
+	if (ACPI_COMPANION(dev)) {
 		if (acpi_dev) {
 			dev_warn(dev, "ACPI companion already set\n");
 			return -EINVAL;
@@ -222,13 +220,8 @@ int acpi_bind_one(struct device *dev, struct acpi_device *acpi_dev)
 	list_add(&physical_node->node, physnode_list);
 	acpi_dev->physical_node_count++;
 
-	if (!has_acpi_companion(dev))
+	if (!ACPI_COMPANION(dev))
 		ACPI_COMPANION_SET(dev, acpi_dev);
-
-	attr = acpi_get_dma_attr(acpi_dev);
-	if (attr != DEV_DMA_NOT_SUPPORTED)
-		arch_setup_dma_ops(dev, 0, 0, NULL,
-				   attr == DEV_DMA_COHERENT);
 
 	acpi_physnode_link_name(physical_node_name, node_id);
 	retval = sysfs_create_link(&acpi_dev->dev.kobj, &dev->kobj,
@@ -294,7 +287,6 @@ EXPORT_SYMBOL_GPL(acpi_unbind_one);
 static int acpi_platform_notify(struct device *dev)
 {
 	struct acpi_bus_type *type = acpi_get_bus_type(dev);
-	struct acpi_device *adev;
 	int ret;
 
 	ret = acpi_bind_one(dev, NULL);
@@ -311,14 +303,9 @@ static int acpi_platform_notify(struct device *dev)
 		if (ret)
 			goto out;
 	}
-	adev = ACPI_COMPANION(dev);
-	if (!adev)
-		goto out;
 
 	if (type && type->setup)
 		type->setup(dev);
-	else if (adev->handler && adev->handler->bind)
-		adev->handler->bind(dev);
 
  out:
 #if ACPI_GLUE_DEBUG
@@ -337,28 +324,23 @@ static int acpi_platform_notify(struct device *dev)
 
 static int acpi_platform_notify_remove(struct device *dev)
 {
-	struct acpi_device *adev = ACPI_COMPANION(dev);
 	struct acpi_bus_type *type;
-
-	if (!adev)
-		return 0;
 
 	type = acpi_get_bus_type(dev);
 	if (type && type->cleanup)
 		type->cleanup(dev);
-	else if (adev->handler && adev->handler->unbind)
-		adev->handler->unbind(dev);
 
 	acpi_unbind_one(dev);
 	return 0;
 }
 
-void __init init_acpi_device_notify(void)
+int __init init_acpi_device_notify(void)
 {
 	if (platform_notify || platform_notify_remove) {
 		printk(KERN_ERR PREFIX "Can't use platform_notify\n");
-		return;
+		return 0;
 	}
 	platform_notify = acpi_platform_notify;
 	platform_notify_remove = acpi_platform_notify_remove;
+	return 0;
 }

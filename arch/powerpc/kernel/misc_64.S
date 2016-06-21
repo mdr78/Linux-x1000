@@ -26,7 +26,6 @@
 #include <asm/thread_info.h>
 #include <asm/kexec.h>
 #include <asm/ptrace.h>
-#include <asm/mmu.h>
 
 	.text
 
@@ -35,7 +34,7 @@ _GLOBAL(call_do_softirq)
 	std	r0,16(r1)
 	stdu	r1,THREAD_SIZE-STACK_FRAME_OVERHEAD(r3)
 	mr	r1,r3
-	bl	__do_softirq
+	bl	.__do_softirq
 	ld	r1,0(r1)
 	ld	r0,16(r1)
 	mtlr	r0
@@ -46,7 +45,7 @@ _GLOBAL(call_do_irq)
 	std	r0,16(r1)
 	stdu	r1,THREAD_SIZE-STACK_FRAME_OVERHEAD(r4)
 	mr	r1,r4
-	bl	__do_irq
+	bl	.__do_irq
 	ld	r1,0(r1)
 	ld	r0,16(r1)
 	mtlr	r0
@@ -476,20 +475,9 @@ _GLOBAL(kexec_wait)
 #ifdef CONFIG_KEXEC		/* use no memory without kexec */
 	lwz	r4,0(r5)
 	cmpwi	0,r4,0
-	beq	99b
-#ifdef CONFIG_PPC_BOOK3S_64
-	li	r10,0x60
-	mfmsr	r11
-	clrrdi	r11,r11,1	/* Clear MSR_LE */
-	mtsrr0	r10
-	mtsrr1	r11
-	rfid
-#else
-	/* Create TLB entry in book3e_secondary_core_init */
-	li	r4,0
-	ba	0x60
+	bnea	0x60
 #endif
-#endif
+	b	99b
 
 /* this can be in text because we won't change it until we are
  * running in real anyways
@@ -499,51 +487,6 @@ kexec_flag:
 
 
 #ifdef CONFIG_KEXEC
-#ifdef CONFIG_PPC_BOOK3E
-/*
- * BOOK3E has no real MMU mode, so we have to setup the initial TLB
- * for a core to identity map v:0 to p:0.  This current implementation
- * assumes that 1G is enough for kexec.
- */
-kexec_create_tlb:
-	/*
-	 * Invalidate all non-IPROT TLB entries to avoid any TLB conflict.
-	 * IPROT TLB entries should be >= PAGE_OFFSET and thus not conflict.
-	 */
-	PPC_TLBILX_ALL(0,R0)
-	sync
-	isync
-
-	mfspr	r10,SPRN_TLB1CFG
-	andi.	r10,r10,TLBnCFG_N_ENTRY	/* Extract # entries */
-	subi	r10,r10,1	/* Last entry: no conflict with kernel text */
-	lis	r9,MAS0_TLBSEL(1)@h
-	rlwimi	r9,r10,16,4,15		/* Setup MAS0 = TLBSEL | ESEL(r9) */
-
-/* Set up a temp identity mapping v:0 to p:0 and return to it. */
-#if defined(CONFIG_SMP) || defined(CONFIG_PPC_E500MC)
-#define M_IF_NEEDED	MAS2_M
-#else
-#define M_IF_NEEDED	0
-#endif
-	mtspr	SPRN_MAS0,r9
-
-	lis	r9,(MAS1_VALID|MAS1_IPROT)@h
-	ori	r9,r9,(MAS1_TSIZE(BOOK3E_PAGESZ_1GB))@l
-	mtspr	SPRN_MAS1,r9
-
-	LOAD_REG_IMMEDIATE(r9, 0x0 | M_IF_NEEDED)
-	mtspr	SPRN_MAS2,r9
-
-	LOAD_REG_IMMEDIATE(r9, 0x0 | MAS3_SR | MAS3_SW | MAS3_SX)
-	mtspr	SPRN_MAS3,r9
-	li	r9,0
-	mtspr	SPRN_MAS7,r9
-
-	tlbwe
-	isync
-	blr
-#endif
 
 /* kexec_smp_wait(void)
  *
@@ -563,7 +506,7 @@ _GLOBAL(kexec_smp_wait)
 	stb	r4,PACAKEXECSTATE(r13)
 	SYNC
 
-	b	kexec_wait
+	b	.kexec_wait
 
 /*
  * switch to real mode (turn mmu off)
@@ -573,10 +516,6 @@ _GLOBAL(kexec_smp_wait)
  * don't overwrite r3 here, it is live for kexec_wait above.
  */
 real_mode:	/* assume normal blr return */
-#ifdef CONFIG_PPC_BOOK3E
-	/* Create an identity mapping. */
-	b	kexec_create_tlb
-#else
 1:	li	r9,MSR_RI
 	li	r10,MSR_DR|MSR_IR
 	mflr	r11		/* return address to SRR0 */
@@ -588,7 +527,7 @@ real_mode:	/* assume normal blr return */
 	mtspr	SPRN_SRR1,r10
 	mtspr	SPRN_SRR0,r11
 	rfid
-#endif
+
 
 /*
  * kexec_sequence(newstack, start, image, control, clear_all())
@@ -631,17 +570,13 @@ _GLOBAL(kexec_sequence)
 	lhz	r25,PACAHWCPUID(r13)	/* get our phys cpu from paca */
 
 	/* disable interrupts, we are overwriting kernel data next */
-#ifdef CONFIG_PPC_BOOK3E
-	wrteei	0
-#else
 	mfmsr	r3
 	rlwinm	r3,r3,0,17,15
 	mtmsrd	r3,1
-#endif
 
 	/* copy dest pages, flush whole dest image */
 	mr	r3,r29
-	bl	kexec_copy_flush	/* (image) */
+	bl	.kexec_copy_flush	/* (image) */
 
 	/* turn off mmu */
 	bl	real_mode
@@ -651,7 +586,7 @@ _GLOBAL(kexec_sequence)
 	mr	r4,r30		/* start, aka phys mem offset */
 	li	r5,0x100
 	li	r6,0
-	bl	copy_and_flush	/* (dest, src, copy limit, start offset) */
+	bl	.copy_and_flush	/* (dest, src, copy limit, start offset) */
 1:	/* assume normal blr return */
 
 	/* release other cpus to the new kernel secondary start at 0x60 */
@@ -659,16 +594,10 @@ _GLOBAL(kexec_sequence)
 	li	r6,1
 	stw	r6,kexec_flag-1b(5)
 
-#ifndef CONFIG_PPC_BOOK3E
 	/* clear out hardware hash page table and tlb */
-#if !defined(_CALL_ELF) || _CALL_ELF != 2
-	ld	r12,0(r27)		/* deref function descriptor */
-#else
-	mr	r12,r27
-#endif
-	mtctr	r12
+	ld	r5,0(r27)		/* deref function descriptor */
+	mtctr	r5
 	bctrl				/* ppc_md.hpte_clear_all(void); */
-#endif /* !CONFIG_PPC_BOOK3E */
 
 /*
  *   kexec image calling is:
@@ -701,31 +630,3 @@ _GLOBAL(kexec_sequence)
 	li	r5,0
 	blr	/* image->start(physid, image->start, 0); */
 #endif /* CONFIG_KEXEC */
-
-#ifdef CONFIG_MODULES
-#if defined(_CALL_ELF) && _CALL_ELF == 2
-
-#ifdef CONFIG_MODVERSIONS
-.weak __crc_TOC.
-.section "___kcrctab+TOC.","a"
-.globl __kcrctab_TOC.
-__kcrctab_TOC.:
-	.llong	__crc_TOC.
-#endif
-
-/*
- * Export a fake .TOC. since both modpost and depmod will complain otherwise.
- * Both modpost and depmod strip the leading . so we do the same here.
- */
-.section "__ksymtab_strings","a"
-__kstrtab_TOC.:
-	.asciz "TOC."
-
-.section "___ksymtab+TOC.","a"
-/* This symbol name is important: it's used by modpost to find exported syms */
-.globl __ksymtab_TOC.
-__ksymtab_TOC.:
-	.llong 0 /* .value */
-	.llong __kstrtab_TOC.
-#endif /* ELFv2 */
-#endif /* MODULES */

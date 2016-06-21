@@ -35,6 +35,8 @@ static int rbtx4939_flash_remove(struct platform_device *dev)
 		return 0;
 
 	if (info->mtd) {
+		struct rbtx4939_flash_data *pdata = dev_get_platdata(&dev->dev);
+
 		mtd_device_unregister(info->mtd);
 		map_destroy(info->mtd);
 	}
@@ -96,7 +98,7 @@ static int rbtx4939_flash_probe(struct platform_device *dev)
 		err = -ENXIO;
 		goto err_out;
 	}
-	info->mtd->dev.parent = &dev->dev;
+	info->mtd->owner = THIS_MODULE;
 	err = mtd_device_parse_register(info->mtd, NULL, NULL, pdata->parts,
 					pdata->nr_parts);
 
@@ -127,6 +129,7 @@ static struct platform_driver rbtx4939_flash_driver = {
 	.shutdown	= rbtx4939_flash_shutdown,
 	.driver		= {
 		.name	= "rbtx4939-flash",
+		.owner	= THIS_MODULE,
 	},
 };
 

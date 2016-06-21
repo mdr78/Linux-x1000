@@ -22,6 +22,8 @@
 #include "xfs_log_format.h"
 #include "xfs_trans_resv.h"
 #include "xfs_bit.h"
+#include "xfs_sb.h"
+#include "xfs_ag.h"
 #include "xfs_mount.h"
 #include "xfs_inode.h"
 #include "xfs_bmap.h"
@@ -34,6 +36,7 @@
 #include "xfs_trace.h"
 #include "xfs_buf.h"
 #include "xfs_icache.h"
+#include "xfs_dinode.h"
 #include "xfs_rtalloc.h"
 
 
@@ -43,7 +46,7 @@
  * Keeps track of a current summary block, so we don't keep reading
  * it from the buffer cache.
  */
-static int
+STATIC int				/* error */
 xfs_rtget_summary(
 	xfs_mount_t	*mp,		/* file system mount structure */
 	xfs_trans_t	*tp,		/* transaction pointer */
@@ -53,8 +56,59 @@ xfs_rtget_summary(
 	xfs_fsblock_t	*rsb,		/* in/out: summary block number */
 	xfs_suminfo_t	*sum)		/* out: summary info for this block */
 {
-	return xfs_rtmodify_summary_int(mp, tp, log, bbno, 0, rbpp, rsb, sum);
+	xfs_buf_t	*bp;		/* buffer for summary block */
+	int		error;		/* error value */
+	xfs_fsblock_t	sb;		/* summary fsblock */
+	int		so;		/* index into the summary file */
+	xfs_suminfo_t	*sp;		/* pointer to returned data */
+
+	/*
+	 * Compute entry number in the summary file.
+	 */
+	so = XFS_SUMOFFS(mp, log, bbno);
+	/*
+	 * Compute the block number in the summary file.
+	 */
+	sb = XFS_SUMOFFSTOBLOCK(mp, so);
+	/*
+	 * If we have an old buffer, and the block number matches, use that.
+	 */
+	if (rbpp && *rbpp && *rsb == sb)
+		bp = *rbpp;
+	/*
+	 * Otherwise we have to get the buffer.
+	 */
+	else {
+		/*
+		 * If there was an old one, get rid of it first.
+		 */
+		if (rbpp && *rbpp)
+			xfs_trans_brelse(tp, *rbpp);
+		error = xfs_rtbuf_get(mp, tp, sb, 1, &bp);
+		if (error) {
+			return error;
+		}
+		/*
+		 * Remember this buffer and block for the next call.
+		 */
+		if (rbpp) {
+			*rbpp = bp;
+			*rsb = sb;
+		}
+	}
+	/*
+	 * Point to the summary information & copy it out.
+	 */
+	sp = XFS_SUMPTR(mp, bp, so);
+	*sum = *sp;
+	/*
+	 * Drop the buffer if we're not asked to remember it.
+	 */
+	if (!rbpp)
+		xfs_trans_brelse(tp, bp);
+	return 0;
 }
+
 
 /*
  * Return whether there are any free extents in the size range given
@@ -757,39 +811,42 @@ xfs_rtallocate_extent_size(
 /*
  * Allocate space to the bitmap or summary file, and zero it, for growfs.
  */
-STATIC int
+STATIC int				/* error */
 xfs_growfs_rt_alloc(
-	struct xfs_mount	*mp,		/* file system mount point */
-	xfs_extlen_t		oblocks,	/* old count of blocks */
-	xfs_extlen_t		nblocks,	/* new count of blocks */
-	struct xfs_inode	*ip)		/* inode (bitmap/summary) */
+	xfs_mount_t	*mp,		/* file system mount point */
+	xfs_extlen_t	oblocks,	/* old count of blocks */
+	xfs_extlen_t	nblocks,	/* new count of blocks */
+	xfs_inode_t	*ip)		/* inode (bitmap/summary) */
 {
-	xfs_fileoff_t		bno;		/* block number in file */
-	struct xfs_buf		*bp;	/* temporary buffer for zeroing */
-	int			committed;	/* transaction committed flag */
-	xfs_daddr_t		d;		/* disk block address */
-	int			error;		/* error return value */
-	xfs_fsblock_t		firstblock;/* first block allocated in xaction */
-	struct xfs_bmap_free	flist;		/* list of freed blocks */
-	xfs_fsblock_t		fsbno;		/* filesystem block for bno */
-	struct xfs_bmbt_irec	map;		/* block map output */
-	int			nmap;		/* number of block maps */
-	int			resblks;	/* space reservation */
-	struct xfs_trans	*tp;
+	xfs_fileoff_t	bno;		/* block number in file */
+	xfs_buf_t	*bp;		/* temporary buffer for zeroing */
+	int		committed;	/* transaction committed flag */
+	xfs_daddr_t	d;		/* disk block address */
+	int		error;		/* error return value */
+	xfs_fsblock_t	firstblock;	/* first block allocated in xaction */
+	xfs_bmap_free_t	flist;		/* list of freed blocks */
+	xfs_fsblock_t	fsbno;		/* filesystem block for bno */
+	xfs_bmbt_irec_t	map;		/* block map output */
+	int		nmap;		/* number of block maps */
+	int		resblks;	/* space reservation */
 
 	/*
 	 * Allocate space to the file, as necessary.
 	 */
 	while (oblocks < nblocks) {
+		int		cancelflags = 0;
+		xfs_trans_t	*tp;
+
 		tp = xfs_trans_alloc(mp, XFS_TRANS_GROWFSRT_ALLOC);
 		resblks = XFS_GROWFSRT_SPACE_RES(mp, nblocks - oblocks);
 		/*
 		 * Reserve space & log for one extent added to the file.
 		 */
-		error = xfs_trans_reserve(tp, &M_RES(mp)->tr_growrtalloc,
+		error = xfs_trans_reserve(tp, &M_RES(mp)->tr_growdata,
 					  resblks, 0);
 		if (error)
-			goto out_trans_cancel;
+			goto error_cancel;
+		cancelflags = XFS_TRANS_RELEASE_LOG_RES;
 		/*
 		 * Lock the inode.
 		 */
@@ -801,26 +858,28 @@ xfs_growfs_rt_alloc(
 		 * Allocate blocks to the bitmap file.
 		 */
 		nmap = 1;
+		cancelflags |= XFS_TRANS_ABORT;
 		error = xfs_bmapi_write(tp, ip, oblocks, nblocks - oblocks,
 					XFS_BMAPI_METADATA, &firstblock,
 					resblks, &map, &nmap, &flist);
 		if (!error && nmap < 1)
-			error = -ENOSPC;
+			error = XFS_ERROR(ENOSPC);
 		if (error)
-			goto out_bmap_cancel;
+			goto error_cancel;
 		/*
 		 * Free any blocks freed up in the transaction, then commit.
 		 */
 		error = xfs_bmap_finish(&tp, &flist, &committed);
 		if (error)
-			goto out_bmap_cancel;
-		error = xfs_trans_commit(tp);
+			goto error_cancel;
+		error = xfs_trans_commit(tp, XFS_TRANS_RELEASE_LOG_RES);
 		if (error)
-			return error;
+			goto error;
 		/*
 		 * Now we need to clear the allocated blocks.
 		 * Do this one block per transaction, to keep it simple.
 		 */
+		cancelflags = 0;
 		for (bno = map.br_startoff, fsbno = map.br_startblock;
 		     bno < map.br_startoff + map.br_blockcount;
 		     bno++, fsbno++) {
@@ -831,7 +890,7 @@ xfs_growfs_rt_alloc(
 			error = xfs_trans_reserve(tp, &M_RES(mp)->tr_growrtzero,
 						  0, 0);
 			if (error)
-				goto out_trans_cancel;
+				goto error_cancel;
 			/*
 			 * Lock the bitmap inode.
 			 */
@@ -844,30 +903,28 @@ xfs_growfs_rt_alloc(
 			bp = xfs_trans_get_buf(tp, mp->m_ddev_targp, d,
 				mp->m_bsize, 0);
 			if (bp == NULL) {
-				error = -EIO;
-				goto out_trans_cancel;
+				error = XFS_ERROR(EIO);
+error_cancel:
+				xfs_trans_cancel(tp, cancelflags);
+				goto error;
 			}
 			memset(bp->b_addr, 0, mp->m_sb.sb_blocksize);
 			xfs_trans_log_buf(tp, bp, 0, mp->m_sb.sb_blocksize - 1);
 			/*
 			 * Commit the transaction.
 			 */
-			error = xfs_trans_commit(tp);
+			error = xfs_trans_commit(tp, 0);
 			if (error)
-				return error;
+				goto error;
 		}
 		/*
 		 * Go on to the next extent, if any.
 		 */
 		oblocks = map.br_startoff + map.br_blockcount;
 	}
-
 	return 0;
 
-out_bmap_cancel:
-	xfs_bmap_cancel(&flist);
-out_trans_cancel:
-	xfs_trans_cancel(tp);
+error:
 	return error;
 }
 
@@ -887,9 +944,9 @@ xfs_growfs_rt(
 	xfs_buf_t	*bp;		/* temporary buffer */
 	int		error;		/* error return value */
 	xfs_mount_t	*nmp;		/* new (fake) mount structure */
-	xfs_rfsblock_t	nrblocks;	/* new number of realtime blocks */
+	xfs_drfsbno_t	nrblocks;	/* new number of realtime blocks */
 	xfs_extlen_t	nrbmblocks;	/* new number of rt bitmap blocks */
-	xfs_rtblock_t	nrextents;	/* new number of realtime extents */
+	xfs_drtbno_t	nrextents;	/* new number of realtime extents */
 	uint8_t		nrextslog;	/* new log2 of sb_rextents */
 	xfs_extlen_t	nrsumblocks;	/* new number of summary blocks */
 	uint		nrsumlevels;	/* new rt summary levels */
@@ -905,21 +962,26 @@ xfs_growfs_rt(
 	 * Initial error checking.
 	 */
 	if (!capable(CAP_SYS_ADMIN))
-		return -EPERM;
+		return XFS_ERROR(EPERM);
 	if (mp->m_rtdev_targp == NULL || mp->m_rbmip == NULL ||
 	    (nrblocks = in->newblocks) <= sbp->sb_rblocks ||
 	    (sbp->sb_rblocks && (in->extsize != sbp->sb_rextsize)))
-		return -EINVAL;
+		return XFS_ERROR(EINVAL);
 	if ((error = xfs_sb_validate_fsb_count(sbp, nrblocks)))
 		return error;
 	/*
 	 * Read in the last block of the device, make sure it exists.
 	 */
-	error = xfs_buf_read_uncached(mp->m_rtdev_targp,
+	bp = xfs_buf_read_uncached(mp->m_rtdev_targp,
 				XFS_FSB_TO_BB(mp, nrblocks - 1),
-				XFS_FSB_TO_BB(mp, 1), 0, &bp, NULL);
-	if (error)
+				XFS_FSB_TO_BB(mp, 1), 0, NULL);
+	if (!bp)
+		return EIO;
+	if (bp->b_error) {
+		error = bp->b_error;
+		xfs_buf_relse(bp);
 		return error;
+	}
 	xfs_buf_relse(bp);
 
 	/*
@@ -939,7 +1001,7 @@ xfs_growfs_rt(
 	 * since we'll log basically the whole summary file at once.
 	 */
 	if (nrsumblocks > (mp->m_sb.sb_logblocks >> 1))
-		return -EINVAL;
+		return XFS_ERROR(EINVAL);
 	/*
 	 * Get the old block counts for bitmap and summary inodes.
 	 * These can't change since other growfs callers are locked out.
@@ -970,6 +1032,7 @@ xfs_growfs_rt(
 	     bmbno < nrbmblocks;
 	     bmbno++) {
 		xfs_trans_t	*tp;
+		int		cancelflags = 0;
 
 		*nmp = *mp;
 		nsbp = &nmp->m_sb;
@@ -1011,6 +1074,7 @@ xfs_growfs_rt(
 		mp->m_rbmip->i_d.di_size =
 			nsbp->sb_rbmblocks * nsbp->sb_blocksize;
 		xfs_trans_log_inode(tp, mp->m_rbmip, XFS_ILOG_CORE);
+		cancelflags |= XFS_TRANS_ABORT;
 		/*
 		 * Get the summary inode into the transaction.
 		 */
@@ -1057,7 +1121,7 @@ xfs_growfs_rt(
 			nsbp->sb_rextents - sbp->sb_rextents, &bp, &sumbno);
 		if (error) {
 error_cancel:
-			xfs_trans_cancel(tp);
+			xfs_trans_cancel(tp, cancelflags);
 			break;
 		}
 		/*
@@ -1071,7 +1135,7 @@ error_cancel:
 		mp->m_rsumlevels = nrsumlevels;
 		mp->m_rsumsize = nrsumsize;
 
-		error = xfs_trans_commit(tp);
+		error = xfs_trans_commit(tp, 0);
 		if (error)
 			break;
 	}
@@ -1144,7 +1208,7 @@ xfs_rtallocate_extent(
 				len, &sumbp, &sb, prod, &r);
 		break;
 	default:
-		error = -EIO;
+		error = EIO;
 		ASSERT(0);
 	}
 	if (error)
@@ -1171,12 +1235,11 @@ xfs_rtallocate_extent(
  */
 int				/* error */
 xfs_rtmount_init(
-	struct xfs_mount	*mp)	/* file system mount structure */
+	xfs_mount_t	*mp)	/* file system mount structure */
 {
-	struct xfs_buf		*bp;	/* buffer for last block of subvolume */
-	struct xfs_sb		*sbp;	/* filesystem superblock copy in mount */
-	xfs_daddr_t		d;	/* address of last block of subvolume */
-	int			error;
+	xfs_buf_t	*bp;	/* buffer for last block of subvolume */
+	xfs_daddr_t	d;	/* address of last block of subvolume */
+	xfs_sb_t	*sbp;	/* filesystem superblock copy in mount */
 
 	sbp = &mp->m_sb;
 	if (sbp->sb_rblocks == 0)
@@ -1184,7 +1247,7 @@ xfs_rtmount_init(
 	if (mp->m_rtdev_targp == NULL) {
 		xfs_warn(mp,
 	"Filesystem has a realtime volume, use rtdev=device option");
-		return -ENODEV;
+		return XFS_ERROR(ENODEV);
 	}
 	mp->m_rsumlevels = sbp->sb_rextslog + 1;
 	mp->m_rsumsize =
@@ -1200,14 +1263,16 @@ xfs_rtmount_init(
 		xfs_warn(mp, "realtime mount -- %llu != %llu",
 			(unsigned long long) XFS_BB_TO_FSB(mp, d),
 			(unsigned long long) mp->m_sb.sb_rblocks);
-		return -EFBIG;
+		return XFS_ERROR(EFBIG);
 	}
-	error = xfs_buf_read_uncached(mp->m_rtdev_targp,
+	bp = xfs_buf_read_uncached(mp->m_rtdev_targp,
 					d - XFS_FSB_TO_BB(mp, 1),
-					XFS_FSB_TO_BB(mp, 1), 0, &bp, NULL);
-	if (error) {
+					XFS_FSB_TO_BB(mp, 1), 0, NULL);
+	if (!bp || bp->b_error) {
 		xfs_warn(mp, "realtime device size check failed");
-		return error;
+		if (bp)
+			xfs_buf_relse(bp);
+		return EIO;
 	}
 	xfs_buf_relse(bp);
 	return 0;

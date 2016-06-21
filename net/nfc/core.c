@@ -280,6 +280,9 @@ static struct nfc_target *nfc_find_target(struct nfc_dev *dev, u32 target_idx)
 {
 	int i;
 
+	if (dev->n_targets == 0)
+		return NULL;
+
 	for (i = 0; i < dev->n_targets; i++) {
 		if (dev->targets[i].idx == target_idx)
 			return &dev->targets[i];
@@ -449,7 +452,7 @@ error:
  * @dev: The nfc device that found the target
  * @target_idx: index of the target that must be deactivated
  */
-int nfc_deactivate_target(struct nfc_dev *dev, u32 target_idx, u8 mode)
+int nfc_deactivate_target(struct nfc_dev *dev, u32 target_idx)
 {
 	int rc = 0;
 
@@ -476,7 +479,7 @@ int nfc_deactivate_target(struct nfc_dev *dev, u32 target_idx, u8 mode)
 	if (dev->ops->check_presence)
 		del_timer_sync(&dev->check_pres_timer);
 
-	dev->ops->deactivate_target(dev, dev->active_target, mode);
+	dev->ops->deactivate_target(dev, dev->active_target);
 	dev->active_target = NULL;
 
 error:
@@ -543,9 +546,9 @@ error:
 
 struct nfc_se *nfc_find_se(struct nfc_dev *dev, u32 se_idx)
 {
-	struct nfc_se *se;
+	struct nfc_se *se, *n;
 
-	list_for_each_entry(se, &dev->secure_elements, list)
+	list_for_each_entry_safe(se, n, &dev->secure_elements, list)
 		if (se->idx == se_idx)
 			return se;
 
@@ -555,6 +558,7 @@ EXPORT_SYMBOL(nfc_find_se);
 
 int nfc_enable_se(struct nfc_dev *dev, u32 se_idx)
 {
+
 	struct nfc_se *se;
 	int rc;
 
@@ -604,6 +608,7 @@ error:
 
 int nfc_disable_se(struct nfc_dev *dev, u32 se_idx)
 {
+
 	struct nfc_se *se;
 	int rc;
 
@@ -649,6 +654,9 @@ error:
 int nfc_set_remote_general_bytes(struct nfc_dev *dev, u8 *gb, u8 gb_len)
 {
 	pr_debug("dev_name=%s gb_len=%d\n", dev_name(&dev->dev), gb_len);
+
+	if (gb_len > NFC_MAX_GT_LEN)
+		return -EINVAL;
 
 	return nfc_llcp_set_remote_gb(dev, gb, gb_len);
 }
@@ -931,27 +939,6 @@ int nfc_remove_se(struct nfc_dev *dev, u32 se_idx)
 	return -EINVAL;
 }
 EXPORT_SYMBOL(nfc_remove_se);
-
-int nfc_se_transaction(struct nfc_dev *dev, u8 se_idx,
-		       struct nfc_evt_transaction *evt_transaction)
-{
-	int rc;
-
-	pr_debug("transaction: %x\n", se_idx);
-
-	device_lock(&dev->dev);
-
-	if (!evt_transaction) {
-		rc = -EPROTO;
-		goto out;
-	}
-
-	rc = nfc_genl_se_transaction(dev, se_idx, evt_transaction);
-out:
-	device_unlock(&dev->dev);
-	return rc;
-}
-EXPORT_SYMBOL(nfc_se_transaction);
 
 static void nfc_release(struct device *d)
 {

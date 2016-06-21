@@ -2628,11 +2628,10 @@ static int DRXD_init(struct drxd_state *state, const u8 *fw, u32 fw_size)
 			break;
 
 		/* Apply I2c address patch to B1 */
-		if (!state->type_A && state->m_HiI2cPatch != NULL) {
+		if (!state->type_A && state->m_HiI2cPatch != NULL)
 			status = WriteTable(state, state->m_HiI2cPatch);
 			if (status < 0)
 				break;
-		}
 
 		if (state->type_A) {
 			/* HI firmware patch for UIO readout,
@@ -2689,11 +2688,11 @@ static int DRXD_init(struct drxd_state *state, const u8 *fw, u32 fw_size)
 		status = EnableAndResetMB(state);
 		if (status < 0)
 			break;
-		if (state->type_A) {
+		if (state->type_A)
 			status = ResetCEFR(state);
 			if (status < 0)
 				break;
-		}
+
 		if (fw) {
 			status = DownloadMicrocode(state, fw, fw_size);
 			if (status < 0)
@@ -2805,7 +2804,7 @@ static int drxd_read_signal_strength(struct dvb_frontend *fe, u16 * strength)
 	return 0;
 }
 
-static int drxd_read_status(struct dvb_frontend *fe, enum fe_status *status)
+static int drxd_read_status(struct dvb_frontend *fe, fe_status_t * status)
 {
 	struct drxd_state *state = fe->demodulator_priv;
 	u32 lock;
@@ -2831,11 +2830,17 @@ static int drxd_read_status(struct dvb_frontend *fe, enum fe_status *status)
 static int drxd_init(struct dvb_frontend *fe)
 {
 	struct drxd_state *state = fe->demodulator_priv;
+	int err = 0;
 
+/*	if (request_firmware(&state->fw, "drxd.fw", state->dev)<0) */
 	return DRXD_init(state, NULL, 0);
+
+	err = DRXD_init(state, state->fw->data, state->fw->size);
+	release_firmware(state->fw);
+	return err;
 }
 
-static int drxd_config_i2c(struct dvb_frontend *fe, int onoff)
+int drxd_config_i2c(struct dvb_frontend *fe, int onoff)
 {
 	struct drxd_state *state = fe->demodulator_priv;
 
@@ -2844,6 +2849,7 @@ static int drxd_config_i2c(struct dvb_frontend *fe, int onoff)
 
 	return DRX_ConfigureI2CBridge(state, onoff);
 }
+EXPORT_SYMBOL(drxd_config_i2c);
 
 static int drxd_get_tune_settings(struct dvb_frontend *fe,
 				  struct dvb_frontend_tune_settings *sets)
@@ -2950,9 +2956,10 @@ struct dvb_frontend *drxd_attach(const struct drxd_config *config,
 {
 	struct drxd_state *state = NULL;
 
-	state = kzalloc(sizeof(*state), GFP_KERNEL);
+	state = kmalloc(sizeof(struct drxd_state), GFP_KERNEL);
 	if (!state)
 		return NULL;
+	memset(state, 0, sizeof(*state));
 
 	state->ops = drxd_ops;
 	state->dev = dev;

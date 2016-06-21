@@ -67,8 +67,10 @@ static int __init asids_debugfs_init(void)
 					   NULL, &asids_debugfs_fops);
 	if (!asids_dentry)
 		return -ENOMEM;
+	if (IS_ERR(asids_dentry))
+		return PTR_ERR(asids_dentry);
 
-	return PTR_ERR_OR_ZERO(asids_dentry);
+	return 0;
 }
 module_init(asids_debugfs_init);
 

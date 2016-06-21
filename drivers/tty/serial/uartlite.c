@@ -250,6 +250,11 @@ static void ulite_stop_rx(struct uart_port *port)
 		| ULITE_STATUS_FRAME | ULITE_STATUS_OVERRUN;
 }
 
+static void ulite_enable_ms(struct uart_port *port)
+{
+	/* N/A */
+}
+
 static void ulite_break_ctl(struct uart_port *port, int ctl)
 {
 	/* N/A */
@@ -390,6 +395,7 @@ static struct uart_ops ulite_ops = {
 	.stop_tx	= ulite_stop_tx,
 	.start_tx	= ulite_start_tx,
 	.stop_rx	= ulite_stop_rx,
+	.enable_ms	= ulite_enable_ms,
 	.break_ctl	= ulite_break_ctl,
 	.startup	= ulite_startup,
 	.shutdown	= ulite_shutdown,
@@ -412,23 +418,14 @@ static struct uart_ops ulite_ops = {
 #ifdef CONFIG_SERIAL_UARTLITE_CONSOLE
 static void ulite_console_wait_tx(struct uart_port *port)
 {
+	int i;
 	u8 val;
-	unsigned long timeout;
 
-	/*
-	 * Spin waiting for TX fifo to have space available.
-	 * When using the Microblaze Debug Module this can take up to 1s
-	 */
-	timeout = jiffies + msecs_to_jiffies(1000);
-	while (1) {
+	/* Spin waiting for TX fifo to have space available */
+	for (i = 0; i < 100000; i++) {
 		val = uart_in32(ULITE_STATUS, port);
 		if ((val & ULITE_STATUS_TXFULL) == 0)
 			break;
-		if (time_after(jiffies, timeout)) {
-			dev_warn(port->dev,
-				 "timeout waiting for TX buffer empty\n");
-			break;
-		}
 		cpu_relax();
 	}
 }
@@ -622,7 +619,7 @@ static int ulite_release(struct device *dev)
 
 #if defined(CONFIG_OF)
 /* Match table for of_platform binding */
-static const struct of_device_id ulite_of_match[] = {
+static struct of_device_id ulite_of_match[] = {
 	{ .compatible = "xlnx,opb-uartlite-1.00.b", },
 	{ .compatible = "xlnx,xps-uartlite-1.00.a", },
 	{}
@@ -632,8 +629,7 @@ MODULE_DEVICE_TABLE(of, ulite_of_match);
 
 static int ulite_probe(struct platform_device *pdev)
 {
-	struct resource *res;
-	int irq;
+	struct resource *res, *res2;
 	int id = pdev->id;
 #ifdef CONFIG_OF
 	const __be32 *prop;
@@ -647,11 +643,11 @@ static int ulite_probe(struct platform_device *pdev)
 	if (!res)
 		return -ENODEV;
 
-	irq = platform_get_irq(pdev, 0);
-	if (irq <= 0)
-		return -ENXIO;
+	res2 = platform_get_resource(pdev, IORESOURCE_IRQ, 0);
+	if (!res2)
+		return -ENODEV;
 
-	return ulite_assign(&pdev->dev, id, res->start, irq);
+	return ulite_assign(&pdev->dev, id, res->start, res2->start);
 }
 
 static int ulite_remove(struct platform_device *pdev)
@@ -666,6 +662,7 @@ static struct platform_driver ulite_platform_driver = {
 	.probe = ulite_probe,
 	.remove = ulite_remove,
 	.driver = {
+		.owner = THIS_MODULE,
 		.name  = "uartlite",
 		.of_match_table = of_match_ptr(ulite_of_match),
 	},

@@ -12,6 +12,7 @@
  *
  */
 
+#include <linux/clk.h>
 #include <linux/clk-provider.h>
 #include <linux/delay.h>
 #include <linux/module.h>
@@ -394,6 +395,7 @@ static struct platform_driver wm831x_clk_driver = {
 	.probe = wm831x_clk_probe,
 	.driver		= {
 		.name	= "wm831x-clk",
+		.owner	= THIS_MODULE,
 	},
 };
 

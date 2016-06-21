@@ -22,7 +22,7 @@
 
 #include <linux/spinlock.h>
 
-void zynq_clock_init(void);
+void zynq_clock_init(void __iomem *slcr);
 
 struct clk *clk_register_zynq_pll(const char *name, const char *parent,
 		void __iomem *pll_ctrl, void __iomem *pll_status, u8 lock_index,

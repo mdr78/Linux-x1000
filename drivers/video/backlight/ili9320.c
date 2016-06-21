@@ -219,8 +219,10 @@ int ili9320_probe_spi(struct spi_device *spi,
 	/* allocate and initialse our state */
 
 	ili = devm_kzalloc(&spi->dev, sizeof(struct ili9320), GFP_KERNEL);
-	if (ili == NULL)
+	if (ili == NULL) {
+		dev_err(dev, "no memory for device\n");
 		return -ENOMEM;
+	}
 
 	ili->access.spi.id = ILI9320_SPI_IDCODE | ILI9320_SPI_ID(1);
 

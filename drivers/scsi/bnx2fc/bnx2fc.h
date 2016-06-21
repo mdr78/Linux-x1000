@@ -1,7 +1,8 @@
-/* bnx2fc.h: QLogic Linux FCoE offload driver.
+#ifndef _BNX2FC_H_
+#define _BNX2FC_H_
+/* bnx2fc.h: Broadcom NetXtreme II Linux FCoE offload driver.
  *
- * Copyright (c) 2008-2013 Broadcom Corporation
- * Copyright (c) 2014-2015 QLogic Corporation
+ * Copyright (c) 2008 - 2013 Broadcom Corporation
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -10,8 +11,6 @@
  * Written by: Bhanu Prakash Gollapudi (bprakash@broadcom.com)
  */
 
-#ifndef _BNX2FC_H_
-#define _BNX2FC_H_
 #define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
 
 #include <linux/module.h>
@@ -65,7 +64,7 @@
 #include "bnx2fc_constants.h"
 
 #define BNX2FC_NAME		"bnx2fc"
-#define BNX2FC_VERSION		"2.9.6"
+#define BNX2FC_VERSION		"2.4.1"
 
 #define PFX			"bnx2fc: "
 
@@ -303,6 +302,7 @@ struct bnx2fc_rport {
 #define BNX2FC_FLAG_OFLD_REQ_CMPL	0x5
 #define BNX2FC_FLAG_CTX_ALLOC_FAILURE	0x6
 #define BNX2FC_FLAG_UPLD_REQ_COMPL	0x7
+#define BNX2FC_FLAG_EXPL_LOGO		0x8
 #define BNX2FC_FLAG_DISABLE_FAILED	0x9
 #define BNX2FC_FLAG_ENABLED		0xa
 
@@ -367,7 +367,6 @@ struct bnx2fc_rport {
 	atomic_t num_active_ios;
 	u32 flush_in_prog;
 	unsigned long timestamp;
-	unsigned long retry_delay_timestamp;
 	struct list_head free_task_list;
 	struct bnx2fc_cmd *pending_queue[BNX2FC_SQ_WQES_MAX+1];
 	struct list_head active_cmd_queue;

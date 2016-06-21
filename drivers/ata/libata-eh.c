@@ -46,7 +46,6 @@
 
 #include <linux/libata.h>
 
-#include <trace/events/libata.h>
 #include "libata.h"
 
 enum {
@@ -96,13 +95,12 @@ enum {
  * represents timeout for that try.  The first try can be soft or
  * hardreset.  All others are hardreset if available.  In most cases
  * the first reset w/ 10sec timeout should succeed.  Following entries
- * are mostly for error handling, hotplug and those outlier devices that
- * take an exceptionally long time to recover from reset.
+ * are mostly for error handling, hotplug and retarded devices.
  */
 static const unsigned long ata_eh_reset_timeouts[] = {
 	10000,	/* most drives spin up by 10sec */
 	10000,	/* > 99% working drives spin up before 20sec */
-	35000,	/* give > 30 secs of idleness for outlier devices */
+	35000,	/* give > 30 secs of idleness for retarded devices */
 	 5000,	/* and sweet one last chance */
 	ULONG_MAX, /* > 1 min has elapsed, give up */
 };
@@ -1505,46 +1503,22 @@ static const char *ata_err_string(unsigned int err_mask)
 unsigned int ata_read_log_page(struct ata_device *dev, u8 log,
 			       u8 page, void *buf, unsigned int sectors)
 {
-	unsigned long ap_flags = dev->link->ap->flags;
 	struct ata_taskfile tf;
 	unsigned int err_mask;
-	bool dma = false;
 
 	DPRINTK("read log page - log 0x%x, page 0x%x\n", log, page);
 
-	/*
-	 * Return error without actually issuing the command on controllers
-	 * which e.g. lockup on a read log page.
-	 */
-	if (ap_flags & ATA_FLAG_NO_LOG_PAGE)
-		return AC_ERR_DEV;
-
-retry:
 	ata_tf_init(dev, &tf);
-	if (dev->dma_mode && ata_id_has_read_log_dma_ext(dev->id) &&
-	    !(dev->horkage & ATA_HORKAGE_NO_NCQ_LOG)) {
-		tf.command = ATA_CMD_READ_LOG_DMA_EXT;
-		tf.protocol = ATA_PROT_DMA;
-		dma = true;
-	} else {
-		tf.command = ATA_CMD_READ_LOG_EXT;
-		tf.protocol = ATA_PROT_PIO;
-		dma = false;
-	}
+	tf.command = ATA_CMD_READ_LOG_EXT;
 	tf.lbal = log;
 	tf.lbam = page;
 	tf.nsect = sectors;
 	tf.hob_nsect = sectors >> 8;
 	tf.flags |= ATA_TFLAG_ISADDR | ATA_TFLAG_LBA48 | ATA_TFLAG_DEVICE;
+	tf.protocol = ATA_PROT_PIO;
 
 	err_mask = ata_exec_internal(dev, &tf, NULL, DMA_FROM_DEVICE,
 				     buf, sectors * ATA_SECT_SIZE, 0);
-
-	if (err_mask && dma) {
-		dev->horkage |= ATA_HORKAGE_NO_NCQ_LOG;
-		ata_dev_warn(dev, "READ LOG DMA EXT failed, trying unqueued\n");
-		goto retry;
-	}
 
 	DPRINTK("EXIT, err_mask=%x\n", err_mask);
 	return err_mask;
@@ -1660,6 +1634,7 @@ unsigned int atapi_eh_request_sense(struct ata_device *dev,
 
 	DPRINTK("ATAPI request sense\n");
 
+	/* FIXME: is this needed? */
 	memset(sense_buf, 0, SCSI_SENSE_BUFFERSIZE);
 
 	/* initialize sense_buf with the error register,
@@ -1833,10 +1808,9 @@ static unsigned int ata_eh_analyze_tf(struct ata_queued_cmd *qc,
 
 	switch (qc->dev->class) {
 	case ATA_DEV_ATA:
-	case ATA_DEV_ZAC:
 		if (err & ATA_ICRC)
 			qc->err_mask |= AC_ERR_ATA_BUS;
-		if (err & (ATA_UNC | ATA_AMNF))
+		if (err & ATA_UNC)
 			qc->err_mask |= AC_ERR_MEDIA;
 		if (err & ATA_IDNF)
 			qc->err_mask |= AC_ERR_INVALID;
@@ -2211,7 +2185,6 @@ static void ata_eh_link_autopsy(struct ata_link *link)
 		all_err_mask |= qc->err_mask;
 		if (qc->flags & ATA_QCFLAG_IO)
 			eflags |= ATA_EFLAG_IS_IO;
-		trace_ata_eh_link_autopsy_qc(qc);
 	}
 
 	/* enforce default EH actions */
@@ -2246,7 +2219,7 @@ static void ata_eh_link_autopsy(struct ata_link *link)
 			eflags |= ATA_EFLAG_DUBIOUS_XFER;
 		ehc->i.action |= ata_eh_speed_down(dev, eflags, all_err_mask);
 	}
-	trace_ata_eh_link_autopsy(dev, ehc->i.action, all_err_mask);
+
 	DPRINTK("EXIT\n");
 }
 
@@ -2315,27 +2288,27 @@ const char *ata_get_cmd_descript(u8 command)
 		const char *text;
 	} cmd_descr[] = {
 		{ ATA_CMD_DEV_RESET,		"DEVICE RESET" },
-		{ ATA_CMD_CHK_POWER,		"CHECK POWER MODE" },
-		{ ATA_CMD_STANDBY,		"STANDBY" },
-		{ ATA_CMD_IDLE,			"IDLE" },
-		{ ATA_CMD_EDD,			"EXECUTE DEVICE DIAGNOSTIC" },
-		{ ATA_CMD_DOWNLOAD_MICRO,	"DOWNLOAD MICROCODE" },
+		{ ATA_CMD_CHK_POWER, 		"CHECK POWER MODE" },
+		{ ATA_CMD_STANDBY, 		"STANDBY" },
+		{ ATA_CMD_IDLE, 		"IDLE" },
+		{ ATA_CMD_EDD, 			"EXECUTE DEVICE DIAGNOSTIC" },
+		{ ATA_CMD_DOWNLOAD_MICRO,   	"DOWNLOAD MICROCODE" },
 		{ ATA_CMD_DOWNLOAD_MICRO_DMA,	"DOWNLOAD MICROCODE DMA" },
 		{ ATA_CMD_NOP,			"NOP" },
-		{ ATA_CMD_FLUSH,		"FLUSH CACHE" },
-		{ ATA_CMD_FLUSH_EXT,		"FLUSH CACHE EXT" },
-		{ ATA_CMD_ID_ATA,		"IDENTIFY DEVICE" },
-		{ ATA_CMD_ID_ATAPI,		"IDENTIFY PACKET DEVICE" },
-		{ ATA_CMD_SERVICE,		"SERVICE" },
-		{ ATA_CMD_READ,			"READ DMA" },
-		{ ATA_CMD_READ_EXT,		"READ DMA EXT" },
-		{ ATA_CMD_READ_QUEUED,		"READ DMA QUEUED" },
-		{ ATA_CMD_READ_STREAM_EXT,	"READ STREAM EXT" },
+		{ ATA_CMD_FLUSH, 		"FLUSH CACHE" },
+		{ ATA_CMD_FLUSH_EXT, 		"FLUSH CACHE EXT" },
+		{ ATA_CMD_ID_ATA,  		"IDENTIFY DEVICE" },
+		{ ATA_CMD_ID_ATAPI, 		"IDENTIFY PACKET DEVICE" },
+		{ ATA_CMD_SERVICE, 		"SERVICE" },
+		{ ATA_CMD_READ, 		"READ DMA" },
+		{ ATA_CMD_READ_EXT, 		"READ DMA EXT" },
+		{ ATA_CMD_READ_QUEUED, 		"READ DMA QUEUED" },
+		{ ATA_CMD_READ_STREAM_EXT, 	"READ STREAM EXT" },
 		{ ATA_CMD_READ_STREAM_DMA_EXT,  "READ STREAM DMA EXT" },
-		{ ATA_CMD_WRITE,		"WRITE DMA" },
-		{ ATA_CMD_WRITE_EXT,		"WRITE DMA EXT" },
-		{ ATA_CMD_WRITE_QUEUED,		"WRITE DMA QUEUED EXT" },
-		{ ATA_CMD_WRITE_STREAM_EXT,	"WRITE STREAM EXT" },
+		{ ATA_CMD_WRITE, 		"WRITE DMA" },
+		{ ATA_CMD_WRITE_EXT, 		"WRITE DMA EXT" },
+		{ ATA_CMD_WRITE_QUEUED, 	"WRITE DMA QUEUED EXT" },
+		{ ATA_CMD_WRITE_STREAM_EXT, 	"WRITE STREAM EXT" },
 		{ ATA_CMD_WRITE_STREAM_DMA_EXT, "WRITE STREAM DMA EXT" },
 		{ ATA_CMD_WRITE_FUA_EXT,	"WRITE DMA FUA EXT" },
 		{ ATA_CMD_WRITE_QUEUED_FUA_EXT, "WRITE DMA QUEUED FUA EXT" },
@@ -2351,7 +2324,7 @@ const char *ata_get_cmd_descript(u8 command)
 		{ ATA_CMD_READ_MULTI_EXT,	"READ MULTIPLE EXT" },
 		{ ATA_CMD_WRITE_MULTI,		"WRITE MULTIPLE" },
 		{ ATA_CMD_WRITE_MULTI_EXT,	"WRITE MULTIPLE EXT" },
-		{ ATA_CMD_WRITE_MULTI_FUA_EXT,	"WRITE MULTIPLE FUA EXT" },
+		{ ATA_CMD_WRITE_MULTI_FUA_EXT, 	"WRITE MULTIPLE FUA EXT" },
 		{ ATA_CMD_SET_FEATURES,		"SET FEATURES" },
 		{ ATA_CMD_SET_MULTI,		"SET MULTIPLE MODE" },
 		{ ATA_CMD_VERIFY,		"READ VERIFY SECTOR(S)" },
@@ -2368,12 +2341,12 @@ const char *ata_get_cmd_descript(u8 command)
 		{ ATA_CMD_READ_LOG_EXT,		"READ LOG EXT" },
 		{ ATA_CMD_WRITE_LOG_EXT,	"WRITE LOG EXT" },
 		{ ATA_CMD_READ_LOG_DMA_EXT,	"READ LOG DMA EXT" },
-		{ ATA_CMD_WRITE_LOG_DMA_EXT,	"WRITE LOG DMA EXT" },
+		{ ATA_CMD_WRITE_LOG_DMA_EXT, 	"WRITE LOG DMA EXT" },
 		{ ATA_CMD_TRUSTED_NONDATA,	"TRUSTED NON-DATA" },
 		{ ATA_CMD_TRUSTED_RCV,		"TRUSTED RECEIVE" },
-		{ ATA_CMD_TRUSTED_RCV_DMA,	"TRUSTED RECEIVE DMA" },
+		{ ATA_CMD_TRUSTED_RCV_DMA, 	"TRUSTED RECEIVE DMA" },
 		{ ATA_CMD_TRUSTED_SND,		"TRUSTED SEND" },
-		{ ATA_CMD_TRUSTED_SND_DMA,	"TRUSTED SEND DMA" },
+		{ ATA_CMD_TRUSTED_SND_DMA, 	"TRUSTED SEND DMA" },
 		{ ATA_CMD_PMP_READ,		"READ BUFFER" },
 		{ ATA_CMD_PMP_READ_DMA,		"READ BUFFER DMA" },
 		{ ATA_CMD_PMP_WRITE,		"WRITE BUFFER" },
@@ -2390,12 +2363,12 @@ const char *ata_get_cmd_descript(u8 command)
 		{ ATA_CMD_MEDIA_LOCK,		"DOOR LOCK" },
 		{ ATA_CMD_MEDIA_UNLOCK,		"DOOR UNLOCK" },
 		{ ATA_CMD_DSM,			"DATA SET MANAGEMENT" },
-		{ ATA_CMD_CHK_MED_CRD_TYP,	"CHECK MEDIA CARD TYPE" },
-		{ ATA_CMD_CFA_REQ_EXT_ERR,	"CFA REQUEST EXTENDED ERROR" },
+		{ ATA_CMD_CHK_MED_CRD_TYP, 	"CHECK MEDIA CARD TYPE" },
+		{ ATA_CMD_CFA_REQ_EXT_ERR, 	"CFA REQUEST EXTENDED ERROR" },
 		{ ATA_CMD_CFA_WRITE_NE,		"CFA WRITE SECTORS WITHOUT ERASE" },
 		{ ATA_CMD_CFA_TRANS_SECT,	"CFA TRANSLATE SECTOR" },
 		{ ATA_CMD_CFA_ERASE,		"CFA ERASE SECTORS" },
-		{ ATA_CMD_CFA_WRITE_MULT_NE,	"CFA WRITE MULTIPLE WITHOUT ERASE" },
+		{ ATA_CMD_CFA_WRITE_MULT_NE, 	"CFA WRITE MULTIPLE WITHOUT ERASE" },
 		{ ATA_CMD_REQ_SENSE_DATA,	"REQUEST SENSE DATA EXT" },
 		{ ATA_CMD_SANITIZE_DEVICE,	"SANITIZE DEVICE" },
 		{ ATA_CMD_READ_LONG,		"READ LONG (with retries)" },
@@ -2414,7 +2387,6 @@ const char *ata_get_cmd_descript(u8 command)
 
 	return NULL;
 }
-EXPORT_SYMBOL_GPL(ata_get_cmd_descript);
 
 /**
  *	ata_eh_link_report - report error handling to user
@@ -2507,6 +2479,7 @@ static void ata_eh_link_report(struct ata_link *link)
 	for (tag = 0; tag < ATA_MAX_QUEUE; tag++) {
 		struct ata_queued_cmd *qc = __ata_qc_from_tag(ap, tag);
 		struct ata_taskfile *cmd = &qc->tf, *res = &qc->result_tf;
+		const u8 *cdb = qc->cdb;
 		char data_buf[20] = "";
 		char cdb_buf[70] = "";
 
@@ -2534,15 +2507,16 @@ static void ata_eh_link_report(struct ata_link *link)
 		}
 
 		if (ata_is_atapi(qc->tf.protocol)) {
-			const u8 *cdb = qc->cdb;
-			size_t cdb_len = qc->dev->cdb_len;
-
-			if (qc->scsicmd) {
-				cdb = qc->scsicmd->cmnd;
-				cdb_len = qc->scsicmd->cmd_len;
-			}
-			__scsi_format_command(cdb_buf, sizeof(cdb_buf),
-					      cdb, cdb_len);
+			if (qc->scsicmd)
+				scsi_print_command(qc->scsicmd);
+			else
+				snprintf(cdb_buf, sizeof(cdb_buf),
+				 "cdb %02x %02x %02x %02x %02x %02x %02x %02x  "
+				 "%02x %02x %02x %02x %02x %02x %02x %02x\n         ",
+				 cdb[0], cdb[1], cdb[2], cdb[3],
+				 cdb[4], cdb[5], cdb[6], cdb[7],
+				 cdb[8], cdb[9], cdb[10], cdb[11],
+				 cdb[12], cdb[13], cdb[14], cdb[15]);
 		} else {
 			const char *descr = ata_get_cmd_descript(cmd->command);
 			if (descr)
@@ -2581,12 +2555,11 @@ static void ata_eh_link_report(struct ata_link *link)
 		}
 
 		if (cmd->command != ATA_CMD_PACKET &&
-		    (res->feature & (ATA_ICRC | ATA_UNC | ATA_AMNF |
-				     ATA_IDNF | ATA_ABORTED)))
-			ata_dev_err(qc->dev, "error: { %s%s%s%s%s}\n",
+		    (res->feature & (ATA_ICRC | ATA_UNC | ATA_IDNF |
+				     ATA_ABORTED)))
+			ata_dev_err(qc->dev, "error: { %s%s%s%s}\n",
 			  res->feature & ATA_ICRC ? "ICRC " : "",
 			  res->feature & ATA_UNC ? "UNC " : "",
-			  res->feature & ATA_AMNF ? "AMNF " : "",
 			  res->feature & ATA_IDNF ? "IDNF " : "",
 			  res->feature & ATA_ABORTED ? "ABRT " : "");
 #endif
@@ -3515,9 +3488,6 @@ static int ata_eh_set_lpm(struct ata_link *link, enum ata_lpm_policy policy,
 		}
 	}
 
-	link->last_lpm_change = jiffies;
-	link->flags |= ATA_LFLAG_CHANGED;
-
 	return 0;
 
 fail:
@@ -3820,8 +3790,7 @@ int ata_eh_recover(struct ata_port *ap, ata_prereset_fn_t prereset,
 				struct ata_eh_context *ehc = &link->eh_context;
 				unsigned long tmp;
 
-				if (dev->class != ATA_DEV_ATA &&
-				    dev->class != ATA_DEV_ZAC)
+				if (dev->class != ATA_DEV_ATA)
 					continue;
 				if (!(ehc->i.dev_action[dev->devno] &
 				      ATA_EH_PARK))
@@ -3902,8 +3871,7 @@ int ata_eh_recover(struct ata_port *ap, ata_prereset_fn_t prereset,
 
 		/* retry flush if necessary */
 		ata_for_each_dev(dev, link, ALL) {
-			if (dev->class != ATA_DEV_ATA &&
-			    dev->class != ATA_DEV_ZAC)
+			if (dev->class != ATA_DEV_ATA)
 				continue;
 			rc = ata_eh_maybe_retry_flush(dev);
 			if (rc)
@@ -4101,7 +4069,7 @@ static void ata_eh_handle_port_suspend(struct ata_port *ap)
 
 	ata_acpi_set_state(ap, ap->pm_mesg);
  out:
-	/* update the flags */
+	/* report result */
 	spin_lock_irqsave(ap->lock, flags);
 
 	ap->pflags &= ~ATA_PFLAG_PM_PENDING;
@@ -4109,6 +4077,11 @@ static void ata_eh_handle_port_suspend(struct ata_port *ap)
 		ap->pflags |= ATA_PFLAG_SUSPENDED;
 	else if (ap->pflags & ATA_PFLAG_FROZEN)
 		ata_port_schedule_eh(ap);
+
+	if (ap->pm_result) {
+		*ap->pm_result = rc;
+		ap->pm_result = NULL;
+	}
 
 	spin_unlock_irqrestore(ap->lock, flags);
 
@@ -4161,9 +4134,13 @@ static void ata_eh_handle_port_resume(struct ata_port *ap)
 	/* tell ACPI that we're resuming */
 	ata_acpi_on_resume(ap);
 
-	/* update the flags */
+	/* report result */
 	spin_lock_irqsave(ap->lock, flags);
 	ap->pflags &= ~(ATA_PFLAG_PM_PENDING | ATA_PFLAG_SUSPENDED);
+	if (ap->pm_result) {
+		*ap->pm_result = rc;
+		ap->pm_result = NULL;
+	}
 	spin_unlock_irqrestore(ap->lock, flags);
 }
 #endif /* CONFIG_PM */

@@ -17,15 +17,11 @@
 #include <net/af_rxrpc.h>
 #include "ar-internal.h"
 
-/*
- * Time after last use at which transport record is cleaned up.
- */
-unsigned rxrpc_transport_expiry = 3600 * 24;
-
 static void rxrpc_transport_reaper(struct work_struct *work);
 
 static LIST_HEAD(rxrpc_transports);
 static DEFINE_RWLOCK(rxrpc_transport_lock);
+static unsigned long rxrpc_transport_timeout = 3600 * 24;
 static DECLARE_DELAYED_WORK(rxrpc_transport_reap, rxrpc_transport_reaper);
 
 /*
@@ -189,7 +185,7 @@ void rxrpc_put_transport(struct rxrpc_transport *trans)
 
 	ASSERTCMP(atomic_read(&trans->usage), >, 0);
 
-	trans->put_time = ktime_get_seconds();
+	trans->put_time = get_seconds();
 	if (unlikely(atomic_dec_and_test(&trans->usage))) {
 		_debug("zombie");
 		/* let the reaper determine the timeout to avoid a race with
@@ -226,7 +222,7 @@ static void rxrpc_transport_reaper(struct work_struct *work)
 
 	_enter("");
 
-	now = ktime_get_seconds();
+	now = get_seconds();
 	earliest = ULONG_MAX;
 
 	/* extract all the transports that have been dead too long */
@@ -239,7 +235,7 @@ static void rxrpc_transport_reaper(struct work_struct *work)
 		if (likely(atomic_read(&trans->usage) > 0))
 			continue;
 
-		reap_time = trans->put_time + rxrpc_transport_expiry;
+		reap_time = trans->put_time + rxrpc_transport_timeout;
 		if (reap_time <= now)
 			list_move_tail(&trans->link, &graveyard);
 		else if (reap_time < earliest)
@@ -275,7 +271,7 @@ void __exit rxrpc_destroy_all_transports(void)
 {
 	_enter("");
 
-	rxrpc_transport_expiry = 0;
+	rxrpc_transport_timeout = 0;
 	cancel_delayed_work(&rxrpc_transport_reap);
 	rxrpc_queue_delayed_work(&rxrpc_transport_reap, 0);
 

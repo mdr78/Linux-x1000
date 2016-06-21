@@ -24,6 +24,7 @@
 #ifndef __REALTEK_RTSX_CARD_H
 #define __REALTEK_RTSX_CARD_H
 
+#include "debug.h"
 #include "rtsx.h"
 #include "rtsx_chip.h"
 #include "rtsx_transport.h"
@@ -1037,8 +1038,8 @@ static inline u32 get_card_size(struct rtsx_chip *chip, unsigned int lun)
 	if ((get_lun_card(chip, lun) == SD_CARD) &&
 		(sd_card->sd_lock_status & SD_LOCKED))
 		return 0;
-
-	return chip->capacity[lun];
+	else
+		return chip->capacity[lun];
 #else
 	return chip->capacity[lun];
 #endif
@@ -1061,13 +1062,7 @@ int card_power_off(struct rtsx_chip *chip, u8 card);
 
 static inline int card_power_off_all(struct rtsx_chip *chip)
 {
-	int retval;
-
-	retval = rtsx_write_register(chip, CARD_PWR_CTL, 0x0F, 0x0F);
-	if (retval) {
-		rtsx_trace(chip);
-		return retval;
-	}
+	RTSX_WRITE_REG(chip, CARD_PWR_CTL, 0x0F, 0x0F);
 
 	return STATUS_SUCCESS;
 }

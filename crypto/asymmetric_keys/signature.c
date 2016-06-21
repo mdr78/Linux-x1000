@@ -11,7 +11,6 @@
  * 2 of the Licence, or (at your option) any later version.
  */
 
-#define pr_fmt(fmt) "SIG: "fmt
 #include <keys/asymmetric-subtype.h>
 #include <linux/module.h>
 #include <linux/err.h>
@@ -37,7 +36,7 @@ int verify_signature(const struct key *key,
 		return -EINVAL;
 	subtype = asymmetric_key_subtype(key);
 	if (!subtype ||
-	    !key->payload.data[0])
+	    !key->payload.data)
 		return -EINVAL;
 	if (!subtype->verify_signature)
 		return -ENOTSUPP;

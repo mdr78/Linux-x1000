@@ -14,6 +14,7 @@
 #include <linux/i2c.h>
 #include <linux/spi/spi.h>
 #include <linux/irqreturn.h>
+#include <linux/iio/iio.h>
 #include <linux/iio/trigger.h>
 #include <linux/bitops.h>
 #include <linux/regulator/consumer.h>
@@ -27,10 +28,14 @@
 #define ST_SENSORS_FULLSCALE_AVL_MAX		10
 
 #define ST_SENSORS_NUMBER_ALL_CHANNELS		4
+#define ST_SENSORS_NUMBER_DATA_CHANNELS		3
 #define ST_SENSORS_ENABLE_ALL_AXIS		0x07
+#define ST_SENSORS_BYTE_FOR_CHANNEL		2
 #define ST_SENSORS_SCAN_X			0
 #define ST_SENSORS_SCAN_Y			1
 #define ST_SENSORS_SCAN_Z			2
+#define ST_SENSORS_DEFAULT_12_REALBITS		12
+#define ST_SENSORS_DEFAULT_16_REALBITS		16
 #define ST_SENSORS_DEFAULT_POWER_ON_VALUE	0x01
 #define ST_SENSORS_DEFAULT_POWER_OFF_VALUE	0x00
 #define ST_SENSORS_DEFAULT_WAI_ADDRESS		0x0f
@@ -47,7 +52,6 @@
 	.type = device_type, \
 	.modified = mod, \
 	.info_mask_separate = mask, \
-	.info_mask_shared_by_all = BIT(IIO_CHAN_INFO_SAMP_FREQ), \
 	.scan_index = index, \
 	.channel2 = ch2, \
 	.address = addr, \
@@ -59,6 +63,11 @@
 		.endianness = endian, \
 	}, \
 }
+
+#define ST_SENSOR_DEV_ATTR_SAMP_FREQ() \
+		IIO_DEV_ATTR_SAMP_FREQ(S_IWUSR | S_IRUGO, \
+			st_sensors_sysfs_get_sampling_frequency, \
+			st_sensors_sysfs_set_sampling_frequency)
 
 #define ST_SENSORS_DEV_ATTR_SAMP_FREQ_AVAIL() \
 		IIO_DEV_ATTR_SAMP_FREQ_AVAIL( \
@@ -164,9 +173,8 @@ struct st_sensor_transfer_function {
 };
 
 /**
- * struct st_sensor_settings - ST specific sensor settings
+ * struct st_sensors - ST sensors list
  * @wai: Contents of WhoAmI register.
- * @wai_addr: The address of WhoAmI register.
  * @sensors_supported: List of supported sensors by struct itself.
  * @ch: IIO channels for the sensor.
  * @odr: Output data rate register and ODR list available.
@@ -178,9 +186,8 @@ struct st_sensor_transfer_function {
  * @multi_read_bit: Use or not particular bit for [I2C/SPI] multi-read.
  * @bootime: samples to discard when sensor passing from power-down to power-up.
  */
-struct st_sensor_settings {
+struct st_sensors {
 	u8 wai;
-	u8 wai_addr;
 	char sensors_supported[ST_SENSORS_MAX_4WAI][ST_SENSORS_MAX_NAME];
 	struct iio_chan_spec *ch;
 	int num_ch;
@@ -198,7 +205,7 @@ struct st_sensor_settings {
  * struct st_sensor_data - ST sensor device status
  * @dev: Pointer to instance of struct device (I2C or SPI).
  * @trig: The trigger in use by the core driver.
- * @sensor_settings: Pointer to the specific sensor settings in use.
+ * @sensor: Pointer to the current sensor struct in use.
  * @current_fullscale: Maximum range of measure by the sensor.
  * @vdd: Pointer to sensor's Vdd power supply
  * @vdd_io: Pointer to sensor's Vdd-IO power supply
@@ -215,7 +222,7 @@ struct st_sensor_settings {
 struct st_sensor_data {
 	struct device *dev;
 	struct iio_trigger *trig;
-	struct st_sensor_settings *sensor_settings;
+	struct st_sensors *sensor;
 	struct st_sensor_fullscale_avl *current_fullscale;
 	struct regulator *vdd;
 	struct regulator *vdd_io;
@@ -263,17 +270,12 @@ static inline void st_sensors_deallocate_trigger(struct iio_dev *indio_dev)
 int st_sensors_init_sensor(struct iio_dev *indio_dev,
 					struct st_sensors_platform_data *pdata);
 
+int st_sensors_write_data_with_mask(struct iio_dev *indio_dev,
+				u8 reg_addr, u8 mask, u8 data);
+
 int st_sensors_set_enable(struct iio_dev *indio_dev, bool enable);
 
 int st_sensors_set_axis_enable(struct iio_dev *indio_dev, u8 axis_enable);
-
-void st_sensors_power_enable(struct iio_dev *indio_dev);
-
-void st_sensors_power_disable(struct iio_dev *indio_dev);
-
-int st_sensors_debugfs_reg_access(struct iio_dev *indio_dev,
-				  unsigned reg, unsigned writeval,
-				  unsigned *readval);
 
 int st_sensors_set_odr(struct iio_dev *indio_dev, unsigned int odr);
 
@@ -281,11 +283,20 @@ int st_sensors_set_dataready_irq(struct iio_dev *indio_dev, bool enable);
 
 int st_sensors_set_fullscale_by_gain(struct iio_dev *indio_dev, int scale);
 
+int st_sensors_read_axis_data(struct iio_dev *indio_dev,
+				struct iio_chan_spec const *ch, int *data);
+
 int st_sensors_read_info_raw(struct iio_dev *indio_dev,
 				struct iio_chan_spec const *ch, int *val);
 
 int st_sensors_check_device_support(struct iio_dev *indio_dev,
-	int num_sensors_list, const struct st_sensor_settings *sensor_settings);
+			int num_sensors_list, const struct st_sensors *sensors);
+
+ssize_t st_sensors_sysfs_get_sampling_frequency(struct device *dev,
+				struct device_attribute *attr, char *buf);
+
+ssize_t st_sensors_sysfs_set_sampling_frequency(struct device *dev,
+		struct device_attribute *attr, const char *buf, size_t size);
 
 ssize_t st_sensors_sysfs_sampling_frequency_avail(struct device *dev,
 				struct device_attribute *attr, char *buf);

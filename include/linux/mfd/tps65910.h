@@ -892,7 +892,7 @@ struct tps65910 {
 	struct device *dev;
 	struct i2c_client *i2c_client;
 	struct regmap *regmap;
-	unsigned long id;
+	unsigned int id;
 
 	/* Client devices */
 	struct tps65910_pmic *pmic;

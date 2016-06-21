@@ -1096,7 +1096,7 @@ static int __init moxa_init(void)
 				continue;
 			}
 
-			printk(KERN_INFO "MOXA isa board found at 0x%.8lx and "
+			printk(KERN_INFO "MOXA isa board found at 0x%.8lu and "
 					"ready (%u ports, firmware loaded)\n",
 					baseaddr[i], brd->numPorts);
 

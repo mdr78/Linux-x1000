@@ -18,77 +18,35 @@
 
 #ifdef CONFIG_PM_SLEEP
 
-static int do_scsi_suspend(struct device *dev, const struct dev_pm_ops *pm)
+static int scsi_dev_type_suspend(struct device *dev, int (*cb)(struct device *))
 {
-	return pm && pm->suspend ? pm->suspend(dev) : 0;
-}
-
-static int do_scsi_freeze(struct device *dev, const struct dev_pm_ops *pm)
-{
-	return pm && pm->freeze ? pm->freeze(dev) : 0;
-}
-
-static int do_scsi_poweroff(struct device *dev, const struct dev_pm_ops *pm)
-{
-	return pm && pm->poweroff ? pm->poweroff(dev) : 0;
-}
-
-static int do_scsi_resume(struct device *dev, const struct dev_pm_ops *pm)
-{
-	return pm && pm->resume ? pm->resume(dev) : 0;
-}
-
-static int do_scsi_thaw(struct device *dev, const struct dev_pm_ops *pm)
-{
-	return pm && pm->thaw ? pm->thaw(dev) : 0;
-}
-
-static int do_scsi_restore(struct device *dev, const struct dev_pm_ops *pm)
-{
-	return pm && pm->restore ? pm->restore(dev) : 0;
-}
-
-static int scsi_dev_type_suspend(struct device *dev,
-		int (*cb)(struct device *, const struct dev_pm_ops *))
-{
-	const struct dev_pm_ops *pm = dev->driver ? dev->driver->pm : NULL;
 	int err;
-
-	/* flush pending in-flight resume operations, suspend is synchronous */
-	async_synchronize_full_domain(&scsi_sd_pm_domain);
 
 	err = scsi_device_quiesce(to_scsi_device(dev));
 	if (err == 0) {
-		err = cb(dev, pm);
-		if (err)
-			scsi_device_resume(to_scsi_device(dev));
+		if (cb) {
+			err = cb(dev);
+			if (err)
+				scsi_device_resume(to_scsi_device(dev));
+		}
 	}
 	dev_dbg(dev, "scsi suspend: %d\n", err);
 	return err;
 }
 
-static int scsi_dev_type_resume(struct device *dev,
-		int (*cb)(struct device *, const struct dev_pm_ops *))
+static int scsi_dev_type_resume(struct device *dev, int (*cb)(struct device *))
 {
-	const struct dev_pm_ops *pm = dev->driver ? dev->driver->pm : NULL;
 	int err = 0;
 
-	err = cb(dev, pm);
+	if (cb)
+		err = cb(dev);
 	scsi_device_resume(to_scsi_device(dev));
 	dev_dbg(dev, "scsi resume: %d\n", err);
-
-	if (err == 0) {
-		pm_runtime_disable(dev);
-		pm_runtime_set_active(dev);
-		pm_runtime_enable(dev);
-	}
-
 	return err;
 }
 
 static int
-scsi_bus_suspend_common(struct device *dev,
-		int (*cb)(struct device *, const struct dev_pm_ops *))
+scsi_bus_suspend_common(struct device *dev, int (*cb)(struct device *))
 {
 	int err = 0;
 
@@ -108,54 +66,20 @@ scsi_bus_suspend_common(struct device *dev,
 	return err;
 }
 
-static void async_sdev_resume(void *dev, async_cookie_t cookie)
+static int
+scsi_bus_resume_common(struct device *dev, int (*cb)(struct device *))
 {
-	scsi_dev_type_resume(dev, do_scsi_resume);
-}
+	int err = 0;
 
-static void async_sdev_thaw(void *dev, async_cookie_t cookie)
-{
-	scsi_dev_type_resume(dev, do_scsi_thaw);
-}
+	if (scsi_is_sdev_device(dev))
+		err = scsi_dev_type_resume(dev, cb);
 
-static void async_sdev_restore(void *dev, async_cookie_t cookie)
-{
-	scsi_dev_type_resume(dev, do_scsi_restore);
-}
-
-static int scsi_bus_resume_common(struct device *dev,
-		int (*cb)(struct device *, const struct dev_pm_ops *))
-{
-	async_func_t fn;
-
-	if (!scsi_is_sdev_device(dev))
-		fn = NULL;
-	else if (cb == do_scsi_resume)
-		fn = async_sdev_resume;
-	else if (cb == do_scsi_thaw)
-		fn = async_sdev_thaw;
-	else if (cb == do_scsi_restore)
-		fn = async_sdev_restore;
-	else
-		fn = NULL;
-
-	if (fn) {
-		async_schedule_domain(fn, dev, &scsi_sd_pm_domain);
-
-		/*
-		 * If a user has disabled async probing a likely reason
-		 * is due to a storage enclosure that does not inject
-		 * staggered spin-ups.  For safety, make resume
-		 * synchronous as well in that case.
-		 */
-		if (strncmp(scsi_scan_type, "async", 5) != 0)
-			async_synchronize_full_domain(&scsi_sd_pm_domain);
-	} else {
+	if (err == 0) {
 		pm_runtime_disable(dev);
 		pm_runtime_set_active(dev);
 		pm_runtime_enable(dev);
 	}
-	return 0;
+	return err;
 }
 
 static int scsi_bus_prepare(struct device *dev)
@@ -173,32 +97,38 @@ static int scsi_bus_prepare(struct device *dev)
 
 static int scsi_bus_suspend(struct device *dev)
 {
-	return scsi_bus_suspend_common(dev, do_scsi_suspend);
+	const struct dev_pm_ops *pm = dev->driver ? dev->driver->pm : NULL;
+	return scsi_bus_suspend_common(dev, pm ? pm->suspend : NULL);
 }
 
 static int scsi_bus_resume(struct device *dev)
 {
-	return scsi_bus_resume_common(dev, do_scsi_resume);
+	const struct dev_pm_ops *pm = dev->driver ? dev->driver->pm : NULL;
+	return scsi_bus_resume_common(dev, pm ? pm->resume : NULL);
 }
 
 static int scsi_bus_freeze(struct device *dev)
 {
-	return scsi_bus_suspend_common(dev, do_scsi_freeze);
+	const struct dev_pm_ops *pm = dev->driver ? dev->driver->pm : NULL;
+	return scsi_bus_suspend_common(dev, pm ? pm->freeze : NULL);
 }
 
 static int scsi_bus_thaw(struct device *dev)
 {
-	return scsi_bus_resume_common(dev, do_scsi_thaw);
+	const struct dev_pm_ops *pm = dev->driver ? dev->driver->pm : NULL;
+	return scsi_bus_resume_common(dev, pm ? pm->thaw : NULL);
 }
 
 static int scsi_bus_poweroff(struct device *dev)
 {
-	return scsi_bus_suspend_common(dev, do_scsi_poweroff);
+	const struct dev_pm_ops *pm = dev->driver ? dev->driver->pm : NULL;
+	return scsi_bus_suspend_common(dev, pm ? pm->poweroff : NULL);
 }
 
 static int scsi_bus_restore(struct device *dev)
 {
-	return scsi_bus_resume_common(dev, do_scsi_restore);
+	const struct dev_pm_ops *pm = dev->driver ? dev->driver->pm : NULL;
+	return scsi_bus_resume_common(dev, pm ? pm->restore : NULL);
 }
 
 #else /* CONFIG_PM_SLEEP */
@@ -213,11 +143,13 @@ static int scsi_bus_restore(struct device *dev)
 
 #endif /* CONFIG_PM_SLEEP */
 
+#ifdef CONFIG_PM_RUNTIME
+
 static int sdev_runtime_suspend(struct device *dev)
 {
 	const struct dev_pm_ops *pm = dev->driver ? dev->driver->pm : NULL;
 	struct scsi_device *sdev = to_scsi_device(dev);
-	int err = 0;
+	int err;
 
 	err = blk_pre_runtime_suspend(sdev->request_queue);
 	if (err)
@@ -329,6 +261,14 @@ void scsi_autopm_put_host(struct Scsi_Host *shost)
 {
 	pm_runtime_put_sync(&shost->shost_gendev);
 }
+
+#else
+
+#define scsi_runtime_suspend	NULL
+#define scsi_runtime_resume	NULL
+#define scsi_runtime_idle	NULL
+
+#endif /* CONFIG_PM_RUNTIME */
 
 const struct dev_pm_ops scsi_bus_pm_ops = {
 	.prepare =		scsi_bus_prepare,

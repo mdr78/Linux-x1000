@@ -12,6 +12,7 @@
  */
 
 #include <linux/module.h>
+#include <linux/init.h>
 #include <linux/leds.h>
 #include <linux/mfd/core.h>
 #include <linux/mutex.h>
@@ -645,11 +646,6 @@ static struct attribute_group lm3533_led_attribute_group = {
 	.attrs		= lm3533_led_attributes
 };
 
-static const struct attribute_group *lm3533_led_attribute_groups[] = {
-	&lm3533_led_attribute_group,
-	NULL
-};
-
 static int lm3533_led_setup(struct lm3533_led *led,
 					struct lm3533_led_platform_data *pdata)
 {
@@ -697,7 +693,6 @@ static int lm3533_led_probe(struct platform_device *pdev)
 	led->cdev.brightness_get = lm3533_led_get;
 	led->cdev.blink_set = lm3533_led_blink_set;
 	led->cdev.brightness = LED_OFF;
-	led->cdev.groups = lm3533_led_attribute_groups,
 	led->id = pdev->id;
 
 	mutex_init(&led->mutex);
@@ -721,16 +716,25 @@ static int lm3533_led_probe(struct platform_device *pdev)
 
 	led->cb.dev = led->cdev.dev;
 
+	ret = sysfs_create_group(&led->cdev.dev->kobj,
+						&lm3533_led_attribute_group);
+	if (ret < 0) {
+		dev_err(&pdev->dev, "failed to create sysfs attributes\n");
+		goto err_unregister;
+	}
+
 	ret = lm3533_led_setup(led, pdata);
 	if (ret)
-		goto err_unregister;
+		goto err_sysfs_remove;
 
 	ret = lm3533_ctrlbank_enable(&led->cb);
 	if (ret)
-		goto err_unregister;
+		goto err_sysfs_remove;
 
 	return 0;
 
+err_sysfs_remove:
+	sysfs_remove_group(&led->cdev.dev->kobj, &lm3533_led_attribute_group);
 err_unregister:
 	led_classdev_unregister(&led->cdev);
 	flush_work(&led->work);
@@ -745,6 +749,7 @@ static int lm3533_led_remove(struct platform_device *pdev)
 	dev_dbg(&pdev->dev, "%s\n", __func__);
 
 	lm3533_ctrlbank_disable(&led->cb);
+	sysfs_remove_group(&led->cdev.dev->kobj, &lm3533_led_attribute_group);
 	led_classdev_unregister(&led->cdev);
 	flush_work(&led->work);
 
@@ -766,6 +771,7 @@ static void lm3533_led_shutdown(struct platform_device *pdev)
 static struct platform_driver lm3533_led_driver = {
 	.driver = {
 		.name = "lm3533-leds",
+		.owner = THIS_MODULE,
 	},
 	.probe		= lm3533_led_probe,
 	.remove		= lm3533_led_remove,

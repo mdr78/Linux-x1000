@@ -12,12 +12,11 @@
 
 #include <linux/linkage.h>
 #include <asm/assembler.h>
-#include <asm/unwind.h>
 
 /*
  * Prototype:
  *
- *	size_t arm_copy_from_user(void *to, const void *from, size_t n)
+ *	size_t __copy_from_user(void *to, const void *from, size_t n)
  *
  * Purpose:
  *
@@ -78,10 +77,6 @@
 	stmdb	sp!, {r0, r2, r3, \reg1, \reg2}
 	.endm
 
-	.macro usave reg1 reg2
-	UNWIND(	.save {r0, r2, r3, \reg1, \reg2}	)
-	.endm
-
 	.macro exit reg1 reg2
 	add	sp, sp, #8
 	ldmfd	sp!, {r0, \reg1, \reg2}
@@ -89,11 +84,11 @@
 
 	.text
 
-ENTRY(arm_copy_from_user)
+ENTRY(__copy_from_user)
 
 #include "copy_template.S"
 
-ENDPROC(arm_copy_from_user)
+ENDPROC(__copy_from_user)
 
 	.pushsection .fixup,"ax"
 	.align 0

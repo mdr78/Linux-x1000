@@ -1,7 +1,7 @@
 /*
  *   Fujitu mb86a20s ISDB-T/ISDB-Tsb Module driver
  *
- *   Copyright (C) 2010-2013 Mauro Carvalho Chehab
+ *   Copyright (C) 2010-2013 Mauro Carvalho Chehab <mchehab@redhat.com>
  *   Copyright (C) 2009-2010 Douglas Landgraf <dougsland@redhat.com>
  *
  *   This program is free software; you can redistribute it and/or
@@ -22,6 +22,10 @@
 
 #define NUM_LAYERS 3
 
+static int debug = 1;
+module_param(debug, int, 0644);
+MODULE_PARM_DESC(debug, "Activates frontend debugging (default:0)");
+
 enum mb86a20s_bandwidth {
 	MB86A20S_13SEG = 0,
 	MB86A20S_13SEG_PARTIAL = 1,
@@ -29,7 +33,7 @@ enum mb86a20s_bandwidth {
 	MB86A20S_3SEG = 3,
 };
 
-static u8 mb86a20s_subchannel[] = {
+u8 mb86a20s_subchannel[] = {
 	0xb0, 0xc0, 0xd0, 0xe0,
 	0xf0, 0x00, 0x10, 0x20,
 };
@@ -294,7 +298,7 @@ static int mb86a20s_i2c_readreg(struct mb86a20s_state *state,
  * The functions below assume that gateway lock has already obtained
  */
 
-static int mb86a20s_read_status(struct dvb_frontend *fe, enum fe_status *status)
+static int mb86a20s_read_status(struct dvb_frontend *fe, fe_status_t *status)
 {
 	struct mb86a20s_state *state = fe->demodulator_priv;
 	int val;
@@ -455,9 +459,6 @@ static int mb86a20s_get_interleaving(struct mb86a20s_state *state,
 				     unsigned layer)
 {
 	int rc;
-	int interleaving[] = {
-		0, 1, 2, 4, 8
-	};
 
 	static unsigned char reg[] = {
 		[0] = 0x88,	/* Layer A */
@@ -474,7 +475,20 @@ static int mb86a20s_get_interleaving(struct mb86a20s_state *state,
 	if (rc < 0)
 		return rc;
 
-	return interleaving[(rc >> 4) & 0x07];
+	switch ((rc >> 4) & 0x07) {
+	case 1:
+		return GUARD_INTERVAL_1_4;
+	case 2:
+		return GUARD_INTERVAL_1_8;
+	case 3:
+		return GUARD_INTERVAL_1_16;
+	case 4:
+		return GUARD_INTERVAL_1_32;
+
+	default:
+	case 0:
+		return GUARD_INTERVAL_AUTO;
+	}
 }
 
 static int mb86a20s_get_segment_count(struct mb86a20s_state *state,
@@ -552,7 +566,7 @@ static u32 isdbt_rate[3][5][4] = {
 
 static void mb86a20s_layer_bitrate(struct dvb_frontend *fe, u32 layer,
 				   u32 modulation, u32 forward_error_correction,
-				   u32 guard_interval,
+				   u32 interleaving,
 				   u32 segment)
 {
 	struct mb86a20s_state *state = fe->demodulator_priv;
@@ -560,7 +574,7 @@ static void mb86a20s_layer_bitrate(struct dvb_frontend *fe, u32 layer,
 	int mod, fec, guard;
 
 	/*
-	 * If modulation/fec/guard is not detected, the default is
+	 * If modulation/fec/interleaving is not detected, the default is
 	 * to consider the lowest bit rate, to avoid taking too long time
 	 * to get BER.
 	 */
@@ -598,7 +612,7 @@ static void mb86a20s_layer_bitrate(struct dvb_frontend *fe, u32 layer,
 		break;
 	}
 
-	switch (guard_interval) {
+	switch (interleaving) {
 	default:
 	case GUARD_INTERVAL_1_4:
 		guard = 0;
@@ -689,7 +703,7 @@ static int mb86a20s_get_frontend(struct dvb_frontend *fe)
 		c->layer[layer].interleaving = rc;
 		mb86a20s_layer_bitrate(fe, layer, c->layer[layer].modulation,
 				       c->layer[layer].fec,
-				       c->guard_interval,
+				       c->layer[layer].interleaving,
 				       c->layer[layer].segment_count);
 	}
 
@@ -707,10 +721,11 @@ static int mb86a20s_get_frontend(struct dvb_frontend *fe)
 	rc = mb86a20s_readreg(state, 0x07);
 	if (rc < 0)
 		return rc;
-	c->transmission_mode = TRANSMISSION_MODE_AUTO;
 	if ((rc & 0x60) == 0x20) {
-		/* Only modes 2 and 3 are supported */
-		switch ((rc >> 2) & 0x03) {
+		switch (rc & 0x0c >> 2) {
+		case 0:
+			c->transmission_mode = TRANSMISSION_MODE_2K;
+			break;
 		case 1:
 			c->transmission_mode = TRANSMISSION_MODE_4K;
 			break;
@@ -719,9 +734,7 @@ static int mb86a20s_get_frontend(struct dvb_frontend *fe)
 			break;
 		}
 	}
-	c->guard_interval = GUARD_INTERVAL_AUTO;
 	if (!(rc & 0x10)) {
-		/* Guard interval 1/32 is not supported */
 		switch (rc & 0x3) {
 		case 0:
 			c->guard_interval = GUARD_INTERVAL_1_4;
@@ -1224,7 +1237,7 @@ struct linear_segments {
  * All tables below return a dB/1000 measurement
  */
 
-static const struct linear_segments cnr_to_db_table[] = {
+static struct linear_segments cnr_to_db_table[] = {
 	{ 19648,     0},
 	{ 18187,  1000},
 	{ 16534,  2000},
@@ -1258,7 +1271,7 @@ static const struct linear_segments cnr_to_db_table[] = {
 	{   788, 30000},
 };
 
-static const struct linear_segments cnr_64qam_table[] = {
+static struct linear_segments cnr_64qam_table[] = {
 	{ 3922688,     0},
 	{ 3920384,  1000},
 	{ 3902720,  2000},
@@ -1292,7 +1305,7 @@ static const struct linear_segments cnr_64qam_table[] = {
 	{  388864, 30000},
 };
 
-static const struct linear_segments cnr_16qam_table[] = {
+static struct linear_segments cnr_16qam_table[] = {
 	{ 5314816,     0},
 	{ 5219072,  1000},
 	{ 5118720,  2000},
@@ -1326,7 +1339,7 @@ static const struct linear_segments cnr_16qam_table[] = {
 	{   95744, 30000},
 };
 
-static const struct linear_segments cnr_qpsk_table[] = {
+struct linear_segments cnr_qpsk_table[] = {
 	{ 2834176,     0},
 	{ 2683648,  1000},
 	{ 2536960,  2000},
@@ -1360,7 +1373,7 @@ static const struct linear_segments cnr_qpsk_table[] = {
 	{   11520, 30000},
 };
 
-static u32 interpolate_value(u32 value, const struct linear_segments *segments,
+static u32 interpolate_value(u32 value, struct linear_segments *segments,
 			     unsigned len)
 {
 	u64 tmp64;
@@ -1444,7 +1457,7 @@ static int mb86a20s_get_blk_error_layer_CNR(struct dvb_frontend *fe)
 	struct dtv_frontend_properties *c = &fe->dtv_property_cache;
 	u32 mer, cnr;
 	int rc, val, layer;
-	const struct linear_segments *segs;
+	struct linear_segments *segs;
 	unsigned segs_len;
 
 	dev_dbg(&state->i2c->dev, "%s called.\n", __func__);
@@ -1951,7 +1964,7 @@ static int mb86a20s_set_frontend(struct dvb_frontend *fe)
 }
 
 static int mb86a20s_read_status_and_stats(struct dvb_frontend *fe,
-					  enum fe_status *status)
+					  fe_status_t *status)
 {
 	struct mb86a20s_state *state = fe->demodulator_priv;
 	int rc, status_nr;
@@ -2042,7 +2055,7 @@ static int mb86a20s_tune(struct dvb_frontend *fe,
 			bool re_tune,
 			unsigned int mode_flags,
 			unsigned int *delay,
-			enum fe_status *status)
+			fe_status_t *status)
 {
 	struct mb86a20s_state *state = fe->demodulator_priv;
 	int rc = 0;
@@ -2143,5 +2156,5 @@ static struct dvb_frontend_ops mb86a20s_ops = {
 };
 
 MODULE_DESCRIPTION("DVB Frontend module for Fujitsu mb86A20s hardware");
-MODULE_AUTHOR("Mauro Carvalho Chehab");
+MODULE_AUTHOR("Mauro Carvalho Chehab <mchehab@redhat.com>");
 MODULE_LICENSE("GPL");

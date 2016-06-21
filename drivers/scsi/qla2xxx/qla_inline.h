@@ -1,11 +1,10 @@
 /*
  * QLogic Fibre Channel HBA Driver
- * Copyright (c)  2003-2014 QLogic Corporation
+ * Copyright (c)  2003-2013 QLogic Corporation
  *
  * See LICENSE.qla2xxx for copyright and licensing details.
  */
 
-#include "qla_target.h"
 /**
  * qla24xx_calc_iocbs() - Determine number of Command Type 3 and
  * Continuation Type 1 IOCBs to allocate.
@@ -129,20 +128,12 @@ qla2x00_clear_loop_id(fc_port_t *fcport) {
 }
 
 static inline void
-qla2x00_clean_dsd_pool(struct qla_hw_data *ha, srb_t *sp,
-	struct qla_tgt_cmd *tc)
+qla2x00_clean_dsd_pool(struct qla_hw_data *ha, srb_t *sp)
 {
 	struct dsd_dma *dsd_ptr, *tdsd_ptr;
 	struct crc_context *ctx;
 
-	if (sp)
-		ctx = (struct crc_context *)GET_CMD_CTX_SP(sp);
-	else if (tc)
-		ctx = (struct crc_context *)tc->ctx;
-	else {
-		BUG();
-		return;
-	}
+	ctx = (struct crc_context *)GET_CMD_CTX_SP(sp);
 
 	/* clean up allocated prev pool */
 	list_for_each_entry_safe(dsd_ptr, tdsd_ptr,
@@ -278,12 +269,4 @@ qla2x00_handle_mbx_completion(struct qla_hw_data *ha, int status)
 		clear_bit(MBX_INTR_WAIT, &ha->mbx_cmd_flags);
 		complete(&ha->mbx_intr_comp);
 	}
-}
-
-static inline void
-qla2x00_set_retry_delay_timestamp(fc_port_t *fcport, uint16_t retry_delay)
-{
-	if (retry_delay)
-		fcport->retry_delay_timestamp = jiffies +
-		    (retry_delay * HZ / 10);
 }

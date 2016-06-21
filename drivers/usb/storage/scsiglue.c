@@ -241,7 +241,7 @@ static int slave_configure(struct scsi_device *sdev)
 
 		/* Some USB cardreaders have trouble reading an sdcard's last
 		 * sector in a larger then 1 sector read, since the performance
-		 * impact is negligible we set this flag for all USB disks */
+		 * impact is negible we set this flag for all USB disks */
 		sdev->last_sector_bug = 1;
 
 		/* Enable last-sector hacks for single-target devices using
@@ -255,10 +255,6 @@ static int slave_configure(struct scsi_device *sdev)
 		/* Check if write cache default on flag is set or not */
 		if (us->fflags & US_FL_WRITE_CACHE)
 			sdev->wce_default_on = 1;
-
-		/* A few buggy USB-ATA bridges don't understand FUA */
-		if (us->fflags & US_FL_BROKEN_FUA)
-			sdev->broken_fua = 1;
 
 	} else {
 
@@ -456,13 +452,17 @@ static int write_info(struct Scsi_Host *host, char *buffer, int length)
 	return length;
 }
 
+/* we use this macro to help us write into the buffer */
+#undef SPRINTF
+#define SPRINTF(args...) seq_printf(m, ## args)
+
 static int show_info (struct seq_file *m, struct Scsi_Host *host)
 {
 	struct us_data *us = host_to_us(host);
 	const char *string;
 
 	/* print the controller name */
-	seq_printf(m, "   Host scsi%d: usb-storage\n", host->host_no);
+	SPRINTF("   Host scsi%d: usb-storage\n", host->host_no);
 
 	/* print product, vendor, and serial number strings */
 	if (us->pusb_dev->manufacturer)
@@ -471,26 +471,26 @@ static int show_info (struct seq_file *m, struct Scsi_Host *host)
 		string = us->unusual_dev->vendorName;
 	else
 		string = "Unknown";
-	seq_printf(m, "       Vendor: %s\n", string);
+	SPRINTF("       Vendor: %s\n", string);
 	if (us->pusb_dev->product)
 		string = us->pusb_dev->product;
 	else if (us->unusual_dev->productName)
 		string = us->unusual_dev->productName;
 	else
 		string = "Unknown";
-	seq_printf(m, "      Product: %s\n", string);
+	SPRINTF("      Product: %s\n", string);
 	if (us->pusb_dev->serial)
 		string = us->pusb_dev->serial;
 	else
 		string = "None";
-	seq_printf(m, "Serial Number: %s\n", string);
+	SPRINTF("Serial Number: %s\n", string);
 
 	/* show the protocol and transport */
-	seq_printf(m, "     Protocol: %s\n", us->protocol_name);
-	seq_printf(m, "    Transport: %s\n", us->transport_name);
+	SPRINTF("     Protocol: %s\n", us->protocol_name);
+	SPRINTF("    Transport: %s\n", us->transport_name);
 
 	/* show the device flags */
-	seq_printf(m, "       Quirks:");
+	SPRINTF("       Quirks:");
 
 #define US_FLAG(name, value) \
 	if (us->fflags & value) seq_printf(m, " " #name);
@@ -536,7 +536,7 @@ static struct device_attribute *sysfs_device_attr_list[] = {
  * this defines our host template, with which we'll allocate hosts
  */
 
-static const struct scsi_host_template usb_stor_host_template = {
+struct scsi_host_template usb_stor_host_template = {
 	/* basic userland interface stuff */
 	.name =				"usb-storage",
 	.proc_name =			"usb-storage",
@@ -554,6 +554,7 @@ static const struct scsi_host_template usb_stor_host_template = {
 
 	/* queue commands only, only one command per LUN */
 	.can_queue =			1,
+	.cmd_per_lun =			1,
 
 	/* unknown initiator id */
 	.this_id =			-1,
@@ -586,16 +587,6 @@ static const struct scsi_host_template usb_stor_host_template = {
 	/* module management */
 	.module =			THIS_MODULE
 };
-
-void usb_stor_host_template_init(struct scsi_host_template *sht,
-				 const char *name, struct module *owner)
-{
-	*sht = usb_stor_host_template;
-	sht->name = name;
-	sht->proc_name = name;
-	sht->module = owner;
-}
-EXPORT_SYMBOL_GPL(usb_stor_host_template_init);
 
 /* To Report "Illegal Request: Invalid Field in CDB */
 unsigned char usb_stor_sense_invalidCDB[18] = {

@@ -26,7 +26,6 @@
 #include <asm/machdep.h>
 #include <asm/mmu_context.h>
 #include <asm/hw_irq.h>
-#include "book3s.h"
 
 /* #define DEBUG_MMU */
 /* #define DEBUG_SR */
@@ -93,7 +92,7 @@ static struct kvmppc_sid_map *find_sid_vsid(struct kvm_vcpu *vcpu, u64 gvsid)
 	struct kvmppc_sid_map *map;
 	u16 sid_map_mask;
 
-	if (kvmppc_get_msr(vcpu) & MSR_PR)
+	if (vcpu->arch.shared->msr & MSR_PR)
 		gvsid |= VSID_PR;
 
 	sid_map_mask = kvmppc_sid_hash(vcpu, gvsid);
@@ -157,10 +156,11 @@ int kvmppc_mmu_map_page(struct kvm_vcpu *vcpu, struct kvmppc_pte *orig_pte,
 	bool writable;
 
 	/* Get host physical address for gpa */
-	hpaddr = kvmppc_gpa_to_pfn(vcpu, orig_pte->raddr, iswrite, &writable);
+	hpaddr = kvmppc_gfn_to_pfn(vcpu, orig_pte->raddr >> PAGE_SHIFT,
+				   iswrite, &writable);
 	if (is_error_noslot_pfn(hpaddr)) {
-		printk(KERN_INFO "Couldn't get guest page for gpa %lx!\n",
-				 orig_pte->raddr);
+		printk(KERN_INFO "Couldn't get guest page for gfn %lx!\n",
+				 orig_pte->eaddr);
 		r = -EINVAL;
 		goto out;
 	}
@@ -279,7 +279,7 @@ static struct kvmppc_sid_map *create_sid_map(struct kvm_vcpu *vcpu, u64 gvsid)
 	u16 sid_map_mask;
 	static int backwards_map = 0;
 
-	if (kvmppc_get_msr(vcpu) & MSR_PR)
+	if (vcpu->arch.shared->msr & MSR_PR)
 		gvsid |= VSID_PR;
 
 	/* We might get collisions that trap in preceding order, so let's

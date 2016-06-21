@@ -18,7 +18,6 @@
  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 
-#include <linux/clockchips.h>
 #include <linux/export.h>
 #include <linux/kernel.h>
 #include <linux/interrupt.h>
@@ -34,14 +33,13 @@
 #include <linux/irq.h>
 #include <linux/delay.h>
 #include <linux/clocksource.h>
-#include <linux/clk-provider.h>
-#include <linux/acpi.h>
 
 #include <clocksource/arm_arch_timer.h>
 
 #include <asm/thread_info.h>
 #include <asm/stacktrace.h>
 
+#ifdef CONFIG_SMP
 unsigned long profile_pc(struct pt_regs *regs)
 {
 	struct stackframe frame;
@@ -61,15 +59,13 @@ unsigned long profile_pc(struct pt_regs *regs)
 	return frame.pc;
 }
 EXPORT_SYMBOL(profile_pc);
+#endif
 
 void __init time_init(void)
 {
 	u32 arch_timer_rate;
 
-	of_clk_init(NULL);
-	clocksource_probe();
-
-	tick_setup_hrtimer_broadcast();
+	clocksource_of_init();
 
 	arch_timer_rate = arch_timer_get_rate();
 	if (!arch_timer_rate)

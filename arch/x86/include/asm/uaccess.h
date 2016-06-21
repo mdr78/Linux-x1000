@@ -51,13 +51,13 @@ static inline bool __chk_range_not_ok(unsigned long addr, unsigned long size, un
 	 * limit, not add it to the address).
 	 */
 	if (__builtin_constant_p(size))
-		return unlikely(addr > limit - size);
+		return addr > limit - size;
 
 	/* Arbitrary sizes? Be careful about overflow */
 	addr += size;
-	if (unlikely(addr < size))
+	if (addr < size)
 		return true;
-	return unlikely(addr > limit);
+	return addr > limit;
 }
 
 #define __range_not_ok(addr, size, limit)				\
@@ -74,8 +74,7 @@ static inline bool __chk_range_not_ok(unsigned long addr, unsigned long size, un
  * @addr: User space pointer to start of block to check
  * @size: Size of block to check
  *
- * Context: User context only. This function may sleep if pagefaults are
- *          enabled.
+ * Context: User context only.  This function may sleep.
  *
  * Checks if a pointer to a block of memory in user space is valid.
  *
@@ -146,8 +145,7 @@ __typeof__(__builtin_choose_expr(sizeof(x) > sizeof(0UL), 0ULL, 0UL))
  * @x:   Variable to store result.
  * @ptr: Source address, in user space.
  *
- * Context: User context only. This function may sleep if pagefaults are
- *          enabled.
+ * Context: User context only.  This function may sleep.
  *
  * This macro copies a single simple variable from user space to kernel
  * space.  It supports simple types like char and int, but not larger
@@ -181,8 +179,8 @@ __typeof__(__builtin_choose_expr(sizeof(x) > sizeof(0UL), 0ULL, 0UL))
 	asm volatile("call __get_user_%P3"				\
 		     : "=a" (__ret_gu), "=r" (__val_gu)			\
 		     : "0" (ptr), "i" (sizeof(*(ptr))));		\
-	(x) = (__force __typeof__(*(ptr))) __val_gu;			\
-	__builtin_expect(__ret_gu, 0);					\
+	(x) = (__typeof__(*(ptr))) __val_gu;				\
+	__ret_gu;							\
 })
 
 #define __put_user_x(size, x, ptr, __ret_pu)			\
@@ -242,8 +240,7 @@ extern void __put_user_8(void);
  * @x:   Value to copy to user space.
  * @ptr: Destination address, in user space.
  *
- * Context: User context only. This function may sleep if pagefaults are
- *          enabled.
+ * Context: User context only.  This function may sleep.
  *
  * This macro copies a single simple value from kernel space to user
  * space.  It supports simple types like char and int, but not larger
@@ -278,7 +275,7 @@ extern void __put_user_8(void);
 		__put_user_x(X, __pu_val, ptr, __ret_pu);	\
 		break;						\
 	}							\
-	__builtin_expect(__ret_pu, 0);				\
+	__ret_pu;						\
 })
 
 #define __put_user_size(x, ptr, size, retval, errret)			\
@@ -401,7 +398,7 @@ do {									\
 ({								\
 	int __pu_err;						\
 	__put_user_size((x), (ptr), (size), __pu_err, -EFAULT);	\
-	__builtin_expect(__pu_err, 0);				\
+	__pu_err;						\
 })
 
 #define __get_user_nocheck(x, ptr, size)				\
@@ -410,7 +407,7 @@ do {									\
 	unsigned long __gu_val;						\
 	__get_user_size(__gu_val, (ptr), (size), __gu_err, -EFAULT);	\
 	(x) = (__force __typeof__(*(ptr)))__gu_val;			\
-	__builtin_expect(__gu_err, 0);					\
+	__gu_err;							\
 })
 
 /* FIXME: this hack is definitely wrong -AK */
@@ -458,8 +455,7 @@ struct __large_struct { unsigned long buf[100]; };
  * @x:   Variable to store result.
  * @ptr: Source address, in user space.
  *
- * Context: User context only. This function may sleep if pagefaults are
- *          enabled.
+ * Context: User context only.  This function may sleep.
  *
  * This macro copies a single simple variable from user space to kernel
  * space.  It supports simple types like char and int, but not larger
@@ -483,8 +479,7 @@ struct __large_struct { unsigned long buf[100]; };
  * @x:   Value to copy to user space.
  * @ptr: Destination address, in user space.
  *
- * Context: User context only. This function may sleep if pagefaults are
- *          enabled.
+ * Context: User context only.  This function may sleep.
  *
  * This macro copies a single simple value from kernel space to user
  * space.  It supports simple types like char and int, but not larger

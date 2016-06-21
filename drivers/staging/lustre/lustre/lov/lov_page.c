@@ -165,7 +165,7 @@ int lov_page_init_raid0(const struct lu_env *env, struct cl_object *obj,
 	struct lov_io_sub *sub;
 	struct lov_page   *lpg = cl_object_page_slice(obj, page);
 	loff_t	     offset;
-	u64	    suboff;
+	obd_off	    suboff;
 	int		stripe;
 	int		rc;
 
@@ -180,19 +180,15 @@ int lov_page_init_raid0(const struct lu_env *env, struct cl_object *obj,
 	cl_page_slice_add(page, &lpg->lps_cl, obj, &lov_page_ops);
 
 	sub = lov_sub_get(env, lio, stripe);
-	if (IS_ERR(sub)) {
-		rc = PTR_ERR(sub);
-		goto out;
-	}
+	if (IS_ERR(sub))
+		GOTO(out, rc = PTR_ERR(sub));
 
 	subobj = lovsub2cl(r0->lo_sub[stripe]);
 	subpage = cl_page_find_sub(sub->sub_env, subobj,
 				   cl_index(subobj, suboff), vmpage, page);
 	lov_sub_put(sub);
-	if (IS_ERR(subpage)) {
-		rc = PTR_ERR(subpage);
-		goto out;
-	}
+	if (IS_ERR(subpage))
+		GOTO(out, rc = PTR_ERR(subpage));
 
 	if (likely(subpage->cp_parent == page)) {
 		lu_ref_add(&subpage->cp_reference, "lov", page);
@@ -207,6 +203,7 @@ int lov_page_init_raid0(const struct lu_env *env, struct cl_object *obj,
 out:
 	return rc;
 }
+
 
 static const struct cl_page_operations lov_empty_page_ops = {
 	.cpo_fini   = lov_empty_page_fini,
@@ -226,5 +223,6 @@ int lov_page_init_empty(const struct lu_env *env, struct cl_object *obj,
 	cl_page_export(env, page, 1);
 	return 0;
 }
+
 
 /** @} lov */

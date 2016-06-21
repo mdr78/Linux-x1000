@@ -12,6 +12,8 @@
 #include <linux/virtio_ring.h>
 #include <linux/atomic.h>
 
+struct vhost_device;
+
 struct vhost_work;
 typedef void (*vhost_work_fn_t)(struct vhost_work *work);
 
@@ -51,6 +53,8 @@ struct vhost_log {
 	u64 addr;
 	u64 len;
 };
+
+struct vhost_virtqueue;
 
 /* The virtqueue structure describes a queue attached to a device. */
 struct vhost_virtqueue {
@@ -100,26 +104,20 @@ struct vhost_virtqueue {
 	struct iovec *indirect;
 	struct vring_used_elem *heads;
 	/* Protected by virtqueue mutex. */
-	struct vhost_memory *memory;
 	void *private_data;
-	u64 acked_features;
 	/* Log write descriptors */
 	void __user *log_base;
 	struct vhost_log *log;
-
-	/* Ring endianness. Defaults to legacy native endianness.
-	 * Set to true when starting a modern virtio device. */
-	bool is_le;
-#ifdef CONFIG_VHOST_CROSS_ENDIAN_LEGACY
-	/* Ring endianness requested by userspace for cross-endian support. */
-	bool user_be;
-#endif
 };
 
 struct vhost_dev {
-	struct vhost_memory *memory;
+	/* Readers use RCU to access memory table pointer
+	 * log base pointer and features.
+	 * Writers use mutex below.*/
+	struct vhost_memory __rcu *memory;
 	struct mm_struct *mm;
 	struct mutex mutex;
+	unsigned acked_features;
 	struct vhost_virtqueue **vqs;
 	int nvqs;
 	struct file *log_file;
@@ -142,7 +140,7 @@ long vhost_vring_ioctl(struct vhost_dev *d, int ioctl, void __user *argp);
 int vhost_vq_access_ok(struct vhost_virtqueue *vq);
 int vhost_log_access_ok(struct vhost_dev *);
 
-int vhost_get_vq_desc(struct vhost_virtqueue *,
+int vhost_get_vq_desc(struct vhost_dev *, struct vhost_virtqueue *,
 		      struct iovec iov[], unsigned int iov_count,
 		      unsigned int *out_num, unsigned int *in_num,
 		      struct vhost_log *log, unsigned int *log_num);
@@ -173,56 +171,16 @@ enum {
 	VHOST_FEATURES = (1ULL << VIRTIO_F_NOTIFY_ON_EMPTY) |
 			 (1ULL << VIRTIO_RING_F_INDIRECT_DESC) |
 			 (1ULL << VIRTIO_RING_F_EVENT_IDX) |
-			 (1ULL << VHOST_F_LOG_ALL) |
-			 (1ULL << VIRTIO_F_ANY_LAYOUT) |
-			 (1ULL << VIRTIO_F_VERSION_1)
+			 (1ULL << VHOST_F_LOG_ALL),
 };
 
-static inline bool vhost_has_feature(struct vhost_virtqueue *vq, int bit)
+static inline int vhost_has_feature(struct vhost_dev *dev, int bit)
 {
-	return vq->acked_features & (1ULL << bit);
-}
+	unsigned acked_features;
 
-#ifdef CONFIG_VHOST_CROSS_ENDIAN_LEGACY
-static inline bool vhost_is_little_endian(struct vhost_virtqueue *vq)
-{
-	return vq->is_le;
-}
-#else
-static inline bool vhost_is_little_endian(struct vhost_virtqueue *vq)
-{
-	return virtio_legacy_is_little_endian() || vq->is_le;
-}
-#endif
-
-/* Memory accessors */
-static inline u16 vhost16_to_cpu(struct vhost_virtqueue *vq, __virtio16 val)
-{
-	return __virtio16_to_cpu(vhost_is_little_endian(vq), val);
-}
-
-static inline __virtio16 cpu_to_vhost16(struct vhost_virtqueue *vq, u16 val)
-{
-	return __cpu_to_virtio16(vhost_is_little_endian(vq), val);
-}
-
-static inline u32 vhost32_to_cpu(struct vhost_virtqueue *vq, __virtio32 val)
-{
-	return __virtio32_to_cpu(vhost_is_little_endian(vq), val);
-}
-
-static inline __virtio32 cpu_to_vhost32(struct vhost_virtqueue *vq, u32 val)
-{
-	return __cpu_to_virtio32(vhost_is_little_endian(vq), val);
-}
-
-static inline u64 vhost64_to_cpu(struct vhost_virtqueue *vq, __virtio64 val)
-{
-	return __virtio64_to_cpu(vhost_is_little_endian(vq), val);
-}
-
-static inline __virtio64 cpu_to_vhost64(struct vhost_virtqueue *vq, u64 val)
-{
-	return __cpu_to_virtio64(vhost_is_little_endian(vq), val);
+	/* TODO: check that we are running from vhost_worker or dev mutex is
+	 * held? */
+	acked_features = rcu_dereference_index_check(dev->acked_features, 1);
+	return acked_features & (1 << bit);
 }
 #endif

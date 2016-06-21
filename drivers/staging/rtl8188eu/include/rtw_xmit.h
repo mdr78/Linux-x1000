@@ -105,6 +105,11 @@ struct tx_desc {
 	__le32 txdw7;
 };
 
+union txdesc {
+	struct tx_desc txdesc;
+	unsigned int value[TXDESC_SIZE>>2];
+};
+
 struct	hw_xmit	{
 	struct __queue *sta_queue;
 	int	accnt;

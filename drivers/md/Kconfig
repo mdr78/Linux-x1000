@@ -5,7 +5,6 @@
 menuconfig MD
 	bool "Multiple devices driver support (RAID and LVM)"
 	depends on BLOCK
-	select SRCU
 	help
 	  Support multiple physical spindles through a single logical device.
 	  Required for RAID and logical volume management.
@@ -123,7 +122,6 @@ config MD_RAID456
 	tristate "RAID-4/RAID-5/RAID-6 mode"
 	depends on BLK_DEV_MD
 	select RAID6_PQ
-	select LIBCRC32C
 	select ASYNC_MEMCPY
 	select ASYNC_XOR
 	select ASYNC_PQ
@@ -176,26 +174,10 @@ config MD_FAULTY
 
 	  In unsure, say N.
 
-
-config MD_CLUSTER
-	tristate "Cluster Support for MD (EXPERIMENTAL)"
-	depends on BLK_DEV_MD
-	depends on DLM
-	default n
-	---help---
-	Clustering support for MD devices. This enables locking and
-	synchronization across multiple systems on the cluster, so all
-	nodes in the cluster can access the MD devices simultaneously.
-
-	This brings the redundancy (and uptime) of RAID levels across the
-	nodes of the cluster.
-
-	If unsure, say N.
-
 source "drivers/md/bcache/Kconfig"
 
 config BLK_DEV_DM_BUILTIN
-	bool
+	boolean
 
 config BLK_DEV_DM
 	tristate "Device mapper support"
@@ -213,19 +195,8 @@ config BLK_DEV_DM
 
 	  If unsure, say N.
 
-config DM_MQ_DEFAULT
-	bool "request-based DM: use blk-mq I/O path by default"
-	depends on BLK_DEV_DM
-	---help---
-	  This option enables the blk-mq based I/O path for request-based
-	  DM devices by default.  With the option the dm_mod.use_blk_mq
-	  module/boot option defaults to Y, without it to N, but it can
-	  still be overriden either way.
-
-	  If unsure say N.
-
 config DM_DEBUG
-	bool "Device mapper debugging support"
+	boolean "Device mapper debugging support"
 	depends on BLK_DEV_DM
 	---help---
 	  Enable this for messages that may help debug device-mapper problems.
@@ -259,8 +230,9 @@ config DM_CRYPT
 	  transparently encrypts the data on it. You'll need to activate
 	  the ciphers you're going to use in the cryptoapi configuration.
 
-	  For further information on dm-crypt and userspace tools see:
-	  <https://gitlab.com/cryptsetup/cryptsetup/wikis/DMCrypt>
+	  Information on how to use dm-crypt can be found on
+
+	  <http://www.saout.de/misc/dm-crypt/>
 
 	  To compile this code as a module, choose M here: the module will
 	  be called dm-crypt.
@@ -305,18 +277,6 @@ config DM_CACHE_MQ
          This is meant to be a general purpose policy.  It prioritises
          reads over writes.
 
-config DM_CACHE_SMQ
-       tristate "Stochastic MQ Cache Policy (EXPERIMENTAL)"
-       depends on DM_CACHE
-       default y
-       ---help---
-         A cache policy that uses a multiqueue ordered by recent hits
-         to select which blocks should be promoted and demoted.
-         This is meant to be a general purpose policy.  It prioritises
-         reads over writes.  This SMQ policy (vs MQ) offers the promise
-         of less memory utilization, improved performance and increased
-         adaptability in the face of changing workloads.
-
 config DM_CACHE_CLEANER
        tristate "Cleaner Cache Policy (EXPERIMENTAL)"
        depends on DM_CACHE
@@ -324,17 +284,6 @@ config DM_CACHE_CLEANER
        ---help---
          A simple cache policy that writes back all data to the
          origin.  Used when decommissioning a dm-cache.
-
-config DM_ERA
-       tristate "Era target (EXPERIMENTAL)"
-       depends on BLK_DEV_DM
-       default n
-       select DM_PERSISTENT_DATA
-       select DM_BIO_PRISON
-       ---help---
-         dm-era tracks which parts of a block device are written to
-         over time.  Useful for maintaining cache coherency when using
-         vendor snapshots.
 
 config DM_MIRROR
        tristate "Mirror target"
@@ -394,7 +343,7 @@ config DM_MULTIPATH
 	# of SCSI_DH if the latter isn't defined but if
 	# it is, DM_MULTIPATH must depend on it.  We get a build
 	# error if SCSI_DH=m and DM_MULTIPATH=y
-	depends on !SCSI_DH || SCSI
+	depends on SCSI_DH || !SCSI_DH
 	---help---
 	  Allow volume managers to support multipath hardware.
 
@@ -469,22 +418,6 @@ config DM_SWITCH
 
 	  To compile this code as a module, choose M here: the module will
 	  be called dm-switch.
-
-	  If unsure, say N.
-
-config DM_LOG_WRITES
-	tristate "Log writes target support"
-	depends on BLK_DEV_DM
-	---help---
-	  This device-mapper target takes two devices, one device to use
-	  normally, one to log all write operations done to the first device.
-	  This is for use by file system developers wishing to verify that
-	  their fs is writing a consistent file system at all times by allowing
-	  them to replay the log in a variety of ways and to check the
-	  contents.
-
-	  To compile this code as a module, choose M here: the module will
-	  be called dm-log-writes.
 
 	  If unsure, say N.
 

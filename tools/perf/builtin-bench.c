@@ -12,7 +12,6 @@
  *  sched ... scheduler and IPC performance
  *  mem   ... memory access performance
  *  numa  ... NUMA scheduling and MM performance
- *  futex ... Futex performance
  */
 #include "perf.h"
 #include "util/util.h"
@@ -36,7 +35,7 @@ struct bench {
 #ifdef HAVE_LIBNUMA_SUPPORT
 static struct bench numa_benchmarks[] = {
 	{ "mem",	"Benchmark for NUMA workloads",			bench_numa		},
-	{ "all",	"Run all NUMA benchmarks",			NULL			},
+	{ "all",	"Test all NUMA benchmarks",			NULL			},
 	{ NULL,		NULL,						NULL			}
 };
 #endif
@@ -44,25 +43,14 @@ static struct bench numa_benchmarks[] = {
 static struct bench sched_benchmarks[] = {
 	{ "messaging",	"Benchmark for scheduling and IPC",		bench_sched_messaging	},
 	{ "pipe",	"Benchmark for pipe() between two processes",	bench_sched_pipe	},
-	{ "all",	"Run all scheduler benchmarks",		NULL			},
+	{ "all",	"Test all scheduler benchmarks",		NULL			},
 	{ NULL,		NULL,						NULL			}
 };
 
 static struct bench mem_benchmarks[] = {
-	{ "memcpy",	"Benchmark for memcpy() functions",		bench_mem_memcpy	},
-	{ "memset",	"Benchmark for memset() functions",		bench_mem_memset	},
-	{ "all",	"Run all memory access benchmarks",		NULL			},
-	{ NULL,		NULL,						NULL			}
-};
-
-static struct bench futex_benchmarks[] = {
-	{ "hash",	"Benchmark for futex hash table",               bench_futex_hash	},
-	{ "wake",	"Benchmark for futex wake calls",               bench_futex_wake	},
-	{ "wake-parallel", "Benchmark for parallel futex wake calls",   bench_futex_wake_parallel },
-	{ "requeue",	"Benchmark for futex requeue calls",            bench_futex_requeue	},
-	/* pi-futexes */
-	{ "lock-pi",	"Benchmark for futex lock_pi calls",            bench_futex_lock_pi	},
-	{ "all",	"Run all futex benchmarks",			NULL			},
+	{ "memcpy",	"Benchmark for memcpy()",			bench_mem_memcpy	},
+	{ "memset",	"Benchmark for memset() tests",			bench_mem_memset	},
+	{ "all",	"Test all memory benchmarks",			NULL			},
 	{ NULL,		NULL,						NULL			}
 };
 
@@ -73,12 +61,11 @@ struct collection {
 };
 
 static struct collection collections[] = {
-	{ "sched",	"Scheduler and IPC benchmarks",			sched_benchmarks	},
+	{ "sched",	"Scheduler and IPC benchmarks",		sched_benchmarks	},
 	{ "mem",	"Memory access benchmarks",			mem_benchmarks		},
 #ifdef HAVE_LIBNUMA_SUPPORT
 	{ "numa",	"NUMA scheduling and MM benchmarks",		numa_benchmarks		},
 #endif
-	{"futex",       "Futex stressing benchmarks",                   futex_benchmarks        },
 	{ "all",	"All benchmarks",				NULL			},
 	{ NULL,		NULL,						NULL			}
 };
@@ -107,11 +94,9 @@ static const char *bench_format_str;
 
 /* Output/formatting style, exported to benchmark modules: */
 int bench_format = BENCH_FORMAT_DEFAULT;
-unsigned int bench_repeat = 10; /* default number of times to repeat the run */
 
 static const struct option bench_options[] = {
-	OPT_STRING('f', "format", &bench_format_str, "default|simple", "Specify the output formatting style"),
-	OPT_UINTEGER('r', "repeat",  &bench_repeat,   "Specify amount of times to repeat the run"),
+	OPT_STRING('f', "format", &bench_format_str, "default", "Specify format style"),
 	OPT_END()
 };
 
@@ -228,11 +213,6 @@ int cmd_bench(int argc, const char **argv, const char *prefix __maybe_unused)
 	bench_format = bench_str2int(bench_format_str);
 	if (bench_format == BENCH_FORMAT_UNKNOWN) {
 		printf("Unknown format descriptor: '%s'\n", bench_format_str);
-		goto end;
-	}
-
-	if (bench_repeat == 0) {
-		printf("Invalid repeat option: Must specify a positive value\n");
 		goto end;
 	}
 

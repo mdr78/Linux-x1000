@@ -50,10 +50,7 @@ struct user_namespace init_user_ns = {
 	.count = ATOMIC_INIT(3),
 	.owner = GLOBAL_ROOT_UID,
 	.group = GLOBAL_ROOT_GID,
-	.ns.inum = PROC_USER_INIT_INO,
-#ifdef CONFIG_USER_NS
-	.ns.ops = &userns_operations,
-#endif
+	.proc_inum = PROC_USER_INIT_INO,
 	.flags = USERNS_INIT_FLAGS,
 #ifdef CONFIG_PERSISTENT_KEYRINGS
 	.persistent_keyring_register_sem =
@@ -91,6 +88,7 @@ static DEFINE_SPINLOCK(uidhash_lock);
 struct user_struct root_user = {
 	.__count	= ATOMIC_INIT(1),
 	.processes	= ATOMIC_INIT(1),
+	.files		= ATOMIC_INIT(0),
 	.sigpending	= ATOMIC_INIT(0),
 	.locked_shm     = 0,
 	.uid		= GLOBAL_ROOT_UID,
@@ -225,4 +223,5 @@ static int __init uid_cache_init(void)
 
 	return 0;
 }
-subsys_initcall(uid_cache_init);
+
+module_init(uid_cache_init);

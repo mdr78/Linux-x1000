@@ -21,6 +21,7 @@
 #include <linux/fs.h>
 #include <linux/errno.h>
 #include <linux/major.h>
+#include <linux/init.h>
 #include <linux/miscdevice.h>
 #include <linux/interrupt.h>
 #include <linux/ioport.h>
@@ -679,6 +680,7 @@ MODULE_DEVICE_TABLE(of, cpwd_match);
 static struct platform_driver cpwd_driver = {
 	.driver = {
 		.name = DRIVER_NAME,
+		.owner = THIS_MODULE,
 		.of_match_table = cpwd_match,
 	},
 	.probe		= cpwd_probe,

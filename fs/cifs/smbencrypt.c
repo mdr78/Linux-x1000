@@ -29,7 +29,6 @@
 #include <linux/string.h>
 #include <linux/kernel.h>
 #include <linux/random.h>
-#include "cifs_fs_sb.h"
 #include "cifs_unicode.h"
 #include "cifspdu.h"
 #include "cifsglob.h"
@@ -221,7 +220,7 @@ E_md4hash(const unsigned char *passwd, unsigned char *p16,
 	}
 
 	rc = mdfour(p16, (unsigned char *) wpwd, len * sizeof(__le16));
-	memzero_explicit(wpwd, sizeof(wpwd));
+	memset(wpwd, 0, 129 * sizeof(__le16));
 
 	return rc;
 }

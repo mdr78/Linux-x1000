@@ -872,7 +872,7 @@ static int docg4_read_oob(struct mtd_info *mtd, struct nand_chip *nand,
 	return 0;
 }
 
-static int docg4_erase_block(struct mtd_info *mtd, int page)
+static void docg4_erase_block(struct mtd_info *mtd, int page)
 {
 	struct nand_chip *nand = mtd->priv;
 	struct docg4_priv *doc = nand->priv;
@@ -916,8 +916,6 @@ static int docg4_erase_block(struct mtd_info *mtd, int page)
 	write_nop(docptr);
 	poll_status(doc);
 	write_nop(docptr);
-
-	return nand->waitfunc(mtd, nand);
 }
 
 static int write_page(struct mtd_info *mtd, struct nand_chip *nand,
@@ -977,13 +975,13 @@ static int write_page(struct mtd_info *mtd, struct nand_chip *nand,
 }
 
 static int docg4_write_page_raw(struct mtd_info *mtd, struct nand_chip *nand,
-				const uint8_t *buf, int oob_required, int page)
+				 const uint8_t *buf, int oob_required)
 {
 	return write_page(mtd, nand, buf, false);
 }
 
 static int docg4_write_page(struct mtd_info *mtd, struct nand_chip *nand,
-			     const uint8_t *buf, int oob_required, int page)
+			     const uint8_t *buf, int oob_required)
 {
 	return write_page(mtd, nand, buf, true);
 }
@@ -1113,7 +1111,7 @@ static int docg4_block_markbad(struct mtd_info *mtd, loff_t ofs)
 
 	/* write first page of block */
 	write_page_prologue(mtd, g4_addr);
-	docg4_write_page(mtd, nand, buf, 1, page);
+	docg4_write_page(mtd, nand, buf, 1);
 	ret = pageprog(mtd);
 
 	kfree(buf);
@@ -1238,7 +1236,7 @@ static void __init init_mtd_structs(struct mtd_info *mtd)
 	nand->block_markbad = docg4_block_markbad;
 	nand->read_buf = docg4_read_buf;
 	nand->write_buf = docg4_write_buf16;
-	nand->erase = docg4_erase_block;
+	nand->erase_cmd = docg4_erase_block;
 	nand->ecc.read_page = docg4_read_page;
 	nand->ecc.write_page = docg4_write_page;
 	nand->ecc.read_page_raw = docg4_read_page_raw;
@@ -1316,7 +1314,7 @@ static int __init probe_docg4(struct platform_device *pdev)
 	doc = (struct docg4_priv *) (nand + 1);
 	mtd->priv = nand;
 	nand->priv = doc;
-	mtd->dev.parent = &pdev->dev;
+	mtd->owner = THIS_MODULE;
 	doc->virtadr = virtadr;
 	doc->dev = dev;
 
@@ -1380,6 +1378,7 @@ static int __exit cleanup_docg4(struct platform_device *pdev)
 static struct platform_driver docg4_driver = {
 	.driver		= {
 		.name	= "docg4",
+		.owner	= THIS_MODULE,
 	},
 	.suspend	= docg4_suspend,
 	.resume		= docg4_resume,

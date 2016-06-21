@@ -180,7 +180,7 @@ static void __init km82xx_setup_arch(void)
 		ppc_md.progress("km82xx_setup_arch(), finish", 0);
 }
 
-static const struct of_device_id of_bus_ids[] __initconst = {
+static  __initdata struct of_device_id of_bus_ids[] = {
 	{ .compatible = "simple-bus", },
 	{},
 };

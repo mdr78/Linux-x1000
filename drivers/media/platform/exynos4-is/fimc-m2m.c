@@ -24,7 +24,7 @@
 #include <linux/slab.h>
 #include <linux/clk.h>
 #include <media/v4l2-ioctl.h>
-#include <media/videobuf2-v4l2.h>
+#include <media/videobuf2-core.h>
 #include <media/videobuf2-dma-contig.h>
 
 #include "common.h"
@@ -42,7 +42,7 @@ static unsigned int get_m2m_fmt_flags(unsigned int stream_type)
 
 void fimc_m2m_job_finish(struct fimc_ctx *ctx, int vb_state)
 {
-	struct vb2_v4l2_buffer *src_vb, *dst_vb;
+	struct vb2_buffer *src_vb, *dst_vb;
 
 	if (!ctx || !ctx->fh.m2m_ctx)
 		return;
@@ -85,7 +85,7 @@ static int start_streaming(struct vb2_queue *q, unsigned int count)
 	return ret > 0 ? 0 : ret;
 }
 
-static void stop_streaming(struct vb2_queue *q)
+static int stop_streaming(struct vb2_queue *q)
 {
 	struct fimc_ctx *ctx = q->drv_priv;
 	int ret;
@@ -95,11 +95,12 @@ static void stop_streaming(struct vb2_queue *q)
 		fimc_m2m_job_finish(ctx, VB2_BUF_STATE_ERROR);
 
 	pm_runtime_put(&ctx->fimc_dev->pdev->dev);
+	return 0;
 }
 
 static void fimc_device_run(void *priv)
 {
-	struct vb2_v4l2_buffer *src_vb, *dst_vb;
+	struct vb2_buffer *src_vb, *dst_vb;
 	struct fimc_ctx *ctx = priv;
 	struct fimc_frame *sf, *df;
 	struct fimc_dev *fimc;
@@ -123,19 +124,16 @@ static void fimc_device_run(void *priv)
 	}
 
 	src_vb = v4l2_m2m_next_src_buf(ctx->fh.m2m_ctx);
-	ret = fimc_prepare_addr(ctx, &src_vb->vb2_buf, sf, &sf->paddr);
+	ret = fimc_prepare_addr(ctx, src_vb, sf, &sf->paddr);
 	if (ret)
 		goto dma_unlock;
 
 	dst_vb = v4l2_m2m_next_dst_buf(ctx->fh.m2m_ctx);
-	ret = fimc_prepare_addr(ctx, &dst_vb->vb2_buf, df, &df->paddr);
+	ret = fimc_prepare_addr(ctx, dst_vb, df, &df->paddr);
 	if (ret)
 		goto dma_unlock;
 
-	dst_vb->timestamp = src_vb->timestamp;
-	dst_vb->flags &= ~V4L2_BUF_FLAG_TSTAMP_SRC_MASK;
-	dst_vb->flags |=
-		src_vb->flags & V4L2_BUF_FLAG_TSTAMP_SRC_MASK;
+	dst_vb->v4l2_buf.timestamp = src_vb->v4l2_buf.timestamp;
 
 	/* Reconfigure hardware if the context has changed. */
 	if (fimc->m2m.ctx != ctx) {
@@ -176,7 +174,7 @@ static void fimc_job_abort(void *priv)
 	fimc_m2m_shutdown(priv);
 }
 
-static int fimc_queue_setup(struct vb2_queue *vq, const void *parg,
+static int fimc_queue_setup(struct vb2_queue *vq, const struct v4l2_format *fmt,
 			    unsigned int *num_buffers, unsigned int *num_planes,
 			    unsigned int sizes[], void *allocators[])
 {
@@ -188,7 +186,7 @@ static int fimc_queue_setup(struct vb2_queue *vq, const void *parg,
 	if (IS_ERR(f))
 		return PTR_ERR(f);
 	/*
-	 * Return number of non-contiguous planes (plane buffers)
+	 * Return number of non-contigous planes (plane buffers)
 	 * depending on the configured color format.
 	 */
 	if (!f->fmt)
@@ -196,7 +194,7 @@ static int fimc_queue_setup(struct vb2_queue *vq, const void *parg,
 
 	*num_planes = f->fmt->memplanes;
 	for (i = 0; i < f->fmt->memplanes; i++) {
-		sizes[i] = f->payload[i];
+		sizes[i] = (f->f_width * f->f_height * f->fmt->depth[i]) / 8;
 		allocators[i] = ctx->fimc_dev->alloc_ctx;
 	}
 	return 0;
@@ -220,9 +218,8 @@ static int fimc_buf_prepare(struct vb2_buffer *vb)
 
 static void fimc_buf_queue(struct vb2_buffer *vb)
 {
-	struct vb2_v4l2_buffer *vbuf = to_vb2_v4l2_buffer(vb);
 	struct fimc_ctx *ctx = vb2_get_drv_priv(vb->vb2_queue);
-	v4l2_m2m_buf_queue(ctx->fh.m2m_ctx, vbuf);
+	v4l2_m2m_buf_queue(ctx->fh.m2m_ctx, vb);
 }
 
 static struct vb2_ops fimc_qops = {
@@ -342,7 +339,7 @@ static void __set_frame_format(struct fimc_frame *frame, struct fimc_fmt *fmt,
 {
 	int i;
 
-	for (i = 0; i < fmt->memplanes; i++) {
+	for (i = 0; i < fmt->colplanes; i++) {
 		frame->bytesperline[i] = pixm->plane_fmt[i].bytesperline;
 		frame->payload[i] = pixm->plane_fmt[i].sizeimage;
 	}
@@ -461,7 +458,7 @@ static int fimc_m2m_try_crop(struct fimc_ctx *ctx, struct v4l2_crop *cr)
 	else
 		halign = ffs(fimc->variant->min_vsize_align) - 1;
 
-	for (i = 0; i < f->fmt->memplanes; i++)
+	for (i = 0; i < f->fmt->colplanes; i++)
 		depth += f->fmt->depth[i];
 
 	v4l_bound_align_image(&cr->c.width, min_size, f->o_width,
@@ -560,7 +557,7 @@ static int queue_init(void *priv, struct vb2_queue *src_vq,
 	src_vq->ops = &fimc_qops;
 	src_vq->mem_ops = &vb2_dma_contig_memops;
 	src_vq->buf_struct_size = sizeof(struct v4l2_m2m_buffer);
-	src_vq->timestamp_flags = V4L2_BUF_FLAG_TIMESTAMP_COPY;
+	src_vq->timestamp_type = V4L2_BUF_FLAG_TIMESTAMP_COPY;
 	src_vq->lock = &ctx->fimc_dev->lock;
 
 	ret = vb2_queue_init(src_vq);
@@ -573,7 +570,7 @@ static int queue_init(void *priv, struct vb2_queue *src_vq,
 	dst_vq->ops = &fimc_qops;
 	dst_vq->mem_ops = &vb2_dma_contig_memops;
 	dst_vq->buf_struct_size = sizeof(struct v4l2_m2m_buffer);
-	dst_vq->timestamp_flags = V4L2_BUF_FLAG_TIMESTAMP_COPY;
+	dst_vq->timestamp_type = V4L2_BUF_FLAG_TIMESTAMP_COPY;
 	dst_vq->lock = &ctx->fimc_dev->lock;
 
 	return vb2_queue_init(dst_vq);

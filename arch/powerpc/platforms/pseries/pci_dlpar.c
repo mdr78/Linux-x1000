@@ -32,22 +32,20 @@
 #include <asm/firmware.h>
 #include <asm/eeh.h>
 
-#include "pseries.h"
-
 static struct pci_bus *
 find_bus_among_children(struct pci_bus *bus,
                         struct device_node *dn)
 {
 	struct pci_bus *child = NULL;
-	struct pci_bus *tmp;
+	struct list_head *tmp;
 	struct device_node *busdn;
 
 	busdn = pci_bus_to_OF_node(bus);
 	if (busdn == dn)
 		return bus;
 
-	list_for_each_entry(tmp, &bus->children, node) {
-		child = find_bus_among_children(tmp, dn);
+	list_for_each(tmp, &bus->children) {
+		child = find_bus_among_children(pci_bus_b(tmp), dn);
 		if (child)
 			break;
 	};
@@ -77,7 +75,6 @@ struct pci_controller *init_phb_dynamic(struct device_node *dn)
 		return NULL;
 	rtas_setup_phb(phb);
 	pci_process_bridge_OF_ranges(phb, dn, 0);
-	phb->controller_ops = pseries_pci_controller_ops;
 
 	pci_devs_phb_init_dynamic(phb);
 
@@ -85,7 +82,7 @@ struct pci_controller *init_phb_dynamic(struct device_node *dn)
 	eeh_dev_phb_init_dynamic(phb);
 
 	if (dn->child)
-		eeh_add_device_tree_early(PCI_DN(dn));
+		eeh_add_device_tree_early(dn);
 
 	pcibios_scan_phb(phb);
 	pcibios_finish_adding_to_bus(phb->bus);

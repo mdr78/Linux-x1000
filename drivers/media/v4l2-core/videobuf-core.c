@@ -51,8 +51,6 @@ MODULE_LICENSE("GPL");
 
 #define CALL(q, f, arg...)						\
 	((q->int_ops->f) ? q->int_ops->f(arg) : 0)
-#define CALLPTR(q, f, arg...)						\
-	((q->int_ops->f) ? q->int_ops->f(arg) : NULL)
 
 struct videobuf_buffer *videobuf_alloc_vb(struct videobuf_queue *q)
 {
@@ -443,6 +441,11 @@ int videobuf_reqbufs(struct videobuf_queue *q,
 	unsigned int size, count;
 	int retval;
 
+	if (req->count < 1) {
+		dprintk(1, "reqbufs: count invalid (%d)\n", req->count);
+		return -EINVAL;
+	}
+
 	if (req->memory != V4L2_MEMORY_MMAP     &&
 	    req->memory != V4L2_MEMORY_USERPTR  &&
 	    req->memory != V4L2_MEMORY_OVERLAY) {
@@ -465,12 +468,6 @@ int videobuf_reqbufs(struct videobuf_queue *q,
 	if (!list_empty(&q->stream)) {
 		dprintk(1, "reqbufs: stream running\n");
 		retval = -EBUSY;
-		goto done;
-	}
-
-	if (req->count == 0) {
-		dprintk(1, "reqbufs: count invalid (%d)\n", req->count);
-		retval = __videobuf_free(q);
 		goto done;
 	}
 
@@ -576,8 +573,7 @@ int videobuf_qbuf(struct videobuf_queue *q, struct v4l2_buffer *b)
 		}
 		if (q->type == V4L2_BUF_TYPE_VIDEO_OUTPUT
 		    || q->type == V4L2_BUF_TYPE_VBI_OUTPUT
-		    || q->type == V4L2_BUF_TYPE_SLICED_VBI_OUTPUT
-		    || q->type == V4L2_BUF_TYPE_SDR_OUTPUT) {
+		    || q->type == V4L2_BUF_TYPE_SLICED_VBI_OUTPUT) {
 			buf->size = b->bytesused;
 			buf->field = b->field;
 			buf->ts = b->timestamp;
@@ -834,7 +830,7 @@ static int __videobuf_copy_to_user(struct videobuf_queue *q,
 				   char __user *data, size_t count,
 				   int nonblocking)
 {
-	void *vaddr = CALLPTR(q, vaddr, buf);
+	void *vaddr = CALL(q, vaddr, buf);
 
 	/* copy to userspace */
 	if (count > buf->size - q->read_off)
@@ -851,7 +847,7 @@ static int __videobuf_copy_stream(struct videobuf_queue *q,
 				  char __user *data, size_t count, size_t pos,
 				  int vbihack, int nonblocking)
 {
-	unsigned int *fc = CALLPTR(q, vaddr, buf);
+	unsigned int *fc = CALL(q, vaddr, buf);
 
 	if (vbihack) {
 		/* dirty, undocumented hack -- pass the frame counter
@@ -1155,7 +1151,6 @@ unsigned int videobuf_poll_stream(struct file *file,
 			case V4L2_BUF_TYPE_VIDEO_OUTPUT:
 			case V4L2_BUF_TYPE_VBI_OUTPUT:
 			case V4L2_BUF_TYPE_SLICED_VBI_OUTPUT:
-			case V4L2_BUF_TYPE_SDR_OUTPUT:
 				rc = POLLOUT | POLLWRNORM;
 				break;
 			default:

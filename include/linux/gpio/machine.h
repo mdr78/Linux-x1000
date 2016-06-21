@@ -1,9 +1,6 @@
 #ifndef __LINUX_GPIO_MACHINE_H
 #define __LINUX_GPIO_MACHINE_H
 
-#include <linux/types.h>
-#include <linux/list.h>
-
 enum gpio_lookup_flags {
 	GPIO_ACTIVE_HIGH = (0 << 0),
 	GPIO_ACTIVE_LOW = (1 << 0),
@@ -57,6 +54,5 @@ struct gpiod_lookup_table {
 }
 
 void gpiod_add_lookup_table(struct gpiod_lookup_table *table);
-void gpiod_remove_lookup_table(struct gpiod_lookup_table *table);
 
 #endif /* __LINUX_GPIO_MACHINE_H */

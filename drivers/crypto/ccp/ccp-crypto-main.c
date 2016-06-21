@@ -11,7 +11,6 @@
  */
 
 #include <linux/module.h>
-#include <linux/moduleparam.h>
 #include <linux/kernel.h>
 #include <linux/list.h>
 #include <linux/ccp.h>
@@ -25,33 +24,28 @@ MODULE_LICENSE("GPL");
 MODULE_VERSION("1.0.0");
 MODULE_DESCRIPTION("AMD Cryptographic Coprocessor crypto API support");
 
-static unsigned int aes_disable;
-module_param(aes_disable, uint, 0444);
-MODULE_PARM_DESC(aes_disable, "Disable use of AES - any non-zero value");
-
-static unsigned int sha_disable;
-module_param(sha_disable, uint, 0444);
-MODULE_PARM_DESC(sha_disable, "Disable use of SHA - any non-zero value");
 
 /* List heads for the supported algorithms */
 static LIST_HEAD(hash_algs);
 static LIST_HEAD(cipher_algs);
 
-/* For any tfm, requests for that tfm must be returned on the order
- * received.  With multiple queues available, the CCP can process more
- * than one cmd at a time.  Therefore we must maintain a cmd list to insure
- * the proper ordering of requests on a given tfm.
+/* For any tfm, requests for that tfm on the same CPU must be returned
+ * in the order received.  With multiple queues available, the CCP can
+ * process more than one cmd at a time.  Therefore we must maintain
+ * a cmd list to insure the proper ordering of requests on a given tfm/cpu
+ * combination.
  */
-struct ccp_crypto_queue {
+struct ccp_crypto_cpu_queue {
 	struct list_head cmds;
 	struct list_head *backlog;
 	unsigned int cmd_count;
 };
+#define CCP_CRYPTO_MAX_QLEN	50
 
-#define CCP_CRYPTO_MAX_QLEN	100
-
-static struct ccp_crypto_queue req_queue;
-static spinlock_t req_queue_lock;
+struct ccp_crypto_percpu_queue {
+	struct ccp_crypto_cpu_queue __percpu *cpu_queue;
+};
+static struct ccp_crypto_percpu_queue req_queue;
 
 struct ccp_crypto_cmd {
 	struct list_head entry;
@@ -68,6 +62,8 @@ struct ccp_crypto_cmd {
 
 	/* Used for held command processing to determine state */
 	int ret;
+
+	int cpu;
 };
 
 struct ccp_crypto_cpu {
@@ -77,6 +73,7 @@ struct ccp_crypto_cpu {
 	int err;
 };
 
+
 static inline bool ccp_crypto_success(int err)
 {
 	if (err && (err != -EINPROGRESS) && (err != -EBUSY))
@@ -85,21 +82,25 @@ static inline bool ccp_crypto_success(int err)
 	return true;
 }
 
+/*
+ * ccp_crypto_cmd_complete must be called while running on the appropriate
+ * cpu and the caller must have done a get_cpu to disable preemption
+ */
 static struct ccp_crypto_cmd *ccp_crypto_cmd_complete(
 	struct ccp_crypto_cmd *crypto_cmd, struct ccp_crypto_cmd **backlog)
 {
+	struct ccp_crypto_cpu_queue *cpu_queue;
 	struct ccp_crypto_cmd *held = NULL, *tmp;
-	unsigned long flags;
 
 	*backlog = NULL;
 
-	spin_lock_irqsave(&req_queue_lock, flags);
+	cpu_queue = this_cpu_ptr(req_queue.cpu_queue);
 
 	/* Held cmds will be after the current cmd in the queue so start
 	 * searching for a cmd with a matching tfm for submission.
 	 */
 	tmp = crypto_cmd;
-	list_for_each_entry_continue(tmp, &req_queue.cmds, entry) {
+	list_for_each_entry_continue(tmp, &cpu_queue->cmds, entry) {
 		if (crypto_cmd->tfm != tmp->tfm)
 			continue;
 		held = tmp;
@@ -110,45 +111,47 @@ static struct ccp_crypto_cmd *ccp_crypto_cmd_complete(
 	 *   Because cmds can be executed from any point in the cmd list
 	 *   special precautions have to be taken when handling the backlog.
 	 */
-	if (req_queue.backlog != &req_queue.cmds) {
+	if (cpu_queue->backlog != &cpu_queue->cmds) {
 		/* Skip over this cmd if it is the next backlog cmd */
-		if (req_queue.backlog == &crypto_cmd->entry)
-			req_queue.backlog = crypto_cmd->entry.next;
+		if (cpu_queue->backlog == &crypto_cmd->entry)
+			cpu_queue->backlog = crypto_cmd->entry.next;
 
-		*backlog = container_of(req_queue.backlog,
+		*backlog = container_of(cpu_queue->backlog,
 					struct ccp_crypto_cmd, entry);
-		req_queue.backlog = req_queue.backlog->next;
+		cpu_queue->backlog = cpu_queue->backlog->next;
 
 		/* Skip over this cmd if it is now the next backlog cmd */
-		if (req_queue.backlog == &crypto_cmd->entry)
-			req_queue.backlog = crypto_cmd->entry.next;
+		if (cpu_queue->backlog == &crypto_cmd->entry)
+			cpu_queue->backlog = crypto_cmd->entry.next;
 	}
 
 	/* Remove the cmd entry from the list of cmds */
-	req_queue.cmd_count--;
+	cpu_queue->cmd_count--;
 	list_del(&crypto_cmd->entry);
-
-	spin_unlock_irqrestore(&req_queue_lock, flags);
 
 	return held;
 }
 
-static void ccp_crypto_complete(void *data, int err)
+static void ccp_crypto_complete_on_cpu(struct work_struct *work)
 {
-	struct ccp_crypto_cmd *crypto_cmd = data;
+	struct ccp_crypto_cpu *cpu_work =
+		container_of(work, struct ccp_crypto_cpu, work);
+	struct ccp_crypto_cmd *crypto_cmd = cpu_work->crypto_cmd;
 	struct ccp_crypto_cmd *held, *next, *backlog;
 	struct crypto_async_request *req = crypto_cmd->req;
 	struct ccp_ctx *ctx = crypto_tfm_ctx(req->tfm);
-	int ret;
+	int cpu, ret;
 
-	if (err == -EINPROGRESS) {
-		/* Only propagate the -EINPROGRESS if necessary */
+	cpu = get_cpu();
+
+	if (cpu_work->err == -EINPROGRESS) {
+		/* Only propogate the -EINPROGRESS if necessary */
 		if (crypto_cmd->ret == -EBUSY) {
 			crypto_cmd->ret = -EINPROGRESS;
 			req->complete(req, -EINPROGRESS);
 		}
 
-		return;
+		goto e_cpu;
 	}
 
 	/* Operation has completed - update the queue before invoking
@@ -166,25 +169,18 @@ static void ccp_crypto_complete(void *data, int err)
 		req->complete(req, -EINPROGRESS);
 
 	/* Completion callbacks */
-	ret = err;
+	ret = cpu_work->err;
 	if (ctx->complete)
 		ret = ctx->complete(req, ret);
 	req->complete(req, ret);
 
 	/* Submit the next cmd */
 	while (held) {
-		/* Since we have already queued the cmd, we must indicate that
-		 * we can backlog so as not to "lose" this request.
-		 */
-		held->cmd->flags |= CCP_CMD_MAY_BACKLOG;
 		ret = ccp_enqueue_cmd(held->cmd);
 		if (ccp_crypto_success(ret))
 			break;
 
 		/* Error occurred, report it and get the next entry */
-		ctx = crypto_tfm_ctx(held->req->tfm);
-		if (ctx->complete)
-			ret = ctx->complete(held->req, ret);
 		held->req->complete(held->req, ret);
 
 		next = ccp_crypto_cmd_complete(held, &backlog);
@@ -198,29 +194,52 @@ static void ccp_crypto_complete(void *data, int err)
 	}
 
 	kfree(crypto_cmd);
+
+e_cpu:
+	put_cpu();
+
+	complete(&cpu_work->completion);
+}
+
+static void ccp_crypto_complete(void *data, int err)
+{
+	struct ccp_crypto_cmd *crypto_cmd = data;
+	struct ccp_crypto_cpu cpu_work;
+
+	INIT_WORK(&cpu_work.work, ccp_crypto_complete_on_cpu);
+	init_completion(&cpu_work.completion);
+	cpu_work.crypto_cmd = crypto_cmd;
+	cpu_work.err = err;
+
+	schedule_work_on(crypto_cmd->cpu, &cpu_work.work);
+
+	/* Keep the completion call synchronous */
+	wait_for_completion(&cpu_work.completion);
 }
 
 static int ccp_crypto_enqueue_cmd(struct ccp_crypto_cmd *crypto_cmd)
 {
+	struct ccp_crypto_cpu_queue *cpu_queue;
 	struct ccp_crypto_cmd *active = NULL, *tmp;
-	unsigned long flags;
-	bool free_cmd = true;
-	int ret;
+	int cpu, ret;
 
-	spin_lock_irqsave(&req_queue_lock, flags);
+	cpu = get_cpu();
+	crypto_cmd->cpu = cpu;
+
+	cpu_queue = this_cpu_ptr(req_queue.cpu_queue);
 
 	/* Check if the cmd can/should be queued */
-	if (req_queue.cmd_count >= CCP_CRYPTO_MAX_QLEN) {
+	if (cpu_queue->cmd_count >= CCP_CRYPTO_MAX_QLEN) {
 		ret = -EBUSY;
 		if (!(crypto_cmd->cmd->flags & CCP_CMD_MAY_BACKLOG))
-			goto e_lock;
+			goto e_cpu;
 	}
 
 	/* Look for an entry with the same tfm.  If there is a cmd
-	 * with the same tfm in the list then the current cmd cannot
-	 * be submitted to the CCP yet.
+	 * with the same tfm in the list for this cpu then the current
+	 * cmd cannot be submitted to the CCP yet.
 	 */
-	list_for_each_entry(tmp, &req_queue.cmds, entry) {
+	list_for_each_entry(tmp, &cpu_queue->cmds, entry) {
 		if (crypto_cmd->tfm != tmp->tfm)
 			continue;
 		active = tmp;
@@ -231,29 +250,21 @@ static int ccp_crypto_enqueue_cmd(struct ccp_crypto_cmd *crypto_cmd)
 	if (!active) {
 		ret = ccp_enqueue_cmd(crypto_cmd->cmd);
 		if (!ccp_crypto_success(ret))
-			goto e_lock;	/* Error, don't queue it */
-		if ((ret == -EBUSY) &&
-		    !(crypto_cmd->cmd->flags & CCP_CMD_MAY_BACKLOG))
-			goto e_lock;	/* Not backlogging, don't queue it */
+			goto e_cpu;
 	}
 
-	if (req_queue.cmd_count >= CCP_CRYPTO_MAX_QLEN) {
+	if (cpu_queue->cmd_count >= CCP_CRYPTO_MAX_QLEN) {
 		ret = -EBUSY;
-		if (req_queue.backlog == &req_queue.cmds)
-			req_queue.backlog = &crypto_cmd->entry;
+		if (cpu_queue->backlog == &cpu_queue->cmds)
+			cpu_queue->backlog = &crypto_cmd->entry;
 	}
 	crypto_cmd->ret = ret;
 
-	req_queue.cmd_count++;
-	list_add_tail(&crypto_cmd->entry, &req_queue.cmds);
+	cpu_queue->cmd_count++;
+	list_add_tail(&crypto_cmd->entry, &cpu_queue->cmds);
 
-	free_cmd = false;
-
-e_lock:
-	spin_unlock_irqrestore(&req_queue_lock, flags);
-
-	if (free_cmd)
-		kfree(crypto_cmd);
+e_cpu:
+	put_cpu();
 
 	return ret;
 }
@@ -270,6 +281,7 @@ int ccp_crypto_enqueue_request(struct crypto_async_request *req,
 {
 	struct ccp_crypto_cmd *crypto_cmd;
 	gfp_t gfp;
+	int ret;
 
 	gfp = req->flags & CRYPTO_TFM_REQ_MAY_SLEEP ? GFP_KERNEL : GFP_ATOMIC;
 
@@ -294,7 +306,11 @@ int ccp_crypto_enqueue_request(struct crypto_async_request *req,
 	else
 		cmd->flags &= ~CCP_CMD_MAY_BACKLOG;
 
-	return ccp_crypto_enqueue_cmd(crypto_cmd);
+	ret = ccp_crypto_enqueue_cmd(crypto_cmd);
+	if (!ccp_crypto_success(ret))
+		kfree(crypto_cmd);
+
+	return ret;
 }
 
 struct scatterlist *ccp_crypto_sg_table_add(struct sg_table *table,
@@ -305,16 +321,14 @@ struct scatterlist *ccp_crypto_sg_table_add(struct sg_table *table,
 	for (sg = table->sgl; sg; sg = sg_next(sg))
 		if (!sg_page(sg))
 			break;
-	if (WARN_ON(!sg))
-		return NULL;
+	BUG_ON(!sg);
 
 	for (; sg && sg_add; sg = sg_next(sg), sg_add = sg_next(sg_add)) {
 		sg_set_page(sg, sg_page(sg_add), sg_add->length,
 			    sg_add->offset);
 		sg_last = sg;
 	}
-	if (WARN_ON(sg_add))
-		return NULL;
+	BUG_ON(sg_add);
 
 	return sg_last;
 }
@@ -323,25 +337,21 @@ static int ccp_register_algs(void)
 {
 	int ret;
 
-	if (!aes_disable) {
-		ret = ccp_register_aes_algs(&cipher_algs);
-		if (ret)
-			return ret;
+	ret = ccp_register_aes_algs(&cipher_algs);
+	if (ret)
+		return ret;
 
-		ret = ccp_register_aes_cmac_algs(&hash_algs);
-		if (ret)
-			return ret;
+	ret = ccp_register_aes_cmac_algs(&hash_algs);
+	if (ret)
+		return ret;
 
-		ret = ccp_register_aes_xts_algs(&cipher_algs);
-		if (ret)
-			return ret;
-	}
+	ret = ccp_register_aes_xts_algs(&cipher_algs);
+	if (ret)
+		return ret;
 
-	if (!sha_disable) {
-		ret = ccp_register_sha_algs(&hash_algs);
-		if (ret)
-			return ret;
-	}
+	ret = ccp_register_sha_algs(&hash_algs);
+	if (ret)
+		return ret;
 
 	return 0;
 }
@@ -364,22 +374,50 @@ static void ccp_unregister_algs(void)
 	}
 }
 
+static int ccp_init_queues(void)
+{
+	struct ccp_crypto_cpu_queue *cpu_queue;
+	int cpu;
+
+	req_queue.cpu_queue = alloc_percpu(struct ccp_crypto_cpu_queue);
+	if (!req_queue.cpu_queue)
+		return -ENOMEM;
+
+	for_each_possible_cpu(cpu) {
+		cpu_queue = per_cpu_ptr(req_queue.cpu_queue, cpu);
+		INIT_LIST_HEAD(&cpu_queue->cmds);
+		cpu_queue->backlog = &cpu_queue->cmds;
+		cpu_queue->cmd_count = 0;
+	}
+
+	return 0;
+}
+
+static void ccp_fini_queue(void)
+{
+	struct ccp_crypto_cpu_queue *cpu_queue;
+	int cpu;
+
+	for_each_possible_cpu(cpu) {
+		cpu_queue = per_cpu_ptr(req_queue.cpu_queue, cpu);
+		BUG_ON(!list_empty(&cpu_queue->cmds));
+	}
+	free_percpu(req_queue.cpu_queue);
+}
+
 static int ccp_crypto_init(void)
 {
 	int ret;
 
-	ret = ccp_present();
+	ret = ccp_init_queues();
 	if (ret)
 		return ret;
 
-	spin_lock_init(&req_queue_lock);
-	INIT_LIST_HEAD(&req_queue.cmds);
-	req_queue.backlog = &req_queue.cmds;
-	req_queue.cmd_count = 0;
-
 	ret = ccp_register_algs();
-	if (ret)
+	if (ret) {
 		ccp_unregister_algs();
+		ccp_fini_queue();
+	}
 
 	return ret;
 }
@@ -387,6 +425,7 @@ static int ccp_crypto_init(void)
 static void ccp_crypto_exit(void)
 {
 	ccp_unregister_algs();
+	ccp_fini_queue();
 }
 
 module_init(ccp_crypto_init);

@@ -20,13 +20,13 @@
 #include <linux/kernel.h>
 #include <linux/slab.h>
 #include <linux/platform_device.h>
+#include <linux/platform_data/dwc3-exynos.h>
 #include <linux/dma-mapping.h>
 #include <linux/clk.h>
 #include <linux/usb/otg.h>
-#include <linux/usb/usb_phy_generic.h>
+#include <linux/usb/usb_phy_gen_xceiv.h>
 #include <linux/of.h>
 #include <linux/of_platform.h>
-#include <linux/regulator/consumer.h>
 
 struct dwc3_exynos {
 	struct platform_device	*usb2_phy;
@@ -34,22 +34,17 @@ struct dwc3_exynos {
 	struct device		*dev;
 
 	struct clk		*clk;
-	struct clk		*susp_clk;
-	struct clk		*axius_clk;
-
-	struct regulator	*vdd33;
-	struct regulator	*vdd10;
 };
 
 static int dwc3_exynos_register_phys(struct dwc3_exynos *exynos)
 {
-	struct usb_phy_generic_platform_data pdata;
+	struct usb_phy_gen_xceiv_platform_data pdata;
 	struct platform_device	*pdev;
 	int			ret;
 
 	memset(&pdata, 0x00, sizeof(pdata));
 
-	pdev = platform_device_alloc("usb_phy_generic", PLATFORM_DEVID_AUTO);
+	pdev = platform_device_alloc("usb_phy_gen_xceiv", PLATFORM_DEVID_AUTO);
 	if (!pdev)
 		return -ENOMEM;
 
@@ -61,7 +56,7 @@ static int dwc3_exynos_register_phys(struct dwc3_exynos *exynos)
 	if (ret)
 		goto err1;
 
-	pdev = platform_device_alloc("usb_phy_generic", PLATFORM_DEVID_AUTO);
+	pdev = platform_device_alloc("usb_phy_gen_xceiv", PLATFORM_DEVID_AUTO);
 	if (!pdev) {
 		ret = -ENOMEM;
 		goto err1;
@@ -108,14 +103,17 @@ static int dwc3_exynos_remove_child(struct device *dev, void *unused)
 static int dwc3_exynos_probe(struct platform_device *pdev)
 {
 	struct dwc3_exynos	*exynos;
+	struct clk		*clk;
 	struct device		*dev = &pdev->dev;
 	struct device_node	*node = dev->of_node;
 
-	int			ret;
+	int			ret = -ENOMEM;
 
 	exynos = devm_kzalloc(dev, sizeof(*exynos), GFP_KERNEL);
-	if (!exynos)
-		return -ENOMEM;
+	if (!exynos) {
+		dev_err(dev, "not enough memory\n");
+		goto err1;
+	}
 
 	/*
 	 * Right now device-tree probed devices don't get dma_mask set.
@@ -124,87 +122,45 @@ static int dwc3_exynos_probe(struct platform_device *pdev)
 	 */
 	ret = dma_coerce_mask_and_coherent(dev, DMA_BIT_MASK(32));
 	if (ret)
-		return ret;
+		goto err1;
 
 	platform_set_drvdata(pdev, exynos);
 
 	ret = dwc3_exynos_register_phys(exynos);
 	if (ret) {
 		dev_err(dev, "couldn't register PHYs\n");
-		return ret;
+		goto err1;
+	}
+
+	clk = devm_clk_get(dev, "usbdrd30");
+	if (IS_ERR(clk)) {
+		dev_err(dev, "couldn't get clock\n");
+		ret = -EINVAL;
+		goto err1;
 	}
 
 	exynos->dev	= dev;
+	exynos->clk	= clk;
 
-	exynos->clk = devm_clk_get(dev, "usbdrd30");
-	if (IS_ERR(exynos->clk)) {
-		dev_err(dev, "couldn't get clock\n");
-		return -EINVAL;
-	}
 	clk_prepare_enable(exynos->clk);
-
-	exynos->susp_clk = devm_clk_get(dev, "usbdrd30_susp_clk");
-	if (IS_ERR(exynos->susp_clk)) {
-		dev_info(dev, "no suspend clk specified\n");
-		exynos->susp_clk = NULL;
-	}
-	clk_prepare_enable(exynos->susp_clk);
-
-	if (of_device_is_compatible(node, "samsung,exynos7-dwusb3")) {
-		exynos->axius_clk = devm_clk_get(dev, "usbdrd30_axius_clk");
-		if (IS_ERR(exynos->axius_clk)) {
-			dev_err(dev, "no AXI UpScaler clk specified\n");
-			return -ENODEV;
-		}
-		clk_prepare_enable(exynos->axius_clk);
-	} else {
-		exynos->axius_clk = NULL;
-	}
-
-	exynos->vdd33 = devm_regulator_get(dev, "vdd33");
-	if (IS_ERR(exynos->vdd33)) {
-		ret = PTR_ERR(exynos->vdd33);
-		goto err2;
-	}
-	ret = regulator_enable(exynos->vdd33);
-	if (ret) {
-		dev_err(dev, "Failed to enable VDD33 supply\n");
-		goto err2;
-	}
-
-	exynos->vdd10 = devm_regulator_get(dev, "vdd10");
-	if (IS_ERR(exynos->vdd10)) {
-		ret = PTR_ERR(exynos->vdd10);
-		goto err3;
-	}
-	ret = regulator_enable(exynos->vdd10);
-	if (ret) {
-		dev_err(dev, "Failed to enable VDD10 supply\n");
-		goto err3;
-	}
 
 	if (node) {
 		ret = of_platform_populate(node, NULL, NULL, dev);
 		if (ret) {
 			dev_err(dev, "failed to add dwc3 core\n");
-			goto err4;
+			goto err2;
 		}
 	} else {
 		dev_err(dev, "no device node, failed to add dwc3 core\n");
 		ret = -ENODEV;
-		goto err4;
+		goto err2;
 	}
 
 	return 0;
 
-err4:
-	regulator_disable(exynos->vdd10);
-err3:
-	regulator_disable(exynos->vdd33);
 err2:
-	clk_disable_unprepare(exynos->axius_clk);
-	clk_disable_unprepare(exynos->susp_clk);
-	clk_disable_unprepare(exynos->clk);
+	clk_disable_unprepare(clk);
+err1:
 	return ret;
 }
 
@@ -216,33 +172,25 @@ static int dwc3_exynos_remove(struct platform_device *pdev)
 	platform_device_unregister(exynos->usb2_phy);
 	platform_device_unregister(exynos->usb3_phy);
 
-	clk_disable_unprepare(exynos->axius_clk);
-	clk_disable_unprepare(exynos->susp_clk);
 	clk_disable_unprepare(exynos->clk);
-
-	regulator_disable(exynos->vdd33);
-	regulator_disable(exynos->vdd10);
 
 	return 0;
 }
 
+#ifdef CONFIG_OF
 static const struct of_device_id exynos_dwc3_match[] = {
 	{ .compatible = "samsung,exynos5250-dwusb3" },
-	{ .compatible = "samsung,exynos7-dwusb3" },
 	{},
 };
 MODULE_DEVICE_TABLE(of, exynos_dwc3_match);
+#endif
 
 #ifdef CONFIG_PM_SLEEP
 static int dwc3_exynos_suspend(struct device *dev)
 {
 	struct dwc3_exynos *exynos = dev_get_drvdata(dev);
 
-	clk_disable(exynos->axius_clk);
 	clk_disable(exynos->clk);
-
-	regulator_disable(exynos->vdd33);
-	regulator_disable(exynos->vdd10);
 
 	return 0;
 }
@@ -250,21 +198,8 @@ static int dwc3_exynos_suspend(struct device *dev)
 static int dwc3_exynos_resume(struct device *dev)
 {
 	struct dwc3_exynos *exynos = dev_get_drvdata(dev);
-	int ret;
-
-	ret = regulator_enable(exynos->vdd33);
-	if (ret) {
-		dev_err(dev, "Failed to enable VDD33 supply\n");
-		return ret;
-	}
-	ret = regulator_enable(exynos->vdd10);
-	if (ret) {
-		dev_err(dev, "Failed to enable VDD10 supply\n");
-		return ret;
-	}
 
 	clk_enable(exynos->clk);
-	clk_enable(exynos->axius_clk);
 
 	/* runtime set active to reflect active state. */
 	pm_runtime_disable(dev);
@@ -288,7 +223,7 @@ static struct platform_driver dwc3_exynos_driver = {
 	.remove		= dwc3_exynos_remove,
 	.driver		= {
 		.name	= "exynos-dwc3",
-		.of_match_table = exynos_dwc3_match,
+		.of_match_table = of_match_ptr(exynos_dwc3_match),
 		.pm	= DEV_PM_OPS,
 	},
 };

@@ -164,8 +164,8 @@ static struct i2c_board_info ttc_dkb_i2c_info[] = {
 	},
 };
 
-#if IS_ENABLED(CONFIG_USB_SUPPORT)
-#if IS_ENABLED(CONFIG_USB_MV_UDC) || IS_ENABLED(CONFIG_USB_EHCI_MV_U2O)
+#ifdef CONFIG_USB_SUPPORT
+#if defined(CONFIG_USB_MV_UDC) || defined(CONFIG_USB_EHCI_MV_U2O)
 
 static struct mv_usb_platform_data ttc_usb_pdata = {
 	.vbus		= NULL,
@@ -178,14 +178,14 @@ static struct mv_usb_platform_data ttc_usb_pdata = {
 #endif
 #endif
 
-#if IS_ENABLED(CONFIG_MTD_NAND_PXA3xx)
+#ifdef CONFIG_MTD_NAND_PXA3xx
 static struct pxa3xx_nand_platform_data dkb_nand_info = {
 	.enable_arbiter = 1,
 	.num_cs = 1,
 };
 #endif
 
-#if IS_ENABLED(CONFIG_MMP_DISP)
+#ifdef CONFIG_MMP_DISP
 /* path config */
 #define CFG_IOPADMODE(iopad)   (iopad)  /* 0x0 ~ 0xd */
 #define SCLK_SOURCE_SELECT(x)  (x << 30) /* 0x0 ~ 0x3 */
@@ -275,7 +275,7 @@ static void __init ttc_dkb_init(void)
 
 	/* on-chip devices */
 	pxa910_add_uart(1);
-#if IS_ENABLED(CONFIG_MTD_NAND_PXA3xx)
+#ifdef CONFIG_MTD_NAND_PXA3xx
 	pxa910_add_nand(&dkb_nand_info);
 #endif
 
@@ -285,22 +285,22 @@ static void __init ttc_dkb_init(void)
 				 sizeof(struct pxa_gpio_platform_data));
 	platform_add_devices(ARRAY_AND_SIZE(ttc_dkb_devices));
 
-#if IS_ENABLED(CONFIG_USB_MV_UDC)
+#ifdef CONFIG_USB_MV_UDC
 	pxa168_device_u2o.dev.platform_data = &ttc_usb_pdata;
 	platform_device_register(&pxa168_device_u2o);
 #endif
 
-#if IS_ENABLED(CONFIG_USB_EHCI_MV_U2O)
+#ifdef CONFIG_USB_EHCI_MV_U2O
 	pxa168_device_u2oehci.dev.platform_data = &ttc_usb_pdata;
 	platform_device_register(&pxa168_device_u2oehci);
 #endif
 
-#if IS_ENABLED(CONFIG_USB_MV_OTG)
+#ifdef CONFIG_USB_MV_OTG
 	pxa168_device_u2ootg.dev.platform_data = &ttc_usb_pdata;
 	platform_device_register(&pxa168_device_u2ootg);
 #endif
 
-#if IS_ENABLED(CONFIG_MMP_DISP)
+#ifdef CONFIG_MMP_DISP
 	add_disp();
 #endif
 }

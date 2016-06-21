@@ -453,7 +453,7 @@ static void carl9170_rx_phy_status(struct ar9170 *ar,
 	/* post-process RSSI */
 	for (i = 0; i < 7; i++)
 		if (phy->rssi[i] & 0x80)
-			phy->rssi[i] = ((~phy->rssi[i] & 0x7f) + 1) & 0x7f;
+			phy->rssi[i] = ((phy->rssi[i] & 0x7f) + 1) & 0x7f;
 
 	/* TODO: we could do something with phy_errors */
 	status->signal = ar->noise[0] + phy->rssi_combined;
@@ -572,7 +572,7 @@ static void carl9170_ps_beacon(struct ar9170 *ar, void *data, unsigned int len)
 
 static void carl9170_ba_check(struct ar9170 *ar, void *data, unsigned int len)
 {
-	struct ieee80211_bar *bar = data;
+	struct ieee80211_bar *bar = (void *) data;
 	struct carl9170_bar_list_entry *entry;
 	unsigned int queue;
 

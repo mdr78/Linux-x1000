@@ -20,6 +20,10 @@
 #include <linux/cpumask.h>
 #include <linux/thread_info.h>
 
+#ifndef CONFIG_SMP
+# error "<asm/smp.h> included in non-SMP build"
+#endif
+
 #define raw_smp_processor_id() (current_thread_info()->cpu)
 
 struct seq_file;
@@ -35,8 +39,7 @@ extern void show_ipi_list(struct seq_file *p, int prec);
 extern void handle_IPI(int ipinr, struct pt_regs *regs);
 
 /*
- * Discover the set of possible CPUs and determine their
- * SMP operations.
+ * Setup the set of possible CPUs (via set_cpu_possible)
  */
 extern void smp_init_cpus(void);
 
@@ -44,8 +47,6 @@ extern void smp_init_cpus(void);
  * Provide a function to raise an IPI cross call on CPUs in callmap.
  */
 extern void set_smp_cross_call(void (*)(const struct cpumask *, unsigned int));
-
-extern void (*__smp_cross_call)(const struct cpumask *, unsigned int);
 
 /*
  * Called from the secondary holding pen, this is the secondary CPU entry point.

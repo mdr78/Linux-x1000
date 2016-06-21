@@ -5,7 +5,7 @@
  ******************************************************************************/
 
 /*
- * Copyright (C) 2000 - 2015, Intel Corp.
+ * Copyright (C) 2000 - 2013, Intel Corp.
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -47,8 +47,7 @@
 
 #define _COMPONENT          ACPI_UTILITIES
 ACPI_MODULE_NAME("utresrc")
-
-#if defined(ACPI_DEBUG_OUTPUT) || defined (ACPI_DISASSEMBLER) || defined (ACPI_DEBUGGER)
+#if defined(ACPI_DISASSEMBLER) || defined (ACPI_DEBUGGER)
 /*
  * Strings used to decode resource descriptors.
  * Used by both the disassembler and the debugger resource dump routines
@@ -87,9 +86,7 @@ const char *acpi_gbl_io_decode[] = {
 
 const char *acpi_gbl_ll_decode[] = {
 	"ActiveHigh",
-	"ActiveLow",
-	"ActiveBoth",
-	"Reserved"
+	"ActiveLow"
 };
 
 const char *acpi_gbl_max_decode[] = {
@@ -263,7 +260,7 @@ const char *acpi_gbl_bpb_decode[] = {
 /* UART serial bus stop bits */
 
 const char *acpi_gbl_sb_decode[] = {
-	"StopBitsZero",
+	"StopBitsNone",
 	"StopBitsOne",
 	"StopBitsOnePlusHalf",
 	"StopBitsTwo"

@@ -29,7 +29,6 @@
 #include <media/v4l2-clk.h>
 #include <media/v4l2-ctrls.h>
 #include <media/v4l2-subdev.h>
-#include <media/v4l2-image-sizes.h>
 
 /*
  * register offset
@@ -361,6 +360,10 @@
 #define SCAL0_ACTRL     0x08 /* Auto scaling factor control */
 #define SCAL1_2_ACTRL   0x04 /* Auto scaling factor control */
 
+#define VGA_WIDTH		640
+#define VGA_HEIGHT		480
+#define QVGA_WIDTH		320
+#define QVGA_HEIGHT		240
 #define OV772X_MAX_WIDTH	VGA_WIDTH
 #define OV772X_MAX_HEIGHT	VGA_HEIGHT
 
@@ -376,7 +379,7 @@
  */
 
 struct ov772x_color_format {
-	u32 code;
+	enum v4l2_mbus_pixelcode code;
 	enum v4l2_colorspace colorspace;
 	u8 dsp3;
 	u8 dsp4;
@@ -408,7 +411,7 @@ struct ov772x_priv {
  */
 static const struct ov772x_color_format ov772x_cfmts[] = {
 	{
-		.code		= MEDIA_BUS_FMT_YUYV8_2X8,
+		.code		= V4L2_MBUS_FMT_YUYV8_2X8,
 		.colorspace	= V4L2_COLORSPACE_JPEG,
 		.dsp3		= 0x0,
 		.dsp4		= DSP_OFMT_YUV,
@@ -416,7 +419,7 @@ static const struct ov772x_color_format ov772x_cfmts[] = {
 		.com7		= OFMT_YUV,
 	},
 	{
-		.code		= MEDIA_BUS_FMT_YVYU8_2X8,
+		.code		= V4L2_MBUS_FMT_YVYU8_2X8,
 		.colorspace	= V4L2_COLORSPACE_JPEG,
 		.dsp3		= UV_ON,
 		.dsp4		= DSP_OFMT_YUV,
@@ -424,7 +427,7 @@ static const struct ov772x_color_format ov772x_cfmts[] = {
 		.com7		= OFMT_YUV,
 	},
 	{
-		.code		= MEDIA_BUS_FMT_UYVY8_2X8,
+		.code		= V4L2_MBUS_FMT_UYVY8_2X8,
 		.colorspace	= V4L2_COLORSPACE_JPEG,
 		.dsp3		= 0x0,
 		.dsp4		= DSP_OFMT_YUV,
@@ -432,7 +435,7 @@ static const struct ov772x_color_format ov772x_cfmts[] = {
 		.com7		= OFMT_YUV,
 	},
 	{
-		.code		= MEDIA_BUS_FMT_RGB555_2X8_PADHI_LE,
+		.code		= V4L2_MBUS_FMT_RGB555_2X8_PADHI_LE,
 		.colorspace	= V4L2_COLORSPACE_SRGB,
 		.dsp3		= 0x0,
 		.dsp4		= DSP_OFMT_YUV,
@@ -440,7 +443,7 @@ static const struct ov772x_color_format ov772x_cfmts[] = {
 		.com7		= FMT_RGB555 | OFMT_RGB,
 	},
 	{
-		.code		= MEDIA_BUS_FMT_RGB555_2X8_PADHI_BE,
+		.code		= V4L2_MBUS_FMT_RGB555_2X8_PADHI_BE,
 		.colorspace	= V4L2_COLORSPACE_SRGB,
 		.dsp3		= 0x0,
 		.dsp4		= DSP_OFMT_YUV,
@@ -448,7 +451,7 @@ static const struct ov772x_color_format ov772x_cfmts[] = {
 		.com7		= FMT_RGB555 | OFMT_RGB,
 	},
 	{
-		.code		= MEDIA_BUS_FMT_RGB565_2X8_LE,
+		.code		= V4L2_MBUS_FMT_RGB565_2X8_LE,
 		.colorspace	= V4L2_COLORSPACE_SRGB,
 		.dsp3		= 0x0,
 		.dsp4		= DSP_OFMT_YUV,
@@ -456,7 +459,7 @@ static const struct ov772x_color_format ov772x_cfmts[] = {
 		.com7		= FMT_RGB565 | OFMT_RGB,
 	},
 	{
-		.code		= MEDIA_BUS_FMT_RGB565_2X8_BE,
+		.code		= V4L2_MBUS_FMT_RGB565_2X8_BE,
 		.colorspace	= V4L2_COLORSPACE_SRGB,
 		.dsp3		= 0x0,
 		.dsp4		= DSP_OFMT_YUV,
@@ -468,7 +471,7 @@ static const struct ov772x_color_format ov772x_cfmts[] = {
 		 * regardless of the COM7 value. We can thus only support 10-bit
 		 * Bayer until someone figures it out.
 		 */
-		.code		= MEDIA_BUS_FMT_SBGGR10_1X10,
+		.code		= V4L2_MBUS_FMT_SBGGR10_1X10,
 		.colorspace	= V4L2_COLORSPACE_SRGB,
 		.dsp3		= 0x0,
 		.dsp4		= DSP_OFMT_RAW10,
@@ -876,15 +879,10 @@ static int ov772x_cropcap(struct v4l2_subdev *sd, struct v4l2_cropcap *a)
 	return 0;
 }
 
-static int ov772x_get_fmt(struct v4l2_subdev *sd,
-		struct v4l2_subdev_pad_config *cfg,
-		struct v4l2_subdev_format *format)
+static int ov772x_g_fmt(struct v4l2_subdev *sd,
+			struct v4l2_mbus_framefmt *mf)
 {
-	struct v4l2_mbus_framefmt *mf = &format->format;
 	struct ov772x_priv *priv = to_ov772x(sd);
-
-	if (format->pad)
-		return -EINVAL;
 
 	mf->width	= priv->win->rect.width;
 	mf->height	= priv->win->rect.height;
@@ -920,16 +918,11 @@ static int ov772x_s_fmt(struct v4l2_subdev *sd, struct v4l2_mbus_framefmt *mf)
 	return 0;
 }
 
-static int ov772x_set_fmt(struct v4l2_subdev *sd,
-		struct v4l2_subdev_pad_config *cfg,
-		struct v4l2_subdev_format *format)
+static int ov772x_try_fmt(struct v4l2_subdev *sd,
+			  struct v4l2_mbus_framefmt *mf)
 {
-	struct v4l2_mbus_framefmt *mf = &format->format;
 	const struct ov772x_color_format *cfmt;
 	const struct ov772x_win_size *win;
-
-	if (format->pad)
-		return -EINVAL;
 
 	ov772x_select_params(mf, &cfmt, &win);
 
@@ -939,9 +932,6 @@ static int ov772x_set_fmt(struct v4l2_subdev *sd,
 	mf->field = V4L2_FIELD_NONE;
 	mf->colorspace = cfmt->colorspace;
 
-	if (format->which == V4L2_SUBDEV_FORMAT_ACTIVE)
-		return ov772x_s_fmt(sd, mf);
-	cfg->try_fmt = *mf;
 	return 0;
 }
 
@@ -1002,14 +992,13 @@ static struct v4l2_subdev_core_ops ov772x_subdev_core_ops = {
 	.s_power	= ov772x_s_power,
 };
 
-static int ov772x_enum_mbus_code(struct v4l2_subdev *sd,
-		struct v4l2_subdev_pad_config *cfg,
-		struct v4l2_subdev_mbus_code_enum *code)
+static int ov772x_enum_fmt(struct v4l2_subdev *sd, unsigned int index,
+			   enum v4l2_mbus_pixelcode *code)
 {
-	if (code->pad || code->index >= ARRAY_SIZE(ov772x_cfmts))
+	if (index >= ARRAY_SIZE(ov772x_cfmts))
 		return -EINVAL;
 
-	code->code = ov772x_cfmts[code->index].code;
+	*code = ov772x_cfmts[index].code;
 	return 0;
 }
 
@@ -1030,21 +1019,18 @@ static int ov772x_g_mbus_config(struct v4l2_subdev *sd,
 
 static struct v4l2_subdev_video_ops ov772x_subdev_video_ops = {
 	.s_stream	= ov772x_s_stream,
+	.g_mbus_fmt	= ov772x_g_fmt,
+	.s_mbus_fmt	= ov772x_s_fmt,
+	.try_mbus_fmt	= ov772x_try_fmt,
 	.cropcap	= ov772x_cropcap,
 	.g_crop		= ov772x_g_crop,
+	.enum_mbus_fmt	= ov772x_enum_fmt,
 	.g_mbus_config	= ov772x_g_mbus_config,
-};
-
-static const struct v4l2_subdev_pad_ops ov772x_subdev_pad_ops = {
-	.enum_mbus_code = ov772x_enum_mbus_code,
-	.get_fmt	= ov772x_get_fmt,
-	.set_fmt	= ov772x_set_fmt,
 };
 
 static struct v4l2_subdev_ops ov772x_subdev_ops = {
 	.core	= &ov772x_subdev_core_ops,
 	.video	= &ov772x_subdev_video_ops,
-	.pad	= &ov772x_subdev_pad_ops,
 };
 
 /*

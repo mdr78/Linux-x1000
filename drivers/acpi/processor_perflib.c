@@ -20,6 +20,10 @@
  *  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
  *  General Public License for more details.
  *
+ *  You should have received a copy of the GNU General Public License along
+ *  with this program; if not, write to the Free Software Foundation, Inc.,
+ *  59 Temple Place, Suite 330, Boston, MA 02111-1307 USA.
+ *
  */
 
 #include <linux/kernel.h>
@@ -83,7 +87,7 @@ static int acpi_processor_ppc_notifier(struct notifier_block *nb,
 	if (ignore_ppc)
 		return 0;
 
-	if (event != CPUFREQ_ADJUST)
+	if (event != CPUFREQ_INCOMPATIBLE)
 		return 0;
 
 	mutex_lock(&performance_mutex);
@@ -152,9 +156,17 @@ static int acpi_processor_get_platform_limit(struct acpi_processor *pr)
  */
 static void acpi_processor_ppc_ost(acpi_handle handle, int status)
 {
-	if (acpi_has_method(handle, "_OST"))
-		acpi_evaluate_ost(handle, ACPI_PROCESSOR_NOTIFY_PERFORMANCE,
-				  status, NULL);
+	union acpi_object params[2] = {
+		{.type = ACPI_TYPE_INTEGER,},
+		{.type = ACPI_TYPE_INTEGER,},
+	};
+	struct acpi_object_list arg_list = {2, params};
+
+	if (acpi_has_method(handle, "_OST")) {
+		params[0].integer.value = ACPI_PROCESSOR_NOTIFY_PERFORMANCE;
+		params[1].integer.value =  status;
+		acpi_evaluate_object(handle, "_OST", &arg_list, NULL);
+	}
 }
 
 int acpi_processor_ppc_has_changed(struct acpi_processor *pr, int event_flag)
@@ -780,7 +792,9 @@ acpi_processor_register_performance(struct acpi_processor_performance
 
 EXPORT_SYMBOL(acpi_processor_register_performance);
 
-void acpi_processor_unregister_performance(unsigned int cpu)
+void
+acpi_processor_unregister_performance(struct acpi_processor_performance
+				      *performance, unsigned int cpu)
 {
 	struct acpi_processor *pr;
 

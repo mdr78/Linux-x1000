@@ -85,7 +85,7 @@ enum {
 #define CH_DEVICE(devid, idx) \
 	{ PCI_VENDOR_ID_CHELSIO, devid, PCI_ANY_ID, PCI_ANY_ID, 0, 0, idx }
 
-static const struct pci_device_id cxgb3_pci_tbl[] = {
+static DEFINE_PCI_DEVICE_TABLE(cxgb3_pci_tbl) = {
 	CH_DEVICE(0x20, 0),	/* PE9000 */
 	CH_DEVICE(0x21, 1),	/* T302E */
 	CH_DEVICE(0x22, 2),	/* T310E */
@@ -1025,19 +1025,19 @@ int t3_get_edc_fw(struct cphy *phy, int edc_idx, int size)
 {
 	struct adapter *adapter = phy->adapter;
 	const struct firmware *fw;
-	const char *fw_name;
+	char buf[64];
 	u32 csum;
 	const __be32 *p;
 	u16 *cache = phy->phy_cache;
-	int i, ret = -EINVAL;
+	int i, ret;
 
-	fw_name = get_edc_fw_name(edc_idx);
-	if (fw_name)
-		ret = request_firmware(&fw, fw_name, &adapter->pdev->dev);
+	snprintf(buf, sizeof(buf), get_edc_fw_name(edc_idx));
+
+	ret = request_firmware(&fw, buf, &adapter->pdev->dev);
 	if (ret < 0) {
 		dev_err(&adapter->pdev->dev,
 			"could not upgrade firmware: unable to load %s\n",
-			fw_name);
+			buf);
 		return ret;
 	}
 
@@ -1537,7 +1537,7 @@ static void set_msglevel(struct net_device *dev, u32 val)
 	adapter->msg_enable = val;
 }
 
-static const char stats_strings[][ETH_GSTRING_LEN] = {
+static char stats_strings[][ETH_GSTRING_LEN] = {
 	"TxOctetsOK         ",
 	"TxFramesOK         ",
 	"TxMulticastFramesOK",
@@ -1809,8 +1809,8 @@ static int get_settings(struct net_device *dev, struct ethtool_cmd *cmd)
 		ethtool_cmd_speed_set(cmd, p->link_config.speed);
 		cmd->duplex = p->link_config.duplex;
 	} else {
-		ethtool_cmd_speed_set(cmd, SPEED_UNKNOWN);
-		cmd->duplex = DUPLEX_UNKNOWN;
+		ethtool_cmd_speed_set(cmd, -1);
+		cmd->duplex = -1;
 	}
 
 	cmd->port = (cmd->supported & SUPPORTED_TP) ? PORT_TP : PORT_FIBRE;
@@ -3088,22 +3088,30 @@ static int cxgb_enable_msix(struct adapter *adap)
 {
 	struct msix_entry entries[SGE_QSETS + 1];
 	int vectors;
-	int i;
+	int i, err;
 
 	vectors = ARRAY_SIZE(entries);
 	for (i = 0; i < vectors; ++i)
 		entries[i].entry = i;
 
-	vectors = pci_enable_msix_range(adap->pdev, entries,
-					adap->params.nports + 1, vectors);
-	if (vectors < 0)
-		return vectors;
+	while ((err = pci_enable_msix(adap->pdev, entries, vectors)) > 0)
+		vectors = err;
 
-	for (i = 0; i < vectors; ++i)
-		adap->msix_info[i].vec = entries[i].vector;
-	adap->msix_nvectors = vectors;
+	if (err < 0)
+		pci_disable_msix(adap->pdev);
 
-	return 0;
+	if (!err && vectors < (adap->params.nports + 1)) {
+		pci_disable_msix(adap->pdev);
+		err = -1;
+	}
+
+	if (!err) {
+		for (i = 0; i < vectors; ++i)
+			adap->msix_info[i].vec = entries[i].vector;
+		adap->msix_nvectors = vectors;
+	}
+
+	return err;
 }
 
 static void print_port_info(struct adapter *adap, const struct adapter_info *ai)

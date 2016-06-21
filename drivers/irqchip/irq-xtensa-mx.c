@@ -11,10 +11,11 @@
 #include <linux/interrupt.h>
 #include <linux/irqdomain.h>
 #include <linux/irq.h>
-#include <linux/irqchip.h>
 #include <linux/of.h>
 
 #include <asm/mxregs.h>
+
+#include "irqchip.h"
 
 #define HW_IRQ_IPI_COUNT 2
 #define HW_IRQ_MX_BASE 2
@@ -121,7 +122,7 @@ static int xtensa_mx_irq_retrigger(struct irq_data *d)
 static int xtensa_mx_irq_set_affinity(struct irq_data *d,
 		const struct cpumask *dest, bool force)
 {
-	unsigned mask = 1u << cpumask_any_and(dest, cpu_online_mask);
+	unsigned mask = 1u << cpumask_any(dest);
 
 	set_er(mask, MIROUT(d->hwirq - HW_IRQ_MX_BASE));
 	return 0;

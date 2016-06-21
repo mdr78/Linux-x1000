@@ -125,10 +125,8 @@ int uwb_rc_beacon(struct uwb_rc *rc, int channel, unsigned bpst_offset)
 	else {
 		/* channel >= 0...dah */
 		result = uwb_rc_start_beacon(rc, bpst_offset, channel);
-		if (result < 0) {
-			dev_err(dev, "Cannot start beaconing: %d\n", result);
+		if (result < 0)
 			return result;
-		}
 		if (le16_to_cpu(rc->ies->wIELength) > 0) {
 			result = uwb_rc_set_ie(rc, rc->ies);
 			if (result < 0) {
@@ -397,6 +395,7 @@ int uwbd_evt_handle_rc_beacon(struct uwb_event *evt)
 	struct uwb_rc_evt_beacon *be;
 	struct uwb_beacon_frame *bf;
 	struct uwb_beca_e *bce;
+	unsigned long last_ts;
 
 	rc = evt->rc;
 	be = container_of(evt->notif.rceb, struct uwb_rc_evt_beacon, rceb);
@@ -439,6 +438,8 @@ int uwbd_evt_handle_rc_beacon(struct uwb_event *evt)
 	mutex_lock(&bce->mutex);
 	/* purge old beacon data */
 	kfree(bce->be);
+
+	last_ts = bce->ts_jiffies;
 
 	/* Update commonly used fields */
 	bce->ts_jiffies = evt->ts_jiffies;

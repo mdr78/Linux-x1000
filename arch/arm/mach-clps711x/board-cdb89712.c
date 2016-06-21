@@ -95,7 +95,7 @@ static struct physmap_flash_data cdb89712_bootrom_pdata __initdata = {
 
 static struct resource cdb89712_bootrom_resources[] __initdata = {
 	DEFINE_RES_NAMED(CS7_PHYS_BASE, SZ_128, "BOOTROM", IORESOURCE_MEM |
-			 IORESOURCE_READONLY),
+			 IORESOURCE_CACHEABLE | IORESOURCE_READONLY),
 };
 
 static struct platform_device cdb89712_bootrom_pdev __initdata = {
@@ -139,9 +139,12 @@ static void __init cdb89712_init(void)
 MACHINE_START(CDB89712, "Cirrus-CDB89712")
 	/* Maintainer: Ray Lehtiniemi */
 	.atag_offset	= 0x100,
+	.nr_irqs	= CLPS711X_NR_IRQS,
 	.map_io		= clps711x_map_io,
+	.init_early	= clps711x_init_early,
 	.init_irq	= clps711x_init_irq,
 	.init_time	= clps711x_timer_init,
 	.init_machine	= cdb89712_init,
+	.handle_irq	= clps711x_handle_irq,
 	.restart	= clps711x_restart,
 MACHINE_END

@@ -6,7 +6,6 @@
 # for more details.
 #
 #
-KASAN_SANITIZE := n
 
 always := realmode.bin realmode.relocs
 
@@ -53,9 +52,8 @@ $(obj)/realmode.elf: $(obj)/realmode.lds $(REALMODE_OBJS) FORCE
 OBJCOPYFLAGS_realmode.bin := -O binary
 
 targets += realmode.bin
-$(obj)/realmode.bin: $(obj)/realmode.elf $(obj)/realmode.relocs FORCE
+$(obj)/realmode.bin: $(obj)/realmode.elf $(obj)/realmode.relocs
 	$(call if_changed,objcopy)
-	@:
 
 quiet_cmd_relocs = RELOCS  $@
       cmd_relocs = arch/x86/tools/relocs --realmode $< > $@

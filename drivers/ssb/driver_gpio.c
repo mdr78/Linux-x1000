@@ -475,8 +475,7 @@ int ssb_gpio_unregister(struct ssb_bus *bus)
 {
 	if (ssb_chipco_available(&bus->chipco) ||
 	    ssb_extif_available(&bus->extif)) {
-		gpiochip_remove(&bus->gpio);
-		return 0;
+		return gpiochip_remove(&bus->gpio);
 	} else {
 		SSB_WARN_ON(1);
 	}

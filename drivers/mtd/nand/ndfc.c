@@ -1,4 +1,6 @@
 /*
+ *  drivers/mtd/ndfc.c
+ *
  *  Overview:
  *   Platform independent driver for NDFC (NanD Flash Controller)
  *   integrated into EP440 cores
@@ -169,7 +171,7 @@ static int ndfc_chip_init(struct ndfc_controller *ndfc,
 	chip->priv = ndfc;
 
 	ndfc->mtd.priv = chip;
-	ndfc->mtd.dev.parent = &ndfc->ofdev->dev;
+	ndfc->mtd.owner = THIS_MODULE;
 
 	flash_np = of_get_next_child(node, NULL);
 	if (!flash_np)
@@ -201,8 +203,7 @@ static int ndfc_probe(struct platform_device *ofdev)
 	struct ndfc_controller *ndfc;
 	const __be32 *reg;
 	u32 ccr;
-	u32 cs;
-	int err, len;
+	int err, len, cs;
 
 	/* Read the reg property to get the chip select */
 	reg = of_get_property(ofdev->dev.of_node, "reg", &len);
@@ -275,6 +276,7 @@ MODULE_DEVICE_TABLE(of, ndfc_match);
 static struct platform_driver ndfc_driver = {
 	.driver = {
 		.name = "ndfc",
+		.owner = THIS_MODULE,
 		.of_match_table = ndfc_match,
 	},
 	.probe = ndfc_probe,

@@ -55,9 +55,9 @@ TRACE_EVENT(sched_kthread_stop_ret,
  */
 DECLARE_EVENT_CLASS(sched_wakeup_template,
 
-	TP_PROTO(struct task_struct *p),
+	TP_PROTO(struct task_struct *p, int success),
 
-	TP_ARGS(__perf_task(p)),
+	TP_ARGS(__perf_task(p), success),
 
 	TP_STRUCT__entry(
 		__array(	char,	comm,	TASK_COMM_LEN	)
@@ -71,63 +71,52 @@ DECLARE_EVENT_CLASS(sched_wakeup_template,
 		memcpy(__entry->comm, p->comm, TASK_COMM_LEN);
 		__entry->pid		= p->pid;
 		__entry->prio		= p->prio;
-		__entry->success	= 1; /* rudiment, kill when possible */
+		__entry->success	= success;
 		__entry->target_cpu	= task_cpu(p);
 	),
 
-	TP_printk("comm=%s pid=%d prio=%d target_cpu=%03d",
+	TP_printk("comm=%s pid=%d prio=%d success=%d target_cpu=%03d",
 		  __entry->comm, __entry->pid, __entry->prio,
-		  __entry->target_cpu)
+		  __entry->success, __entry->target_cpu)
 );
 
-/*
- * Tracepoint called when waking a task; this tracepoint is guaranteed to be
- * called from the waking context.
- */
-DEFINE_EVENT(sched_wakeup_template, sched_waking,
-	     TP_PROTO(struct task_struct *p),
-	     TP_ARGS(p));
-
-/*
- * Tracepoint called when the task is actually woken; p->state == TASK_RUNNNG.
- * It it not always called from the waking context.
- */
 DEFINE_EVENT(sched_wakeup_template, sched_wakeup,
-	     TP_PROTO(struct task_struct *p),
-	     TP_ARGS(p));
+	     TP_PROTO(struct task_struct *p, int success),
+	     TP_ARGS(p, success));
 
 /*
  * Tracepoint for waking up a new task:
  */
 DEFINE_EVENT(sched_wakeup_template, sched_wakeup_new,
-	     TP_PROTO(struct task_struct *p),
-	     TP_ARGS(p));
+	     TP_PROTO(struct task_struct *p, int success),
+	     TP_ARGS(p, success));
 
 #ifdef CREATE_TRACE_POINTS
-static inline long __trace_sched_switch_state(bool preempt, struct task_struct *p)
+static inline long __trace_sched_switch_state(struct task_struct *p)
 {
-#ifdef CONFIG_SCHED_DEBUG
-	BUG_ON(p != current);
-#endif /* CONFIG_SCHED_DEBUG */
+	long state = p->state;
 
+#ifdef CONFIG_PREEMPT
 	/*
-	 * Preemption ignores task state, therefore preempted tasks are always
-	 * RUNNING (we will not have dequeued if state != RUNNING).
+	 * For all intents and purposes a preempted task is a running task.
 	 */
-	return preempt ? TASK_RUNNING | TASK_STATE_MAX : p->state;
+	if (task_preempt_count(p) & PREEMPT_ACTIVE)
+		state = TASK_RUNNING | TASK_STATE_MAX;
+#endif
+
+	return state;
 }
-#endif /* CREATE_TRACE_POINTS */
+#endif
 
 /*
  * Tracepoint for task switches, performed by the scheduler:
  */
 TRACE_EVENT(sched_switch,
 
-	TP_PROTO(bool preempt,
-		 struct task_struct *prev,
+	TP_PROTO(struct task_struct *prev,
 		 struct task_struct *next),
 
-	TP_ARGS(preempt, prev, next),
+	TP_ARGS(prev, next),
 
 	TP_STRUCT__entry(
 		__array(	char,	prev_comm,	TASK_COMM_LEN	)
@@ -143,7 +132,7 @@ TRACE_EVENT(sched_switch,
 		memcpy(__entry->next_comm, next->comm, TASK_COMM_LEN);
 		__entry->prev_pid	= prev->pid;
 		__entry->prev_prio	= prev->prio;
-		__entry->prev_state	= __trace_sched_switch_state(preempt, prev);
+		__entry->prev_state	= __trace_sched_switch_state(prev);
 		memcpy(__entry->prev_comm, prev->comm, TASK_COMM_LEN);
 		__entry->next_pid	= next->pid;
 		__entry->next_prio	= next->prio;
@@ -155,8 +144,7 @@ TRACE_EVENT(sched_switch,
 		  __print_flags(__entry->prev_state & (TASK_STATE_MAX-1), "|",
 				{ 1, "S"} , { 2, "D" }, { 4, "T" }, { 8, "t" },
 				{ 16, "Z" }, { 32, "X" }, { 64, "x" },
-				{ 128, "K" }, { 256, "W" }, { 512, "P" },
-				{ 1024, "N" }) : "R",
+				{ 128, "K" }, { 256, "W" }, { 512, "P" }) : "R",
 		__entry->prev_state & TASK_STATE_MAX ? "+" : "",
 		__entry->next_comm, __entry->next_pid, __entry->next_prio)
 );
@@ -541,26 +529,6 @@ TRACE_EVENT(sched_swap_numa,
 			__entry->src_cpu, __entry->src_nid,
 			__entry->dst_pid, __entry->dst_tgid, __entry->dst_ngid,
 			__entry->dst_cpu, __entry->dst_nid)
-);
-
-/*
- * Tracepoint for waking a polling cpu without an IPI.
- */
-TRACE_EVENT(sched_wake_idle_without_ipi,
-
-	TP_PROTO(int cpu),
-
-	TP_ARGS(cpu),
-
-	TP_STRUCT__entry(
-		__field(	int,	cpu	)
-	),
-
-	TP_fast_assign(
-		__entry->cpu	= cpu;
-	),
-
-	TP_printk("cpu=%d", __entry->cpu)
 );
 #endif /* _TRACE_SCHED_H */
 

@@ -842,10 +842,11 @@ static ssize_t aem_show_power(struct device *dev,
 	struct aem_data *data = dev_get_drvdata(dev);
 	u64 before, after, delta, time;
 	signed long leftover;
+	struct timespec b, a;
 
 	mutex_lock(&data->lock);
 	update_aem_energy_one(data, attr->index);
-	time = ktime_get_ns();
+	getnstimeofday(&b);
 	before = data->energy[attr->index];
 
 	leftover = schedule_timeout_interruptible(
@@ -857,10 +858,11 @@ static ssize_t aem_show_power(struct device *dev,
 	}
 
 	update_aem_energy_one(data, attr->index);
-	time = ktime_get_ns() - time;
+	getnstimeofday(&a);
 	after = data->energy[attr->index];
 	mutex_unlock(&data->lock);
 
+	time = timespec_to_ns(&a) - timespec_to_ns(&b);
 	delta = (after - before) * UJ_PER_MJ;
 
 	return sprintf(buf, "%llu\n",

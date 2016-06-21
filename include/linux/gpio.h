@@ -3,7 +3,7 @@
 
 #include <linux/errno.h>
 
-/* see Documentation/gpio/gpio-legacy.txt */
+/* see Documentation/gpio.txt */
 
 /* make these flag values available regardless of GPIO kconfig options */
 #define GPIOF_DIR_OUT	(0 << 0)
@@ -30,10 +30,10 @@
 #define GPIOF_EXPORT_DIR_FIXED	(GPIOF_EXPORT)
 #define GPIOF_EXPORT_DIR_CHANGEABLE (GPIOF_EXPORT | GPIOF_EXPORT_CHANGEABLE)
 
-#define GPIOF_DRIVE_PULLUP	(1 << 7)
-#define GPIOF_DRIVE_PULLDOWN	(1 << 8)
-#define GPIOF_DRIVE_STRONG	(1 << 9)
-#define GPIOF_DRIVE_HIZ		(1 << 10)
+#define GPIOF_DRIVE_PULLUP	(1 << 6)
+#define GPIOF_DRIVE_PULLDOWN	(1 << 7)
+#define GPIOF_DRIVE_STRONG	(1 << 8)
+#define GPIOF_DRIVE_HIZ		(1 << 9)
 
 /**
  * struct gpio - a structure describing a GPIO with configuration
@@ -206,6 +206,13 @@ static inline int gpio_export_link(struct device *dev, const char *name,
 	return -EINVAL;
 }
 
+static inline int gpio_sysfs_set_active_low(unsigned gpio, int value)
+{
+	/* GPIO can never have been requested */
+	WARN_ON(1);
+	return -EINVAL;
+}
+
 static inline void gpio_unexport(unsigned gpio)
 {
 	/* GPIO can never have been exported */
@@ -219,15 +226,14 @@ static inline int gpio_to_irq(unsigned gpio)
 	return -EINVAL;
 }
 
-static inline int gpiochip_lock_as_irq(struct gpio_chip *chip,
-				       unsigned int offset)
+static inline int gpio_lock_as_irq(struct gpio_chip *chip, unsigned int offset)
 {
 	WARN_ON(1);
 	return -EINVAL;
 }
 
-static inline void gpiochip_unlock_as_irq(struct gpio_chip *chip,
-					  unsigned int offset)
+static inline void gpio_unlock_as_irq(struct gpio_chip *chip,
+				      unsigned int offset)
 {
 	WARN_ON(1);
 }

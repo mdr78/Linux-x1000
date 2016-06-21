@@ -1,10 +1,10 @@
-RT5640/RT5639 audio CODEC
+RT5640 audio CODEC
 
 This device supports I2C only.
 
 Required properties:
 
-- compatible : One of "realtek,rt5640" or "realtek,rt5639".
+- compatible : "realtek,rt5640".
 
 - reg : The I2C address of the device.
 
@@ -14,35 +14,29 @@ Optional properties:
 
 - realtek,in1-differential
 - realtek,in2-differential
-- realtek,in3-differential
-  Boolean. Indicate MIC1/2/3 input are differential, rather than single-ended.
+  Boolean. Indicate MIC1/2 input are differential, rather than single-ended.
 
 - realtek,ldo1-en-gpios : The GPIO that controls the CODEC's LDO1_EN pin.
 
-Pins on the device (for linking into audio routes) for RT5639/RT5640:
+Pins on the device (for linking into audio routes):
 
   * DMIC1
   * DMIC2
   * MICBIAS1
   * IN1P
-  * IN1N
+  * IN1R
   * IN2P
-  * IN2N
-  * IN3P
-  * IN3N
+  * IN2R
   * HPOL
   * HPOR
   * LOUTL
   * LOUTR
+  * MONOP
+  * MONON
   * SPOLP
   * SPOLN
   * SPORP
   * SPORN
-
-Additional pins on the device for RT5640:
-
-  * MONOP
-  * MONON
 
 Example:
 

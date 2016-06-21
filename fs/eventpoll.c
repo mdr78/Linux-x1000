@@ -293,7 +293,7 @@ static LIST_HEAD(tfile_check_list);
 static long zero;
 static long long_max = LONG_MAX;
 
-struct ctl_table epoll_table[] = {
+ctl_table epoll_table[] = {
 	{
 		.procname	= "max_user_watches",
 		.data		= &max_user_watches,
@@ -870,22 +870,25 @@ static unsigned int ep_eventpoll_poll(struct file *file, poll_table *wait)
 }
 
 #ifdef CONFIG_PROC_FS
-static void ep_show_fdinfo(struct seq_file *m, struct file *f)
+static int ep_show_fdinfo(struct seq_file *m, struct file *f)
 {
 	struct eventpoll *ep = f->private_data;
 	struct rb_node *rbp;
+	int ret = 0;
 
 	mutex_lock(&ep->mtx);
 	for (rbp = rb_first(&ep->rbr); rbp; rbp = rb_next(rbp)) {
 		struct epitem *epi = rb_entry(rbp, struct epitem, rbn);
 
-		seq_printf(m, "tfd: %8d events: %8x data: %16llx\n",
-			   epi->ffd.fd, epi->event.events,
-			   (long long)epi->event.data);
-		if (seq_has_overflowed(m))
+		ret = seq_printf(m, "tfd: %8d events: %8x data: %16llx\n",
+				 epi->ffd.fd, epi->event.events,
+				 (long long)epi->event.data);
+		if (ret)
 			break;
 	}
 	mutex_unlock(&ep->mtx);
+
+	return ret;
 }
 #endif
 
@@ -1639,9 +1642,9 @@ fetch_events:
 
 			spin_lock_irqsave(&ep->lock, flags);
 		}
-
 		__remove_wait_queue(&ep->wq, &wait);
-		__set_current_state(TASK_RUNNING);
+
+		set_current_state(TASK_RUNNING);
 	}
 check_events:
 	/* Is it worth to try to dig for events ? */

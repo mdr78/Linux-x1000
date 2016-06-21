@@ -29,13 +29,13 @@
 
 /*  descriptor block used for chained dma transfers */
 struct plx_dma_desc {
-	__le32 pci_start_addr;
-	__le32 local_start_addr;
+	volatile uint32_t pci_start_addr;
+	volatile uint32_t local_start_addr;
 	/* transfer_size is in bytes, only first 23 bits of register are used */
-	__le32 transfer_size;
+	volatile uint32_t transfer_size;
 	/* address of next descriptor (quad word aligned), plus some
 	 * additional bits (see PLX_DMA0_DESCRIPTOR_REG) */
-	__le32 next;
+	volatile uint32_t next;
 };
 
 /**********************************************************************

@@ -255,7 +255,7 @@ remap_area_supersections(unsigned long virt, unsigned long pfn,
 }
 #endif
 
-static void __iomem * __arm_ioremap_pfn_caller(unsigned long pfn,
+void __iomem * __arm_ioremap_pfn_caller(unsigned long pfn,
 	unsigned long offset, size_t size, unsigned int mtype, void *caller)
 {
 	const struct mem_type *type;
@@ -363,7 +363,7 @@ __arm_ioremap_pfn(unsigned long pfn, unsigned long offset, size_t size,
 		  unsigned int mtype)
 {
 	return __arm_ioremap_pfn_caller(pfn, offset, size, mtype,
-					__builtin_return_address(0));
+			__builtin_return_address(0));
 }
 EXPORT_SYMBOL(__arm_ioremap_pfn);
 
@@ -371,26 +371,13 @@ void __iomem * (*arch_ioremap_caller)(phys_addr_t, size_t,
 				      unsigned int, void *) =
 	__arm_ioremap_caller;
 
-void __iomem *ioremap(resource_size_t res_cookie, size_t size)
+void __iomem *
+__arm_ioremap(phys_addr_t phys_addr, size_t size, unsigned int mtype)
 {
-	return arch_ioremap_caller(res_cookie, size, MT_DEVICE,
-				   __builtin_return_address(0));
+	return arch_ioremap_caller(phys_addr, size, mtype,
+		__builtin_return_address(0));
 }
-EXPORT_SYMBOL(ioremap);
-
-void __iomem *ioremap_cache(resource_size_t res_cookie, size_t size)
-{
-	return arch_ioremap_caller(res_cookie, size, MT_DEVICE_CACHED,
-				   __builtin_return_address(0));
-}
-EXPORT_SYMBOL(ioremap_cache);
-
-void __iomem *ioremap_wc(resource_size_t res_cookie, size_t size)
-{
-	return arch_ioremap_caller(res_cookie, size, MT_DEVICE_WC,
-				   __builtin_return_address(0));
-}
-EXPORT_SYMBOL(ioremap_wc);
+EXPORT_SYMBOL(__arm_ioremap);
 
 /*
  * Remap an arbitrary physical address space into the kernel virtual
@@ -444,20 +431,13 @@ void __iounmap(volatile void __iomem *io_addr)
 
 void (*arch_iounmap)(volatile void __iomem *) = __iounmap;
 
-void iounmap(volatile void __iomem *cookie)
+void __arm_iounmap(volatile void __iomem *io_addr)
 {
-	arch_iounmap(cookie);
+	arch_iounmap(io_addr);
 }
-EXPORT_SYMBOL(iounmap);
+EXPORT_SYMBOL(__arm_iounmap);
 
 #ifdef CONFIG_PCI
-static int pci_ioremap_mem_type = MT_DEVICE;
-
-void pci_ioremap_set_mem_type(int mem_type)
-{
-	pci_ioremap_mem_type = mem_type;
-}
-
 int pci_ioremap_io(unsigned int offset, phys_addr_t phys_addr)
 {
 	BUG_ON(offset + SZ_64K > IO_SPACE_LIMIT);
@@ -465,7 +445,7 @@ int pci_ioremap_io(unsigned int offset, phys_addr_t phys_addr)
 	return ioremap_page_range(PCI_IO_VIRT_BASE + offset,
 				  PCI_IO_VIRT_BASE + offset + SZ_64K,
 				  phys_addr,
-				  __pgprot(get_mem_type(pci_ioremap_mem_type)->prot_pte));
+				  __pgprot(get_mem_type(MT_DEVICE)->prot_pte));
 }
 EXPORT_SYMBOL_GPL(pci_ioremap_io);
 #endif

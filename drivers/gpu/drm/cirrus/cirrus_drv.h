@@ -21,8 +21,6 @@
 #include <drm/ttm/ttm_memory.h>
 #include <drm/ttm/ttm_module.h>
 
-#include <drm/drm_gem.h>
-
 #define DRIVER_AUTHOR		"Matthew Garrett"
 
 #define DRIVER_NAME		"cirrus"
@@ -165,7 +163,7 @@ struct cirrus_bo {
 	struct ttm_placement placement;
 	struct ttm_bo_kmap_obj kmap;
 	struct drm_gem_object gem;
-	struct ttm_place placements[3];
+	u32 placements[3];
 	int pin_count;
 };
 #define gem_to_cirrus_bo(gobj) container_of((gobj), struct cirrus_bo, gem)
@@ -210,9 +208,6 @@ int cirrus_framebuffer_init(struct drm_device *dev,
 			    struct drm_mode_fb_cmd2 *mode_cmd,
 			    struct drm_gem_object *obj);
 
-bool cirrus_check_framebuffer(struct cirrus_device *cdev, int width, int height,
-			      int bpp, int pitch);
-
 				/* cirrus_display.c */
 int cirrus_modeset_init(struct cirrus_device *cdev);
 void cirrus_modeset_fini(struct cirrus_device *cdev);
@@ -246,7 +241,7 @@ static inline int cirrus_bo_reserve(struct cirrus_bo *bo, bool no_wait)
 {
 	int ret;
 
-	ret = ttm_bo_reserve(&bo->bo, true, no_wait, false, NULL);
+	ret = ttm_bo_reserve(&bo->bo, true, no_wait, false, 0);
 	if (ret) {
 		if (ret != -ERESTARTSYS && ret != -EBUSY)
 			DRM_ERROR("reserve failed %p\n", bo);
@@ -262,7 +257,4 @@ static inline void cirrus_bo_unreserve(struct cirrus_bo *bo)
 
 int cirrus_bo_push_sysram(struct cirrus_bo *bo);
 int cirrus_bo_pin(struct cirrus_bo *bo, u32 pl_flag, u64 *gpu_addr);
-
-extern int cirrus_bpp;
-
 #endif				/* __CIRRUS_DRV_H__ */

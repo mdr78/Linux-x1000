@@ -66,6 +66,7 @@ extern int apparmor_initialized __initdata;
 char *aa_split_fqname(char *args, char **ns_name);
 void aa_info_message(const char *str);
 void *__aa_kvmalloc(size_t size, gfp_t flags);
+void kvfree(void *buffer);
 
 static inline void *kvmalloc(size_t size)
 {
@@ -112,9 +113,9 @@ static inline unsigned int aa_dfa_null_transition(struct aa_dfa *dfa,
 	return aa_dfa_next(dfa, start, 0);
 }
 
-static inline bool mediated_filesystem(struct dentry *dentry)
+static inline bool mediated_filesystem(struct inode *inode)
 {
-	return !(dentry->d_sb->s_flags & MS_NOUSER);
+	return !(inode->i_sb->s_flags & MS_NOUSER);
 }
 
 #endif /* __APPARMOR_H */

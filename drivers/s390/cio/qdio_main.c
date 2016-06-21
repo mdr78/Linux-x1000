@@ -319,8 +319,6 @@ static int qdio_siga_output(struct qdio_q *q, unsigned int *busy_bit,
 	int retries = 0, cc;
 	unsigned long laob = 0;
 
-	WARN_ON_ONCE(aob && ((queue_type(q) != QDIO_IQDIO_QFMT) ||
-			     !q->u.out.use_cq));
 	if (q->u.out.use_cq && aob != 0) {
 		fc = QDIO_SIGA_WRITEQ;
 		laob = aob;
@@ -331,6 +329,8 @@ static int qdio_siga_output(struct qdio_q *q, unsigned int *busy_bit,
 		fc |= QDIO_SIGA_QEBSM_FLAG;
 	}
 again:
+	WARN_ON_ONCE((aob && queue_type(q) != QDIO_IQDIO_QFMT) ||
+		(aob && fc != QDIO_SIGA_WRITEQ));
 	cc = do_siga_output(schid, q->mask, busy_bit, fc, laob);
 
 	/* hipersocket busy condition */
@@ -409,16 +409,17 @@ static inline void qdio_stop_polling(struct qdio_q *q)
 		set_buf_state(q, q->u.in.ack_start, SLSB_P_INPUT_NOT_INIT);
 }
 
-static inline void account_sbals(struct qdio_q *q, unsigned int count)
+static inline void account_sbals(struct qdio_q *q, int count)
 {
-	int pos;
+	int pos = 0;
 
 	q->q_stats.nr_sbal_total += count;
 	if (count == QDIO_MAX_BUFFERS_MASK) {
 		q->q_stats.nr_sbals[7]++;
 		return;
 	}
-	pos = ilog2(count);
+	while (count >>= 1)
+		pos++;
 	q->q_stats.nr_sbals[pos]++;
 }
 
@@ -1233,10 +1234,12 @@ int qdio_free(struct ccw_device *cdev)
 		return -ENODEV;
 
 	DBF_EVENT("qfree:%4x", cdev->private->schid.sch_no);
-	DBF_DEV_EVENT(DBF_ERR, irq_ptr, "dbf abandoned");
 	mutex_lock(&irq_ptr->setup_mutex);
 
-	irq_ptr->debug_area = NULL;
+	if (irq_ptr->debug_area != NULL) {
+		debug_unregister(irq_ptr->debug_area);
+		irq_ptr->debug_area = NULL;
+	}
 	cdev->private->qdio_data = NULL;
 	mutex_unlock(&irq_ptr->setup_mutex);
 
@@ -1273,8 +1276,7 @@ int qdio_allocate(struct qdio_initialize *init_data)
 		goto out_err;
 
 	mutex_init(&irq_ptr->setup_mutex);
-	if (qdio_allocate_dbf(init_data, irq_ptr))
-		goto out_rel;
+	qdio_allocate_dbf(init_data, irq_ptr);
 
 	/*
 	 * Allocate a page for the chsc calls in qdio_establish.

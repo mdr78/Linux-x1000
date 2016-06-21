@@ -134,7 +134,7 @@ static ssize_t ds1742_nvram_read(struct file *filp, struct kobject *kobj,
 	void __iomem *ioaddr = pdata->ioaddr_nvram;
 	ssize_t count;
 
-	for (count = 0; count < size; count++)
+	for (count = 0; size > 0 && pos < pdata->size_nvram; count++, size--)
 		*buf++ = readb(ioaddr + pos++);
 	return count;
 }
@@ -149,7 +149,7 @@ static ssize_t ds1742_nvram_write(struct file *filp, struct kobject *kobj,
 	void __iomem *ioaddr = pdata->ioaddr_nvram;
 	ssize_t count;
 
-	for (count = 0; count < size; count++)
+	for (count = 0; size > 0 && pos < pdata->size_nvram; count++, size--)
 		writeb(*buf++, ioaddr + pos++);
 	return count;
 }
@@ -204,11 +204,8 @@ static int ds1742_rtc_probe(struct platform_device *pdev)
 		return PTR_ERR(rtc);
 
 	ret = sysfs_create_bin_file(&pdev->dev.kobj, &pdata->nvram_attr);
-	if (ret)
-		dev_err(&pdev->dev, "Unable to create sysfs entry: %s\n",
-			pdata->nvram_attr.attr.name);
 
-	return 0;
+	return ret;
 }
 
 static int ds1742_rtc_remove(struct platform_device *pdev)
@@ -219,7 +216,7 @@ static int ds1742_rtc_remove(struct platform_device *pdev)
 	return 0;
 }
 
-static const struct of_device_id __maybe_unused ds1742_rtc_of_match[] = {
+static struct of_device_id __maybe_unused ds1742_rtc_of_match[] = {
 	{ .compatible = "maxim,ds1742", },
 	{ }
 };
@@ -230,7 +227,8 @@ static struct platform_driver ds1742_rtc_driver = {
 	.remove		= ds1742_rtc_remove,
 	.driver		= {
 		.name	= "rtc-ds1742",
-		.of_match_table = of_match_ptr(ds1742_rtc_of_match),
+		.owner	= THIS_MODULE,
+		.of_match_table = ds1742_rtc_of_match,
 	},
 };
 

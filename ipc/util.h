@@ -78,9 +78,9 @@ struct ipc_params {
  *      . routine to call for an extra check if needed
  */
 struct ipc_ops {
-	int (*getnew)(struct ipc_namespace *, struct ipc_params *);
-	int (*associate)(struct kern_ipc_perm *, int);
-	int (*more_checks)(struct kern_ipc_perm *, struct ipc_params *);
+	int (*getnew) (struct ipc_namespace *, struct ipc_params *);
+	int (*associate) (struct kern_ipc_perm *, int);
+	int (*more_checks) (struct kern_ipc_perm *, struct ipc_params *);
 };
 
 struct seq_file;
@@ -132,7 +132,7 @@ void ipc_rcu_putref(void *ptr, void (*func)(struct rcu_head *head));
 void ipc_rcu_free(struct rcu_head *head);
 
 struct kern_ipc_perm *ipc_lock(struct ipc_ids *, int);
-struct kern_ipc_perm *ipc_obtain_object_idr(struct ipc_ids *ids, int id);
+struct kern_ipc_perm *ipc_obtain_object(struct ipc_ids *ids, int id);
 
 void kernel_to_ipc64_perm(struct kern_ipc_perm *in, struct ipc64_perm *out);
 void ipc64_perm_to_ipc_perm(struct ipc64_perm *in, struct ipc_perm *out);
@@ -142,7 +142,7 @@ struct kern_ipc_perm *ipcctl_pre_down_nolock(struct ipc_namespace *ns,
 					     struct ipc64_perm *perm, int extra_perm);
 
 #ifndef CONFIG_ARCH_WANT_IPC_PARSE_VERSION
-/* On IA-64, we always use the "64-bit version" of the IPC structures.  */
+  /* On IA-64, we always use the "64-bit version" of the IPC structures.  */ 
 # define ipc_parse_version(cmd)	IPC_64
 #else
 int ipc_parse_version(int *cmd);
@@ -201,7 +201,7 @@ static inline bool ipc_valid_object(struct kern_ipc_perm *perm)
 
 struct kern_ipc_perm *ipc_obtain_object_check(struct ipc_ids *ids, int id);
 int ipcget(struct ipc_namespace *ns, struct ipc_ids *ids,
-			const struct ipc_ops *ops, struct ipc_params *params);
+			struct ipc_ops *ops, struct ipc_params *params);
 void free_ipcs(struct ipc_namespace *ns, struct ipc_ids *ids,
 		void (*free)(struct ipc_namespace *, struct kern_ipc_perm *));
 #endif

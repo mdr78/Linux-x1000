@@ -46,11 +46,11 @@ struct efx_loopback_payload {
 	struct iphdr ip;
 	struct udphdr udp;
 	__be16 iteration;
-	char msg[64];
+	const char msg[64];
 } __packed;
 
 /* Loopback test source MAC address */
-static const u8 payload_source[ETH_ALEN] __aligned(2) = {
+static const unsigned char payload_source[ETH_ALEN] = {
 	0x00, 0x0f, 0x53, 0x1b, 0x1b, 0x1b,
 };
 
@@ -114,10 +114,7 @@ static int efx_test_nvram(struct efx_nic *efx, struct efx_self_tests *tests)
 
 	if (efx->type->test_nvram) {
 		rc = efx->type->test_nvram(efx);
-		if (rc == -EPERM)
-			rc = 0;
-		else
-			tests->nvram = rc ? -1 : 1;
+		tests->nvram = rc ? -1 : 1;
 	}
 
 	return rc;
@@ -191,7 +188,7 @@ static int efx_test_eventq_irq(struct efx_nic *efx,
 		schedule_timeout_uninterruptible(wait);
 
 		efx_for_each_channel(channel, efx) {
-			efx_stop_eventq(channel);
+			napi_disable(&channel->napi_str);
 			if (channel->eventq_read_ptr !=
 			    read_ptr[channel->channel]) {
 				set_bit(channel->channel, &napi_ran);
@@ -203,7 +200,8 @@ static int efx_test_eventq_irq(struct efx_nic *efx,
 				if (efx_nic_event_test_irq_cpu(channel) >= 0)
 					clear_bit(channel->channel, &int_pend);
 			}
-			efx_start_eventq(channel);
+			napi_enable(&channel->napi_str);
+			efx_nic_eventq_read_ack(channel);
 		}
 
 		wait *= 2;
@@ -256,12 +254,6 @@ static int efx_test_phy(struct efx_nic *efx, struct efx_self_tests *tests,
 	mutex_lock(&efx->mac_lock);
 	rc = efx->phy_op->run_tests(efx, tests->phy_ext, flags);
 	mutex_unlock(&efx->mac_lock);
-	if (rc == -EPERM)
-		rc = 0;
-	else
-		netif_info(efx, drv, efx->net_dev,
-			   "%s phy selftest\n", rc ? "Failed" : "Passed");
-
 	return rc;
 }
 
@@ -374,8 +366,8 @@ static void efx_iterate_state(struct efx_nic *efx)
 	struct efx_loopback_payload *payload = &state->payload;
 
 	/* Initialise the layerII header */
-	ether_addr_copy((u8 *)&payload->header.h_dest, net_dev->dev_addr);
-	ether_addr_copy((u8 *)&payload->header.h_source, payload_source);
+	memcpy(&payload->header.h_dest, net_dev->dev_addr, ETH_ALEN);
+	memcpy(&payload->header.h_source, &payload_source, ETH_ALEN);
 	payload->header.h_proto = htons(ETH_P_IP);
 
 	/* saddr set later and used as incrementing count */
@@ -669,9 +661,6 @@ static int efx_test_loopbacks(struct efx_nic *efx, struct efx_self_tests *tests,
 	efx->loopback_selftest = NULL;
 	wmb();
 	kfree(state);
-
-	if (rc == -EPERM)
-		rc = 0;
 
 	return rc;
 }

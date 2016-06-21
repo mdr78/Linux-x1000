@@ -44,7 +44,8 @@ void r8712_set_rpwm(struct _adapter *padapter, u8 val8)
 		if (pwrpriv->rpwm_retry == 0)
 			return;
 	}
-	if (padapter->bDriverStopped || padapter->bSurpriseRemoved)
+	if ((padapter->bDriverStopped == true) ||
+	    (padapter->bSurpriseRemoved == true))
 		return;
 	rpwm = val8 | pwrpriv->tog;
 	switch (val8) {
@@ -82,7 +83,7 @@ void r8712_set_ps_mode(struct _adapter *padapter, uint ps_mode, uint smart_ps)
 			pwrpriv->bSleep = false;
 		pwrpriv->pwr_mode = ps_mode;
 		pwrpriv->smart_ps = smart_ps;
-		schedule_work(&pwrpriv->SetPSModeWorkItem);
+		_set_workitem(&(pwrpriv->SetPSModeWorkItem));
 	}
 }
 
@@ -102,7 +103,7 @@ void r8712_cpwm_int_hdl(struct _adapter *padapter,
 
 	if (pwrpriv->cpwm_tog == ((preportpwrstate->state) & 0x80))
 		return;
-	del_timer(&padapter->pwrctrlpriv.rpwm_check_timer);
+	_cancel_timer_ex(&padapter->pwrctrlpriv. rpwm_check_timer);
 	_enter_pwrlock(&pwrpriv->lock);
 	pwrpriv->cpwm = (preportpwrstate->state) & 0xf;
 	if (pwrpriv->cpwm >= PS_STATE_S2) {
@@ -128,10 +129,11 @@ static void _rpwm_check_handler (struct _adapter *padapter)
 {
 	struct pwrctrl_priv *pwrpriv = &padapter->pwrctrlpriv;
 
-	if (padapter->bDriverStopped || padapter->bSurpriseRemoved)
+	if (padapter->bDriverStopped == true ||
+	    padapter->bSurpriseRemoved == true)
 		return;
 	if (pwrpriv->cpwm != pwrpriv->rpwm)
-		schedule_work(&pwrpriv->rpwm_workitem);
+		_set_workitem(&(pwrpriv->rpwm_workitem));
 }
 
 static void SetPSModeWorkItemCallback(struct work_struct *work)
@@ -154,19 +156,19 @@ static void rpwm_workitem_callback(struct work_struct *work)
 				       struct pwrctrl_priv, rpwm_workitem);
 	struct _adapter *padapter = container_of(pwrpriv,
 				    struct _adapter, pwrctrlpriv);
+	u8 cpwm = pwrpriv->cpwm;
 	if (pwrpriv->cpwm != pwrpriv->rpwm) {
 		_enter_pwrlock(&pwrpriv->lock);
-		r8712_read8(padapter, SDIO_HCPWM);
+		cpwm = r8712_read8(padapter, SDIO_HCPWM);
 		pwrpriv->rpwm_retry = 1;
 		r8712_set_rpwm(padapter, pwrpriv->rpwm);
 		up(&pwrpriv->lock);
 	}
 }
 
-static void rpwm_check_handler (unsigned long data)
+static void rpwm_check_handler (void *FunctionContext)
 {
-	struct _adapter *adapter = (struct _adapter *)data;
-
+	struct _adapter *adapter = (struct _adapter *)FunctionContext;
 	_rpwm_check_handler(adapter);
 }
 
@@ -182,10 +184,12 @@ void r8712_init_pwrctrl_priv(struct _adapter *padapter)
 	pwrctrlpriv->tog = 0x80;
 /* clear RPWM to ensure driver and fw back to initial state. */
 	r8712_write8(padapter, 0x1025FE58, 0);
-	INIT_WORK(&pwrctrlpriv->SetPSModeWorkItem, SetPSModeWorkItemCallback);
-	INIT_WORK(&pwrctrlpriv->rpwm_workitem, rpwm_workitem_callback);
-	setup_timer(&pwrctrlpriv->rpwm_check_timer, rpwm_check_handler,
-		    (unsigned long)padapter);
+	_init_workitem(&(pwrctrlpriv->SetPSModeWorkItem),
+		       SetPSModeWorkItemCallback, padapter);
+	_init_workitem(&(pwrctrlpriv->rpwm_workitem),
+		       rpwm_workitem_callback, padapter);
+	_init_timer(&(pwrctrlpriv->rpwm_check_timer),
+		    padapter->pnetdev, rpwm_check_handler, (u8 *)padapter);
 }
 
 /*

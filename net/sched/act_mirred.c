@@ -1,5 +1,5 @@
 /*
- * net/sched/act_mirred.c	packet mirroring and redirect actions
+ * net/sched/mirred.c	packet mirroring and redirect actions
  *
  *		This program is free software; you can redistribute it and/or
  *		modify it under the terms of the GNU General Public License
@@ -31,19 +31,23 @@
 
 #define MIRRED_TAB_MASK     7
 static LIST_HEAD(mirred_list);
-static DEFINE_SPINLOCK(mirred_list_lock);
+static struct tcf_hashinfo mirred_hash_info;
 
-static void tcf_mirred_release(struct tc_action *a, int bind)
+static int tcf_mirred_release(struct tcf_mirred *m, int bind)
 {
-	struct tcf_mirred *m = to_mirred(a);
-	struct net_device *dev = rcu_dereference_protected(m->tcfm_dev, 1);
-
-	/* We could be called either in a RCU callback or with RTNL lock held. */
-	spin_lock_bh(&mirred_list_lock);
-	list_del(&m->tcfm_list);
-	spin_unlock_bh(&mirred_list_lock);
-	if (dev)
-		dev_put(dev);
+	if (m) {
+		if (bind)
+			m->tcf_bindcnt--;
+		m->tcf_refcnt--;
+		if (!m->tcf_bindcnt && m->tcf_refcnt <= 0) {
+			list_del(&m->tcfm_list);
+			if (m->tcfm_dev)
+				dev_put(m->tcfm_dev);
+			tcf_hash_destroy(&m->common, &mirred_hash_info);
+			return 1;
+		}
+	}
+	return 0;
 }
 
 static const struct nla_policy mirred_policy[TCA_MIRRED_MAX + 1] = {
@@ -57,6 +61,7 @@ static int tcf_mirred_init(struct net *net, struct nlattr *nla,
 	struct nlattr *tb[TCA_MIRRED_MAX + 1];
 	struct tc_mirred *parm;
 	struct tcf_mirred *m;
+	struct tcf_common *pc;
 	struct net_device *dev;
 	int ret, ok_push = 0;
 
@@ -96,44 +101,49 @@ static int tcf_mirred_init(struct net *net, struct nlattr *nla,
 		dev = NULL;
 	}
 
-	if (!tcf_hash_check(parm->index, a, bind)) {
+	pc = tcf_hash_check(parm->index, a, bind);
+	if (!pc) {
 		if (dev == NULL)
 			return -EINVAL;
-		ret = tcf_hash_create(parm->index, est, a, sizeof(*m),
-				      bind, true);
-		if (ret)
-			return ret;
+		pc = tcf_hash_create(parm->index, est, a, sizeof(*m), bind);
+		if (IS_ERR(pc))
+			return PTR_ERR(pc);
 		ret = ACT_P_CREATED;
 	} else {
-		if (bind)
-			return 0;
-
-		tcf_hash_release(a, bind);
-		if (!ovr)
+		if (!ovr) {
+			tcf_mirred_release(to_mirred(pc), bind);
 			return -EEXIST;
+		}
 	}
-	m = to_mirred(a);
+	m = to_mirred(pc);
 
-	ASSERT_RTNL();
+	spin_lock_bh(&m->tcf_lock);
 	m->tcf_action = parm->action;
 	m->tcfm_eaction = parm->eaction;
 	if (dev != NULL) {
 		m->tcfm_ifindex = parm->ifindex;
 		if (ret != ACT_P_CREATED)
-			dev_put(rcu_dereference_protected(m->tcfm_dev, 1));
+			dev_put(m->tcfm_dev);
 		dev_hold(dev);
-		rcu_assign_pointer(m->tcfm_dev, dev);
+		m->tcfm_dev = dev;
 		m->tcfm_ok_push = ok_push;
 	}
-
+	spin_unlock_bh(&m->tcf_lock);
 	if (ret == ACT_P_CREATED) {
-		spin_lock_bh(&mirred_list_lock);
 		list_add(&m->tcfm_list, &mirred_list);
-		spin_unlock_bh(&mirred_list_lock);
-		tcf_hash_insert(a);
+		tcf_hash_insert(pc, a->ops->hinfo);
 	}
 
 	return ret;
+}
+
+static int tcf_mirred_cleanup(struct tc_action *a, int bind)
+{
+	struct tcf_mirred *m = a->priv;
+
+	if (m)
+		return tcf_mirred_release(m, bind);
+	return 0;
 }
 
 static int tcf_mirred(struct sk_buff *skb, const struct tc_action *a,
@@ -142,35 +152,33 @@ static int tcf_mirred(struct sk_buff *skb, const struct tc_action *a,
 	struct tcf_mirred *m = a->priv;
 	struct net_device *dev;
 	struct sk_buff *skb2;
-	int retval, err;
 	u32 at;
+	int retval, err = 1;
 
-	tcf_lastuse_update(&m->tcf_tm);
+	spin_lock(&m->tcf_lock);
+	m->tcf_tm.lastuse = jiffies;
+	bstats_update(&m->tcf_bstats, skb);
 
-	bstats_cpu_update(this_cpu_ptr(m->common.cpu_bstats), skb);
-
-	rcu_read_lock();
-	retval = READ_ONCE(m->tcf_action);
-	dev = rcu_dereference(m->tcfm_dev);
-	if (unlikely(!dev)) {
-		pr_notice_once("tc mirred: target device is gone\n");
+	dev = m->tcfm_dev;
+	if (!dev) {
+		printk_once(KERN_NOTICE "tc mirred: target device is gone\n");
 		goto out;
 	}
 
-	if (unlikely(!(dev->flags & IFF_UP))) {
+	if (!(dev->flags & IFF_UP)) {
 		net_notice_ratelimited("tc mirred to Houston: device %s is down\n",
 				       dev->name);
 		goto out;
 	}
 
 	at = G_TC_AT(skb->tc_verd);
-	skb2 = skb_clone(skb, GFP_ATOMIC);
-	if (!skb2)
+	skb2 = skb_act_clone(skb, GFP_ATOMIC, m->tcf_action);
+	if (skb2 == NULL)
 		goto out;
 
 	if (!(at & AT_EGRESS)) {
 		if (m->tcfm_ok_push)
-			skb_push(skb2, skb->mac_len);
+			skb_push(skb2, skb2->dev->hard_header_len);
 	}
 
 	/* mirror is always swallowed */
@@ -179,16 +187,18 @@ static int tcf_mirred(struct sk_buff *skb, const struct tc_action *a,
 
 	skb2->skb_iif = skb->dev->ifindex;
 	skb2->dev = dev;
-	skb_sender_cpu_clear(skb2);
 	err = dev_queue_xmit(skb2);
 
-	if (err) {
 out:
-		qstats_overlimit_inc(this_cpu_ptr(m->common.cpu_qstats));
+	if (err) {
+		m->tcf_qstats.overlimits++;
 		if (m->tcfm_eaction != TCA_EGRESS_MIRROR)
 			retval = TC_ACT_SHOT;
-	}
-	rcu_read_unlock();
+		else
+			retval = m->tcf_action;
+	} else
+		retval = m->tcf_action;
+	spin_unlock(&m->tcf_lock);
 
 	return retval;
 }
@@ -227,20 +237,13 @@ static int mirred_device_event(struct notifier_block *unused,
 	struct net_device *dev = netdev_notifier_info_to_dev(ptr);
 	struct tcf_mirred *m;
 
-	ASSERT_RTNL();
-	if (event == NETDEV_UNREGISTER) {
-		spin_lock_bh(&mirred_list_lock);
+	if (event == NETDEV_UNREGISTER)
 		list_for_each_entry(m, &mirred_list, tcfm_list) {
-			if (rcu_access_pointer(m->tcfm_dev) == dev) {
+			if (m->tcfm_dev == dev) {
 				dev_put(dev);
-				/* Note : no rcu grace period necessary, as
-				 * net_device are already rcu protected.
-				 */
-				RCU_INIT_POINTER(m->tcfm_dev, NULL);
+				m->tcfm_dev = NULL;
 			}
 		}
-		spin_unlock_bh(&mirred_list_lock);
-	}
 
 	return NOTIFY_DONE;
 }
@@ -251,11 +254,12 @@ static struct notifier_block mirred_device_notifier = {
 
 static struct tc_action_ops act_mirred_ops = {
 	.kind		=	"mirred",
+	.hinfo		=	&mirred_hash_info,
 	.type		=	TCA_ACT_MIRRED,
 	.owner		=	THIS_MODULE,
 	.act		=	tcf_mirred,
 	.dump		=	tcf_mirred_dump,
-	.cleanup	=	tcf_mirred_release,
+	.cleanup	=	tcf_mirred_cleanup,
 	.init		=	tcf_mirred_init,
 };
 
@@ -269,13 +273,19 @@ static int __init mirred_init_module(void)
 	if (err)
 		return err;
 
+	err = tcf_hashinfo_init(&mirred_hash_info, MIRRED_TAB_MASK);
+	if (err) {
+		unregister_netdevice_notifier(&mirred_device_notifier);
+		return err;
+	}
 	pr_info("Mirror/redirect action on\n");
-	return tcf_register_action(&act_mirred_ops, MIRRED_TAB_MASK);
+	return tcf_register_action(&act_mirred_ops);
 }
 
 static void __exit mirred_cleanup_module(void)
 {
 	tcf_unregister_action(&act_mirred_ops);
+	tcf_hashinfo_destroy(&mirred_hash_info);
 	unregister_netdevice_notifier(&mirred_device_notifier);
 }
 

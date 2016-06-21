@@ -52,7 +52,7 @@
  */
 #define CPHYSADDR(a)		((_ACAST32_(a)) & 0x1fffffff)
 #define XPHYSADDR(a)		((_ACAST64_(a)) &			\
-				 _CONST64_(0x0000ffffffffffff))
+				 _CONST64_(0x000000ffffffffff))
 
 #ifdef CONFIG_64BIT
 

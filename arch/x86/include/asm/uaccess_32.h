@@ -59,10 +59,6 @@ __copy_to_user_inatomic(void __user *to, const void *from, unsigned long n)
 			__put_user_size(*(u32 *)from, (u32 __user *)to,
 					4, ret, 4);
 			return ret;
-		case 8:
-			__put_user_size(*(u64 *)from, (u64 __user *)to,
-					8, ret, 8);
-			return ret;
 		}
 	}
 	return __copy_to_user_ll(to, from, n);
@@ -74,8 +70,7 @@ __copy_to_user_inatomic(void __user *to, const void *from, unsigned long n)
  * @from: Source address, in kernel space.
  * @n:    Number of bytes to copy.
  *
- * Context: User context only. This function may sleep if pagefaults are
- *          enabled.
+ * Context: User context only.  This function may sleep.
  *
  * Copy data from kernel space to user space.  Caller must check
  * the specified block with access_ok() before calling this function.
@@ -122,8 +117,7 @@ __copy_from_user_inatomic(void *to, const void __user *from, unsigned long n)
  * @from: Source address, in user space.
  * @n:    Number of bytes to copy.
  *
- * Context: User context only. This function may sleep if pagefaults are
- *          enabled.
+ * Context: User context only.  This function may sleep.
  *
  * Copy data from user space to kernel space.  Caller must check
  * the specified block with access_ok() before calling this function.

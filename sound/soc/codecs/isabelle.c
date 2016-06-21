@@ -33,7 +33,7 @@
 
 
 /* Register default values for ISABELLE driver. */
-static const struct reg_default isabelle_reg_defs[] = {
+static struct reg_default isabelle_reg_defs[] = {
 	{ 0, 0x00 },
 	{ 1, 0x00 },
 	{ 2, 0x00 },
@@ -909,6 +909,8 @@ static int isabelle_set_bias_level(struct snd_soc_codec *codec,
 		break;
 	}
 
+	codec->dapm.bias_level = level;
+
 	return 0;
 }
 
@@ -916,7 +918,8 @@ static int isabelle_hw_params(struct snd_pcm_substream *substream,
 			      struct snd_pcm_hw_params *params,
 			      struct snd_soc_dai *dai)
 {
-	struct snd_soc_codec *codec = dai->codec;
+	struct snd_soc_pcm_runtime *rtd = substream->private_data;
+	struct snd_soc_codec *codec = rtd->codec;
 	u16 aif = 0;
 	unsigned int fs_val = 0;
 
@@ -1016,25 +1019,25 @@ static int isabelle_set_dai_fmt(struct snd_soc_dai *codec_dai, unsigned int fmt)
 #define ISABELLE_FORMATS (SNDRV_PCM_FMTBIT_S20_3LE |\
 			SNDRV_PCM_FMTBIT_S32_LE)
 
-static const struct snd_soc_dai_ops isabelle_hs_dai_ops = {
+static struct snd_soc_dai_ops isabelle_hs_dai_ops = {
 	.hw_params	= isabelle_hw_params,
 	.set_fmt	= isabelle_set_dai_fmt,
 	.digital_mute	= isabelle_hs_mute,
 };
 
-static const struct snd_soc_dai_ops isabelle_hf_dai_ops = {
+static struct snd_soc_dai_ops isabelle_hf_dai_ops = {
 	.hw_params	= isabelle_hw_params,
 	.set_fmt	= isabelle_set_dai_fmt,
 	.digital_mute	= isabelle_hf_mute,
 };
 
-static const struct snd_soc_dai_ops isabelle_line_dai_ops = {
+static struct snd_soc_dai_ops isabelle_line_dai_ops = {
 	.hw_params	= isabelle_hw_params,
 	.set_fmt	= isabelle_set_dai_fmt,
 	.digital_mute	= isabelle_line_mute,
 };
 
-static const struct snd_soc_dai_ops isabelle_ul_dai_ops = {
+static struct snd_soc_dai_ops isabelle_ul_dai_ops = {
 	.hw_params	= isabelle_hw_params,
 	.set_fmt	= isabelle_set_dai_fmt,
 };
@@ -1087,7 +1090,23 @@ static struct snd_soc_dai_driver isabelle_dai[] = {
 	},
 };
 
+static int isabelle_probe(struct snd_soc_codec *codec)
+{
+	int ret = 0;
+
+	codec->control_data = dev_get_regmap(codec->dev, NULL);
+
+	ret = snd_soc_codec_set_cache_io(codec, 8, 8, SND_SOC_REGMAP);
+	if (ret < 0) {
+		dev_err(codec->dev, "Failed to set cache I/O: %d\n", ret);
+		return ret;
+	}
+
+	return 0;
+}
+
 static struct snd_soc_codec_driver soc_codec_dev_isabelle = {
+	.probe = isabelle_probe,
 	.set_bias_level = isabelle_set_bias_level,
 	.controls = isabelle_snd_controls,
 	.num_controls = ARRAY_SIZE(isabelle_snd_controls),
@@ -1149,6 +1168,7 @@ MODULE_DEVICE_TABLE(i2c, isabelle_i2c_id);
 static struct i2c_driver isabelle_i2c_driver = {
 	.driver = {
 		.name = "isabelle",
+		.owner = THIS_MODULE,
 	},
 	.probe = isabelle_i2c_probe,
 	.remove = isabelle_i2c_remove,

@@ -1,8 +1,10 @@
 /*
  * Copyright (C) 2011 Alexander Stein <alexander.stein@systec-electronic.com>
  *
- * The LM95245 is a sensor chip made by TI / National Semiconductor.
+ * The LM95245 is a sensor chip made by National Semiconductors.
  * It reports up to two temperatures (its own plus an external one).
+ * Complete datasheet can be obtained from National's website at:
+ *   http://www.national.com/ds.cgi/LM/LM95245.pdf
  *
  * This driver is based on lm95241.c
  *
@@ -31,6 +33,8 @@
 #include <linux/err.h>
 #include <linux/mutex.h>
 #include <linux/sysfs.h>
+
+#define DEVNAME "lm95245"
 
 static const unsigned short normal_i2c[] = {
 	0x18, 0x19, 0x29, 0x4c, 0x4d, I2C_CLIENT_END };
@@ -94,8 +98,7 @@ static const unsigned short normal_i2c[] = {
 #define STATUS1_LOC		0x01
 
 #define MANUFACTURER_ID		0x01
-#define LM95235_REVISION	0xB1
-#define LM95245_REVISION	0xB3
+#define DEFAULT_REVISION	0xB3
 
 static const u8 lm95245_reg_address[] = {
 	LM95245_REG_R_LOCAL_TEMPH_S,
@@ -112,7 +115,7 @@ static const u8 lm95245_reg_address[] = {
 
 /* Client data (each client gets its own) */
 struct lm95245_data {
-	struct i2c_client *client;
+	struct device *hwmon_dev;
 	struct mutex update_lock;
 	unsigned long last_updated;	/* in jiffies */
 	unsigned long interval;	/* in msecs */
@@ -137,8 +140,8 @@ static int temp_from_reg_signed(u8 val_h, u8 val_l)
 
 static struct lm95245_data *lm95245_update_device(struct device *dev)
 {
-	struct lm95245_data *data = dev_get_drvdata(dev);
-	struct i2c_client *client = data->client;
+	struct i2c_client *client = to_i2c_client(dev);
+	struct lm95245_data *data = i2c_get_clientdata(client);
 
 	mutex_lock(&data->update_lock);
 
@@ -146,6 +149,7 @@ static struct lm95245_data *lm95245_update_device(struct device *dev)
 		+ msecs_to_jiffies(data->interval)) || !data->valid) {
 		int i;
 
+		dev_dbg(&client->dev, "Updating lm95245 data.\n");
 		for (i = 0; i < ARRAY_SIZE(lm95245_reg_address); i++)
 			data->regs[i]
 			  = i2c_smbus_read_byte_data(client,
@@ -245,9 +249,9 @@ static ssize_t show_limit(struct device *dev, struct device_attribute *attr,
 static ssize_t set_limit(struct device *dev, struct device_attribute *attr,
 			const char *buf, size_t count)
 {
-	struct lm95245_data *data = dev_get_drvdata(dev);
+	struct i2c_client *client = to_i2c_client(dev);
+	struct lm95245_data *data = i2c_get_clientdata(client);
 	int index = to_sensor_dev_attr(attr)->index;
-	struct i2c_client *client = data->client;
 	unsigned long val;
 
 	if (kstrtoul(buf, 10, &val) < 0)
@@ -268,38 +272,27 @@ static ssize_t set_limit(struct device *dev, struct device_attribute *attr,
 	return count;
 }
 
-static ssize_t show_crit_hyst(struct device *dev, struct device_attribute *attr,
-			char *buf)
-{
-	struct lm95245_data *data = lm95245_update_device(dev);
-	int index = to_sensor_dev_attr(attr)->index;
-	int hyst = data->regs[index] - data->regs[8];
-
-	return snprintf(buf, PAGE_SIZE - 1, "%d\n", hyst * 1000);
-}
-
 static ssize_t set_crit_hyst(struct device *dev, struct device_attribute *attr,
 			const char *buf, size_t count)
 {
-	struct lm95245_data *data = dev_get_drvdata(dev);
-	int index = to_sensor_dev_attr(attr)->index;
-	struct i2c_client *client = data->client;
+	struct i2c_client *client = to_i2c_client(dev);
+	struct lm95245_data *data = i2c_get_clientdata(client);
 	unsigned long val;
-	int hyst, limit;
 
 	if (kstrtoul(buf, 10, &val) < 0)
 		return -EINVAL;
 
+	val /= 1000;
+
+	val = clamp_val(val, 0, 31);
+
 	mutex_lock(&data->update_lock);
 
-	limit = i2c_smbus_read_byte_data(client, lm95245_reg_address[index]);
-	hyst = limit - val / 1000;
-	hyst = clamp_val(hyst, 0, 31);
-	data->regs[8] = hyst;
+	data->valid = 0;
 
 	/* shared crit hysteresis */
 	i2c_smbus_write_byte_data(client, LM95245_REG_RW_COMMON_HYSTERESIS,
-		hyst);
+		val);
 
 	mutex_unlock(&data->update_lock);
 
@@ -309,7 +302,8 @@ static ssize_t set_crit_hyst(struct device *dev, struct device_attribute *attr,
 static ssize_t show_type(struct device *dev, struct device_attribute *attr,
 			 char *buf)
 {
-	struct lm95245_data *data = dev_get_drvdata(dev);
+	struct i2c_client *client = to_i2c_client(dev);
+	struct lm95245_data *data = i2c_get_clientdata(client);
 
 	return snprintf(buf, PAGE_SIZE - 1,
 		data->config2 & CFG2_REMOTE_TT ? "1\n" : "2\n");
@@ -318,8 +312,8 @@ static ssize_t show_type(struct device *dev, struct device_attribute *attr,
 static ssize_t set_type(struct device *dev, struct device_attribute *attr,
 			const char *buf, size_t count)
 {
-	struct lm95245_data *data = dev_get_drvdata(dev);
-	struct i2c_client *client = data->client;
+	struct i2c_client *client = to_i2c_client(dev);
+	struct lm95245_data *data = i2c_get_clientdata(client);
 	unsigned long val;
 
 	if (kstrtoul(buf, 10, &val) < 0)
@@ -365,8 +359,8 @@ static ssize_t show_interval(struct device *dev, struct device_attribute *attr,
 static ssize_t set_interval(struct device *dev, struct device_attribute *attr,
 			    const char *buf, size_t count)
 {
-	struct lm95245_data *data = dev_get_drvdata(dev);
-	struct i2c_client *client = data->client;
+	struct i2c_client *client = to_i2c_client(dev);
+	struct lm95245_data *data = i2c_get_clientdata(client);
 	unsigned long val;
 
 	if (kstrtoul(buf, 10, &val) < 0)
@@ -384,15 +378,16 @@ static ssize_t set_interval(struct device *dev, struct device_attribute *attr,
 static SENSOR_DEVICE_ATTR(temp1_input, S_IRUGO, show_input, NULL, 0);
 static SENSOR_DEVICE_ATTR(temp1_crit, S_IWUSR | S_IRUGO, show_limit,
 		set_limit, 6);
-static SENSOR_DEVICE_ATTR(temp1_crit_hyst, S_IWUSR | S_IRUGO, show_crit_hyst,
-		set_crit_hyst, 6);
+static SENSOR_DEVICE_ATTR(temp1_crit_hyst, S_IWUSR | S_IRUGO, show_limit,
+		set_crit_hyst, 8);
 static SENSOR_DEVICE_ATTR(temp1_crit_alarm, S_IRUGO, show_alarm, NULL,
 		STATUS1_LOC);
 
 static SENSOR_DEVICE_ATTR(temp2_input, S_IRUGO, show_input, NULL, 2);
 static SENSOR_DEVICE_ATTR(temp2_crit, S_IWUSR | S_IRUGO, show_limit,
 		set_limit, 7);
-static SENSOR_DEVICE_ATTR(temp2_crit_hyst, S_IRUGO, show_crit_hyst, NULL, 7);
+static SENSOR_DEVICE_ATTR(temp2_crit_hyst, S_IWUSR | S_IRUGO, show_limit,
+		set_crit_hyst, 8);
 static SENSOR_DEVICE_ATTR(temp2_crit_alarm, S_IRUGO, show_alarm, NULL,
 		STATUS1_RTCRIT);
 static SENSOR_DEVICE_ATTR(temp2_type, S_IWUSR | S_IRUGO, show_type,
@@ -403,7 +398,7 @@ static SENSOR_DEVICE_ATTR(temp2_fault, S_IRUGO, show_alarm, NULL,
 static DEVICE_ATTR(update_interval, S_IWUSR | S_IRUGO, show_interval,
 		set_interval);
 
-static struct attribute *lm95245_attrs[] = {
+static struct attribute *lm95245_attributes[] = {
 	&sensor_dev_attr_temp1_input.dev_attr.attr,
 	&sensor_dev_attr_temp1_crit.dev_attr.attr,
 	&sensor_dev_attr_temp1_crit_hyst.dev_attr.attr,
@@ -417,45 +412,35 @@ static struct attribute *lm95245_attrs[] = {
 	&dev_attr_update_interval.attr,
 	NULL
 };
-ATTRIBUTE_GROUPS(lm95245);
+
+static const struct attribute_group lm95245_group = {
+	.attrs = lm95245_attributes,
+};
 
 /* Return 0 if detection is successful, -ENODEV otherwise */
 static int lm95245_detect(struct i2c_client *new_client,
 			  struct i2c_board_info *info)
 {
 	struct i2c_adapter *adapter = new_client->adapter;
-	int address = new_client->addr;
-	const char *name;
-	int rev, id;
 
 	if (!i2c_check_functionality(adapter, I2C_FUNC_SMBUS_BYTE_DATA))
 		return -ENODEV;
 
-	id = i2c_smbus_read_byte_data(new_client, LM95245_REG_R_MAN_ID);
-	if (id != MANUFACTURER_ID)
+	if (i2c_smbus_read_byte_data(new_client, LM95245_REG_R_MAN_ID)
+			!= MANUFACTURER_ID
+		|| i2c_smbus_read_byte_data(new_client, LM95245_REG_R_CHIP_ID)
+			!= DEFAULT_REVISION)
 		return -ENODEV;
 
-	rev = i2c_smbus_read_byte_data(new_client, LM95245_REG_R_CHIP_ID);
-	switch (rev) {
-	case LM95235_REVISION:
-		if (address != 0x18 && address != 0x29 && address != 0x4c)
-			return -ENODEV;
-		name = "lm95235";
-		break;
-	case LM95245_REVISION:
-		name = "lm95245";
-		break;
-	default:
-		return -ENODEV;
-	}
-
-	strlcpy(info->type, name, I2C_NAME_SIZE);
+	strlcpy(info->type, DEVNAME, I2C_NAME_SIZE);
 	return 0;
 }
 
-static void lm95245_init_client(struct i2c_client *client,
-				struct lm95245_data *data)
+static void lm95245_init_client(struct i2c_client *client)
 {
+	struct lm95245_data *data = i2c_get_clientdata(client);
+
+	data->valid = 0;
 	data->interval = lm95245_read_conversion_rate(client);
 
 	data->config1 = i2c_smbus_read_byte_data(client,
@@ -471,33 +456,54 @@ static void lm95245_init_client(struct i2c_client *client,
 	}
 }
 
-static int lm95245_probe(struct i2c_client *client,
+static int lm95245_probe(struct i2c_client *new_client,
 			 const struct i2c_device_id *id)
 {
-	struct device *dev = &client->dev;
 	struct lm95245_data *data;
-	struct device *hwmon_dev;
+	int err;
 
-	data = devm_kzalloc(dev, sizeof(struct lm95245_data), GFP_KERNEL);
+	data = devm_kzalloc(&new_client->dev, sizeof(struct lm95245_data),
+			    GFP_KERNEL);
 	if (!data)
 		return -ENOMEM;
 
-	data->client = client;
+	i2c_set_clientdata(new_client, data);
 	mutex_init(&data->update_lock);
 
 	/* Initialize the LM95245 chip */
-	lm95245_init_client(client, data);
+	lm95245_init_client(new_client);
 
-	hwmon_dev = devm_hwmon_device_register_with_groups(dev, client->name,
-							   data,
-							   lm95245_groups);
-	return PTR_ERR_OR_ZERO(hwmon_dev);
+	/* Register sysfs hooks */
+	err = sysfs_create_group(&new_client->dev.kobj, &lm95245_group);
+	if (err)
+		return err;
+
+	data->hwmon_dev = hwmon_device_register(&new_client->dev);
+	if (IS_ERR(data->hwmon_dev)) {
+		err = PTR_ERR(data->hwmon_dev);
+		goto exit_remove_files;
+	}
+
+	return 0;
+
+exit_remove_files:
+	sysfs_remove_group(&new_client->dev.kobj, &lm95245_group);
+	return err;
+}
+
+static int lm95245_remove(struct i2c_client *client)
+{
+	struct lm95245_data *data = i2c_get_clientdata(client);
+
+	hwmon_device_unregister(data->hwmon_dev);
+	sysfs_remove_group(&client->dev.kobj, &lm95245_group);
+
+	return 0;
 }
 
 /* Driver data (common to all clients) */
 static const struct i2c_device_id lm95245_id[] = {
-	{ "lm95235", 0 },
-	{ "lm95245", 0 },
+	{ DEVNAME, 0 },
 	{ }
 };
 MODULE_DEVICE_TABLE(i2c, lm95245_id);
@@ -505,9 +511,10 @@ MODULE_DEVICE_TABLE(i2c, lm95245_id);
 static struct i2c_driver lm95245_driver = {
 	.class		= I2C_CLASS_HWMON,
 	.driver = {
-		.name	= "lm95245",
+		.name	= DEVNAME,
 	},
 	.probe		= lm95245_probe,
+	.remove		= lm95245_remove,
 	.id_table	= lm95245_id,
 	.detect		= lm95245_detect,
 	.address_list	= normal_i2c,
@@ -516,5 +523,5 @@ static struct i2c_driver lm95245_driver = {
 module_i2c_driver(lm95245_driver);
 
 MODULE_AUTHOR("Alexander Stein <alexander.stein@systec-electronic.com>");
-MODULE_DESCRIPTION("LM95235/LM95245 sensor driver");
+MODULE_DESCRIPTION("LM95245 sensor driver");
 MODULE_LICENSE("GPL");

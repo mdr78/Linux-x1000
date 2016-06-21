@@ -18,9 +18,9 @@ config CPU_S3C6410
 	  Enable S3C6410 CPU support
 
 config S3C64XX_PL080
-	def_bool DMADEVICES
-	select ARM_AMBA
+	bool "S3C64XX DMA using generic PL08x driver"
 	select AMBA_PL08X
+	select SAMSUNG_DMADEV
 
 config S3C64XX_SETUP_SDHCI
 	bool
@@ -33,12 +33,6 @@ config S3C64XX_DEV_ONENAND1
 	bool
 	help
 	  Compile in platform device definition for OneNAND1 controller
-
-config SAMSUNG_DEV_BACKLIGHT
-	bool
-	depends on SAMSUNG_DEV_PWM
-	help
-	  Compile in platform device definition LCD backlight with PWM Timer
 
 # platform specific device setup
 
@@ -92,7 +86,8 @@ config MACH_SMDK6400
        bool "SMDK6400"
 	select CPU_S3C6400
 	select S3C64XX_SETUP_SDHCI
-	select S3C_DEV_HSMMC1
+	select S3C_DEV_HSMMC
+	select S3C_DEV_NAND
 	help
 	  Machine support for the Samsung SMDK6400
 
@@ -195,7 +190,6 @@ endchoice
 config SMDK6410_WM1190_EV1
 	bool "Support Wolfson Microelectronics 1190-EV1 PMIC card"
 	depends on MACH_SMDK6410
-	depends on I2C=y
 	select MFD_WM8350_I2C
 	select REGULATOR
 	select REGULATOR_WM8350
@@ -210,7 +204,6 @@ config SMDK6410_WM1190_EV1
 config SMDK6410_WM1192_EV1
 	bool "Support Wolfson Microelectronics 1192-EV1 PMIC card"
 	depends on MACH_SMDK6410
-	depends on I2C=y
 	select MFD_WM831X
 	select MFD_WM831X_I2C
 	select REGULATOR
@@ -277,8 +270,8 @@ config MACH_SMARTQ7
 
 config MACH_WLF_CRAGG_6410
 	bool "Wolfson Cragganmore 6410"
-	depends on I2C=y
 	select CPU_S3C6410
+	select I2C
 	select LEDS_GPIO_REGISTER
 	select S3C64XX_DEV_SPI0
 	select S3C64XX_SETUP_FB_24BPP

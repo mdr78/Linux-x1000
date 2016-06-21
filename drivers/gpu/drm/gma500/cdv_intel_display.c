@@ -412,11 +412,8 @@ static bool cdv_intel_find_dp_pll(const struct gma_limit_t *limit,
 				  int refclk,
 				  struct gma_clock_t *best_clock)
 {
-	struct gma_crtc *gma_crtc = to_gma_crtc(crtc);
 	struct gma_clock_t clock;
-
-	switch (refclk) {
-	case 27000:
+	if (refclk == 27000) {
 		if (target < 200000) {
 			clock.p1 = 2;
 			clock.p2 = 10;
@@ -430,9 +427,7 @@ static bool cdv_intel_find_dp_pll(const struct gma_limit_t *limit,
 			clock.m1 = 0;
 			clock.m2 = 98;
 		}
-		break;
-
-	case 100000:
+	} else if (refclk == 100000) {
 		if (target < 200000) {
 			clock.p1 = 2;
 			clock.p2 = 10;
@@ -446,13 +441,12 @@ static bool cdv_intel_find_dp_pll(const struct gma_limit_t *limit,
 			clock.m1 = 0;
 			clock.m2 = 133;
 		}
-		break;
-
-	default:
+	} else
 		return false;
-	}
-
-	gma_crtc->clock_funcs->clock(refclk, &clock);
+	clock.m = clock.m2 + 2;
+	clock.p = clock.p1 * clock.p2;
+	clock.vco = (refclk * clock.m) / clock.n;
+	clock.dot = clock.vco / clock.p;
 	memcpy(best_clock, &clock, sizeof(struct gma_clock_t));
 	return true;
 }
@@ -469,9 +463,52 @@ static bool cdv_intel_pipe_enabled(struct drm_device *dev, int pipe)
 	crtc = dev_priv->pipe_to_crtc_mapping[pipe];
 	gma_crtc = to_gma_crtc(crtc);
 
-	if (crtc->primary->fb == NULL || !gma_crtc->active)
+	if (crtc->fb == NULL || !gma_crtc->active)
 		return false;
 	return true;
+}
+
+static bool cdv_intel_single_pipe_active (struct drm_device *dev)
+{
+	uint32_t pipe_enabled = 0;
+
+	if (cdv_intel_pipe_enabled(dev, 0))
+		pipe_enabled |= FIFO_PIPEA;
+
+	if (cdv_intel_pipe_enabled(dev, 1))
+		pipe_enabled |= FIFO_PIPEB;
+
+
+	DRM_DEBUG_KMS("pipe enabled %x\n", pipe_enabled);
+
+	if (pipe_enabled == FIFO_PIPEA || pipe_enabled == FIFO_PIPEB)
+		return true;
+	else
+		return false;
+}
+
+static bool is_pipeb_lvds(struct drm_device *dev, struct drm_crtc *crtc)
+{
+	struct gma_crtc *gma_crtc = to_gma_crtc(crtc);
+	struct drm_mode_config *mode_config = &dev->mode_config;
+	struct drm_connector *connector;
+
+	if (gma_crtc->pipe != 1)
+		return false;
+
+	list_for_each_entry(connector, &mode_config->connector_list, head) {
+		struct gma_encoder *gma_encoder =
+					gma_attached_encoder(connector);
+
+		if (!connector->encoder
+		    || connector->encoder->crtc != crtc)
+			continue;
+
+		if (gma_encoder->type == INTEL_OUTPUT_LVDS)
+			return true;
+	}
+
+	return false;
 }
 
 void cdv_disable_sr(struct drm_device *dev)
@@ -498,10 +535,8 @@ void cdv_disable_sr(struct drm_device *dev)
 void cdv_update_wm(struct drm_device *dev, struct drm_crtc *crtc)
 {
 	struct drm_psb_private *dev_priv = dev->dev_private;
-	struct gma_crtc *gma_crtc = to_gma_crtc(crtc);
 
-	/* Is only one pipe enabled? */
-	if (cdv_intel_pipe_enabled(dev, 0) ^ cdv_intel_pipe_enabled(dev, 1)) {
+	if (cdv_intel_single_pipe_active(dev)) {
 		u32 fw;
 
 		fw = REG_READ(DSPFW1);
@@ -522,9 +557,7 @@ void cdv_update_wm(struct drm_device *dev, struct drm_crtc *crtc)
 
 		/* ignore FW4 */
 
-		/* Is pipe b lvds ? */
-		if (gma_crtc->pipe == 1 &&
-		    gma_pipe_has_type(crtc, INTEL_OUTPUT_LVDS)) {
+		if (is_pipeb_lvds(dev, crtc)) {
 			REG_WRITE(DSPFW5, 0x00040330);
 		} else {
 			fw = (3 << DSP_PLANE_B_FIFO_WM1_SHIFT) |
@@ -823,7 +856,7 @@ static int cdv_intel_crtc_mode_set(struct drm_crtc *crtc,
 
 	/* Flush the plane changes */
 	{
-		const struct drm_crtc_helper_funcs *crtc_funcs =
+		struct drm_crtc_helper_funcs *crtc_funcs =
 		    crtc->helper_private;
 		crtc_funcs->mode_set_base(crtc, x, y, old_fb);
 	}

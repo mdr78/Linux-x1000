@@ -152,7 +152,7 @@ static void lec_handle_bridge(struct sk_buff *skb, struct net_device *dev)
 		atm_force_charge(priv->lecd, skb2->truesize);
 		sk = sk_atm(priv->lecd);
 		skb_queue_tail(&sk->sk_receive_queue, skb2);
-		sk->sk_data_ready(sk);
+		sk->sk_data_ready(sk, skb2->len);
 	}
 }
 #endif /* defined(CONFIG_BRIDGE) || defined(CONFIG_BRIDGE_MODULE) */
@@ -410,11 +410,9 @@ static int lec_atm_send(struct atm_vcc *vcc, struct sk_buff *skb)
 		priv->lane2_ops = NULL;
 		if (priv->lane_version > 1)
 			priv->lane2_ops = &lane2_ops;
-		rtnl_lock();
 		if (dev_set_mtu(dev, mesg->content.config.mtu))
 			pr_info("%s: change_mtu to %d failed\n",
 				dev->name, mesg->content.config.mtu);
-		rtnl_unlock();
 		priv->is_proxy = mesg->content.config.is_proxy;
 		break;
 	case l_flush_tran_id:
@@ -449,7 +447,7 @@ static int lec_atm_send(struct atm_vcc *vcc, struct sk_buff *skb)
 			atm_force_charge(priv->lecd, skb2->truesize);
 			sk = sk_atm(priv->lecd);
 			skb_queue_tail(&sk->sk_receive_queue, skb2);
-			sk->sk_data_ready(sk);
+			sk->sk_data_ready(sk, skb2->len);
 		}
 	}
 #endif /* defined(CONFIG_BRIDGE) || defined(CONFIG_BRIDGE_MODULE) */
@@ -532,13 +530,13 @@ send_to_lecd(struct lec_priv *priv, atmlec_msg_type type,
 	atm_force_charge(priv->lecd, skb->truesize);
 	sk = sk_atm(priv->lecd);
 	skb_queue_tail(&sk->sk_receive_queue, skb);
-	sk->sk_data_ready(sk);
+	sk->sk_data_ready(sk, skb->len);
 
 	if (data != NULL) {
 		pr_debug("about to send %d bytes of data\n", data->len);
 		atm_force_charge(priv->lecd, data->truesize);
 		skb_queue_tail(&sk->sk_receive_queue, data);
-		sk->sk_data_ready(sk);
+		sk->sk_data_ready(sk, skb->len);
 	}
 
 	return 0;
@@ -618,7 +616,7 @@ static void lec_push(struct atm_vcc *vcc, struct sk_buff *skb)
 
 		pr_debug("%s: To daemon\n", dev->name);
 		skb_queue_tail(&sk->sk_receive_queue, skb);
-		sk->sk_data_ready(sk);
+		sk->sk_data_ready(sk, skb->len);
 	} else {		/* Data frame, queue to protocol handlers */
 		struct lec_arp_table *entry;
 		unsigned char *src, *dst;
@@ -835,6 +833,7 @@ static void *lec_tbl_walk(struct lec_state *state, struct hlist_head *tbl,
 			  loff_t *l)
 {
 	struct hlist_node *e = state->node;
+	struct lec_arp_table *tmp;
 
 	if (!e)
 		e = tbl->first;
@@ -843,7 +842,9 @@ static void *lec_tbl_walk(struct lec_state *state, struct hlist_head *tbl,
 		--*l;
 	}
 
-	for (; e; e = e->next) {
+	tmp = container_of(e, struct lec_arp_table, next);
+
+	hlist_for_each_entry_from(tmp, next) {
 		if (--*l < 0)
 			break;
 	}
@@ -2001,7 +2002,7 @@ lec_vcc_added(struct lec_priv *priv, const struct atmlec_ioc *ioc_data,
 		if (entry == NULL)
 			goto out;
 		memcpy(entry->atm_addr, ioc_data->atm_addr, ATM_ESA_LEN);
-		eth_zero_addr(entry->mac_addr);
+		memset(entry->mac_addr, 0, ETH_ALEN);
 		entry->recv_vcc = vcc;
 		entry->old_recv_push = old_push;
 		entry->status = ESI_UNKNOWN;
@@ -2086,7 +2087,7 @@ lec_vcc_added(struct lec_priv *priv, const struct atmlec_ioc *ioc_data,
 	entry->vcc = vcc;
 	entry->old_push = old_push;
 	memcpy(entry->atm_addr, ioc_data->atm_addr, ATM_ESA_LEN);
-	eth_zero_addr(entry->mac_addr);
+	memset(entry->mac_addr, 0, ETH_ALEN);
 	entry->status = ESI_UNKNOWN;
 	hlist_add_head(&entry->next, &priv->lec_arp_empty_ones);
 	entry->timer.expires = jiffies + priv->vcc_timeout_period;

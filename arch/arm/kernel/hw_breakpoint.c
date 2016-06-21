@@ -29,13 +29,14 @@
 #include <linux/hw_breakpoint.h>
 #include <linux/smp.h>
 #include <linux/cpu_pm.h>
-#include <linux/coresight.h>
 
 #include <asm/cacheflush.h>
 #include <asm/cputype.h>
 #include <asm/current.h>
 #include <asm/hw_breakpoint.h>
+#include <asm/kdebug.h>
 #include <asm/traps.h>
+#include <asm/hardware/coresight.h>
 
 /* Breakpoint currently in use for each BRP. */
 static DEFINE_PER_CPU(struct perf_event *, bp_on_reg[ARM_MAX_BRP]);
@@ -112,8 +113,8 @@ static u32 read_wb_reg(int n)
 	GEN_READ_WB_REG_CASES(ARM_OP2_WVR, val);
 	GEN_READ_WB_REG_CASES(ARM_OP2_WCR, val);
 	default:
-		pr_warn("attempt to read from unknown breakpoint register %d\n",
-			n);
+		pr_warning("attempt to read from unknown breakpoint "
+				"register %d\n", n);
 	}
 
 	return val;
@@ -127,8 +128,8 @@ static void write_wb_reg(int n, u32 val)
 	GEN_WRITE_WB_REG_CASES(ARM_OP2_WVR, val);
 	GEN_WRITE_WB_REG_CASES(ARM_OP2_WCR, val);
 	default:
-		pr_warn("attempt to write to unknown breakpoint register %d\n",
-			n);
+		pr_warning("attempt to write to unknown breakpoint "
+				"register %d\n", n);
 	}
 	isb();
 }
@@ -166,7 +167,7 @@ static int debug_arch_supported(void)
 /* Can we determine the watchpoint access type from the fsr? */
 static int debug_exception_updates_fsr(void)
 {
-	return get_debug_arch() >= ARM_DEBUG_ARCH_V8;
+	return 0;
 }
 
 /* Determine number of WRP registers available. */
@@ -256,7 +257,6 @@ static int enable_monitor_mode(void)
 		break;
 	case ARM_DEBUG_ARCH_V7_ECP14:
 	case ARM_DEBUG_ARCH_V7_1:
-	case ARM_DEBUG_ARCH_V8:
 		ARM_DBG_WRITE(c0, c2, 2, (dscr | ARM_DSCR_MDBGEN));
 		isb();
 		break;
@@ -291,7 +291,7 @@ int hw_breakpoint_slots(int type)
 	case TYPE_DATA:
 		return get_num_wrps();
 	default:
-		pr_warn("unknown slot type: %d\n", type);
+		pr_warning("unknown slot type: %d\n", type);
 		return 0;
 	}
 }
@@ -364,7 +364,7 @@ int arch_install_hw_breakpoint(struct perf_event *bp)
 	}
 
 	if (i == max_slots) {
-		pr_warn("Can't find any breakpoint slot\n");
+		pr_warning("Can't find any breakpoint slot\n");
 		return -EBUSY;
 	}
 
@@ -416,7 +416,7 @@ void arch_uninstall_hw_breakpoint(struct perf_event *bp)
 	}
 
 	if (i == max_slots) {
-		pr_warn("Can't find any breakpoint slot\n");
+		pr_warning("Can't find any breakpoint slot\n");
 		return;
 	}
 
@@ -647,7 +647,7 @@ int arch_validate_hwbkpt_settings(struct perf_event *bp)
 		 * Per-cpu breakpoints are not supported by our stepping
 		 * mechanism.
 		 */
-		if (!bp->hw.target)
+		if (!bp->hw.bp_target)
 			return -EINVAL;
 
 		/*
@@ -893,8 +893,8 @@ static int debug_reg_trap(struct pt_regs *regs, unsigned int instr)
 {
 	int cpu = smp_processor_id();
 
-	pr_warn("Debug register access (0x%x) caused undefined instruction on CPU %d\n",
-		instr, cpu);
+	pr_warning("Debug register access (0x%x) caused undefined instruction on CPU %d\n",
+		   instr, cpu);
 
 	/* Set the error flag for this CPU and skip the faulting instruction. */
 	cpumask_set_cpu(cpu, &debug_err_mask);
@@ -975,7 +975,7 @@ static void reset_ctrl_regs(void *unused)
 	 * Unconditionally clear the OS lock by writing a value
 	 * other than CS_LAR_KEY to the access register.
 	 */
-	ARM_DBG_WRITE(c1, c0, 4, ~CORESIGHT_UNLOCK);
+	ARM_DBG_WRITE(c1, c0, 4, ~CS_LAR_KEY);
 	isb();
 
 	/*
@@ -1072,8 +1072,6 @@ static int __init arch_hw_breakpoint_init(void)
 	core_num_brps = get_num_brps();
 	core_num_wrps = get_num_wrps();
 
-	cpu_notifier_register_begin();
-
 	/*
 	 * We need to tread carefully here because DBGSWENABLE may be
 	 * driven low on this core and there isn't an architected way to
@@ -1090,7 +1088,6 @@ static int __init arch_hw_breakpoint_init(void)
 	if (!cpumask_empty(&debug_err_mask)) {
 		core_num_brps = 0;
 		core_num_wrps = 0;
-		cpu_notifier_register_done();
 		return 0;
 	}
 
@@ -1110,10 +1107,7 @@ static int __init arch_hw_breakpoint_init(void)
 			TRAP_HWBKPT, "breakpoint debug exception");
 
 	/* Register hotplug and PM notifiers. */
-	__register_cpu_notifier(&dbg_reset_nb);
-
-	cpu_notifier_register_done();
-
+	register_cpu_notifier(&dbg_reset_nb);
 	pm_init();
 	return 0;
 }

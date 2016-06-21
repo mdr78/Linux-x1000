@@ -31,8 +31,6 @@
 #include "alloc.h"
 #include "dat.h"
 
-static void __nilfs_btree_init(struct nilfs_bmap *bmap);
-
 static struct nilfs_btree_path *nilfs_btree_alloc_path(void)
 {
 	struct nilfs_btree_path *path;
@@ -370,34 +368,6 @@ static int nilfs_btree_node_broken(const struct nilfs_btree_node *node,
 	return ret;
 }
 
-/**
- * nilfs_btree_root_broken - verify consistency of btree root node
- * @node: btree root node to be examined
- * @ino: inode number
- *
- * Return Value: If node is broken, 1 is returned. Otherwise, 0 is returned.
- */
-static int nilfs_btree_root_broken(const struct nilfs_btree_node *node,
-				   unsigned long ino)
-{
-	int level, flags, nchildren;
-	int ret = 0;
-
-	level = nilfs_btree_node_get_level(node);
-	flags = nilfs_btree_node_get_flags(node);
-	nchildren = nilfs_btree_node_get_nchildren(node);
-
-	if (unlikely(level < NILFS_BTREE_LEVEL_NODE_MIN ||
-		     level >= NILFS_BTREE_LEVEL_MAX ||
-		     nchildren < 0 ||
-		     nchildren > NILFS_BTREE_ROOT_NCHILDREN_MAX)) {
-		pr_crit("NILFS: bad btree root (inode number=%lu): level = %d, flags = 0x%x, nchildren = %d\n",
-			ino, level, flags, nchildren);
-		ret = 1;
-	}
-	return ret;
-}
-
 int nilfs_btree_broken_node_block(struct buffer_head *bh)
 {
 	int ret;
@@ -631,44 +601,6 @@ static int nilfs_btree_do_lookup_last(const struct nilfs_bmap *btree,
 		*ptrp = ptr;
 
 	return 0;
-}
-
-/**
- * nilfs_btree_get_next_key - get next valid key from btree path array
- * @btree: bmap struct of btree
- * @path: array of nilfs_btree_path struct
- * @minlevel: start level
- * @nextkey: place to store the next valid key
- *
- * Return Value: If a next key was found, 0 is returned. Otherwise,
- * -ENOENT is returned.
- */
-static int nilfs_btree_get_next_key(const struct nilfs_bmap *btree,
-				    const struct nilfs_btree_path *path,
-				    int minlevel, __u64 *nextkey)
-{
-	struct nilfs_btree_node *node;
-	int maxlevel = nilfs_btree_height(btree) - 1;
-	int index, next_adj, level;
-
-	/* Next index is already set to bp_index for leaf nodes. */
-	next_adj = 0;
-	for (level = minlevel; level <= maxlevel; level++) {
-		if (level == maxlevel)
-			node = nilfs_btree_get_root(btree);
-		else
-			node = nilfs_btree_get_nonroot_node(path, level);
-
-		index = path[level].bp_index + next_adj;
-		if (index < nilfs_btree_node_get_nchildren(node)) {
-			/* Next key is in this node */
-			*nextkey = nilfs_btree_node_get_key(node, index);
-			return 0;
-		}
-		/* For non-leaf nodes, next index is stored at bp_index + 1. */
-		next_adj = 1;
-	}
-	return -ENOENT;
 }
 
 static int nilfs_btree_lookup(const struct nilfs_bmap *btree,
@@ -919,6 +851,8 @@ static void nilfs_btree_split(struct nilfs_bmap *btree,
 			      int level, __u64 *keyp, __u64 *ptrp)
 {
 	struct nilfs_btree_node *node, *right;
+	__u64 newkey;
+	__u64 newptr;
 	int nchildren, n, move, ncblk;
 
 	node = nilfs_btree_get_nonroot_node(path, level);
@@ -939,6 +873,9 @@ static void nilfs_btree_split(struct nilfs_bmap *btree,
 		mark_buffer_dirty(path[level].bp_bh);
 	if (!buffer_dirty(path[level].bp_sib_bh))
 		mark_buffer_dirty(path[level].bp_sib_bh);
+
+	newkey = nilfs_btree_node_get_key(right, 0);
+	newptr = path[level].bp_newreq.bpr_ptr;
 
 	if (move) {
 		path[level].bp_index -= nilfs_btree_node_get_nchildren(node);
@@ -1596,27 +1533,6 @@ out:
 	return ret;
 }
 
-static int nilfs_btree_seek_key(const struct nilfs_bmap *btree, __u64 start,
-				__u64 *keyp)
-{
-	struct nilfs_btree_path *path;
-	const int minlevel = NILFS_BTREE_LEVEL_NODE_MIN;
-	int ret;
-
-	path = nilfs_btree_alloc_path();
-	if (!path)
-		return -ENOMEM;
-
-	ret = nilfs_btree_do_lookup(btree, path, start, NULL, minlevel, 0);
-	if (!ret)
-		*keyp = start;
-	else if (ret == -ENOENT)
-		ret = nilfs_btree_get_next_key(btree, path, minlevel, keyp);
-
-	nilfs_btree_free_path(path);
-	return ret;
-}
-
 static int nilfs_btree_last_key(const struct nilfs_bmap *btree, __u64 *keyp)
 {
 	struct nilfs_btree_path *path;
@@ -1797,7 +1713,7 @@ nilfs_btree_commit_convert_and_insert(struct nilfs_bmap *btree,
 
 	/* convert and insert */
 	dat = NILFS_BMAP_USE_VBN(btree) ? nilfs_bmap_get_dat(btree) : NULL;
-	__nilfs_btree_init(btree);
+	nilfs_btree_init(btree);
 	if (nreq != NULL) {
 		nilfs_bmap_commit_alloc_ptr(btree, dreq, dat);
 		nilfs_bmap_commit_alloc_ptr(btree, nreq, dat);
@@ -1851,7 +1767,7 @@ int nilfs_btree_convert_and_insert(struct nilfs_bmap *btree,
 				   __u64 key, __u64 ptr,
 				   const __u64 *keys, const __u64 *ptrs, int n)
 {
-	struct buffer_head *bh = NULL;
+	struct buffer_head *bh;
 	union nilfs_bmap_ptr_req dreq, nreq, *di, *ni;
 	struct nilfs_bmap_stats stats;
 	int ret;
@@ -2352,9 +2268,7 @@ static const struct nilfs_bmap_operations nilfs_btree_ops = {
 	.bop_assign		=	nilfs_btree_assign,
 	.bop_mark		=	nilfs_btree_mark,
 
-	.bop_seek_key		=	nilfs_btree_seek_key,
 	.bop_last_key		=	nilfs_btree_last_key,
-
 	.bop_check_insert	=	NULL,
 	.bop_check_delete	=	nilfs_btree_check_delete,
 	.bop_gather_data	=	nilfs_btree_gather_data,
@@ -2374,31 +2288,18 @@ static const struct nilfs_bmap_operations nilfs_btree_ops_gc = {
 	.bop_assign		=	nilfs_btree_assign_gc,
 	.bop_mark		=	NULL,
 
-	.bop_seek_key		=	NULL,
 	.bop_last_key		=	NULL,
-
 	.bop_check_insert	=	NULL,
 	.bop_check_delete	=	NULL,
 	.bop_gather_data	=	NULL,
 };
 
-static void __nilfs_btree_init(struct nilfs_bmap *bmap)
+int nilfs_btree_init(struct nilfs_bmap *bmap)
 {
 	bmap->b_ops = &nilfs_btree_ops;
 	bmap->b_nchildren_per_block =
 		NILFS_BTREE_NODE_NCHILDREN_MAX(nilfs_btree_node_size(bmap));
-}
-
-int nilfs_btree_init(struct nilfs_bmap *bmap)
-{
-	int ret = 0;
-
-	__nilfs_btree_init(bmap);
-
-	if (nilfs_btree_root_broken(nilfs_btree_get_root(bmap),
-				    bmap->b_inode->i_ino))
-		ret = -EIO;
-	return ret;
+	return 0;
 }
 
 void nilfs_btree_init_gc(struct nilfs_bmap *bmap)

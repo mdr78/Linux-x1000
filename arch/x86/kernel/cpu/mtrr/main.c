@@ -59,12 +59,6 @@
 #define MTRR_TO_PHYS_WC_OFFSET 1000
 
 u32 num_var_ranges;
-static bool __mtrr_enabled;
-
-static bool mtrr_enabled(void)
-{
-	return __mtrr_enabled;
-}
 
 unsigned int mtrr_usage_table[MTRR_MAX_VAR_RANGES];
 static DEFINE_MUTEX(mtrr_mutex);
@@ -292,7 +286,7 @@ int mtrr_add_page(unsigned long base, unsigned long size,
 	int i, replace, error;
 	mtrr_type ltype;
 
-	if (!mtrr_enabled())
+	if (!mtrr_if)
 		return -ENXIO;
 
 	error = mtrr_if->validate_add_page(base, size, type);
@@ -441,13 +435,12 @@ static int mtrr_check(unsigned long base, unsigned long size)
 int mtrr_add(unsigned long base, unsigned long size, unsigned int type,
 	     bool increment)
 {
-	if (!mtrr_enabled())
-		return -ENODEV;
 	if (mtrr_check(base, size))
 		return -EINVAL;
 	return mtrr_add_page(base >> PAGE_SHIFT, size >> PAGE_SHIFT, type,
 			     increment);
 }
+EXPORT_SYMBOL(mtrr_add);
 
 /**
  * mtrr_del_page - delete a memory type region
@@ -470,8 +463,8 @@ int mtrr_del_page(int reg, unsigned long base, unsigned long size)
 	unsigned long lbase, lsize;
 	int error = -EINVAL;
 
-	if (!mtrr_enabled())
-		return -ENODEV;
+	if (!mtrr_if)
+		return -ENXIO;
 
 	max = num_var_ranges;
 	/* No CPU hotplug when we change MTRR entries */
@@ -530,12 +523,11 @@ int mtrr_del_page(int reg, unsigned long base, unsigned long size)
  */
 int mtrr_del(int reg, unsigned long base, unsigned long size)
 {
-	if (!mtrr_enabled())
-		return -ENODEV;
 	if (mtrr_check(base, size))
 		return -EINVAL;
 	return mtrr_del_page(reg, base >> PAGE_SHIFT, size >> PAGE_SHIFT);
 }
+EXPORT_SYMBOL(mtrr_del);
 
 /**
  * arch_phys_wc_add - add a WC MTRR and handle errors if PAT is unavailable
@@ -546,9 +538,6 @@ int mtrr_del(int reg, unsigned long base, unsigned long size)
  * attempts to add a WC MTRR covering size bytes starting at base and
  * logs an error if this fails.
  *
- * The called should provide a power of two size on an equivalent
- * power of two boundary.
- *
  * Drivers must store the return value to pass to mtrr_del_wc_if_needed,
  * but drivers should not try to interpret that return value.
  */
@@ -556,7 +545,7 @@ int arch_phys_wc_add(unsigned long base, unsigned long size)
 {
 	int ret;
 
-	if (pat_enabled() || !mtrr_enabled())
+	if (pat_enabled)
 		return 0;  /* Success!  (We don't need to do anything.) */
 
 	ret = mtrr_add(base, size, MTRR_TYPE_WRCOMB, true);
@@ -588,7 +577,7 @@ void arch_phys_wc_del(int handle)
 EXPORT_SYMBOL(arch_phys_wc_del);
 
 /*
- * arch_phys_wc_index - translates arch_phys_wc_add's return value
+ * phys_wc_to_mtrr_index - translates arch_phys_wc_add's return value
  * @handle: Return value from arch_phys_wc_add
  *
  * This will turn the return value from arch_phys_wc_add into an mtrr
@@ -598,14 +587,14 @@ EXPORT_SYMBOL(arch_phys_wc_del);
  * in printk line.  Alas there is an illegitimate use in some ancient
  * drm ioctls.
  */
-int arch_phys_wc_index(int handle)
+int phys_wc_to_mtrr_index(int handle)
 {
 	if (handle < MTRR_TO_PHYS_WC_OFFSET)
 		return -1;
 	else
 		return handle - MTRR_TO_PHYS_WC_OFFSET;
 }
-EXPORT_SYMBOL_GPL(arch_phys_wc_index);
+EXPORT_SYMBOL_GPL(phys_wc_to_mtrr_index);
 
 /*
  * HACK ALERT!
@@ -718,7 +707,7 @@ void __init mtrr_bp_init(void)
 	} else {
 		switch (boot_cpu_data.x86_vendor) {
 		case X86_VENDOR_AMD:
-			if (cpu_feature_enabled(X86_FEATURE_K6_MTRR)) {
+			if (cpu_has_k6_mtrr) {
 				/* Pre-Athlon (K6) AMD CPU MTRRs */
 				mtrr_if = mtrr_ops[X86_VENDOR_AMD];
 				size_or_mask = SIZE_OR_MASK_BITS(32);
@@ -726,14 +715,14 @@ void __init mtrr_bp_init(void)
 			}
 			break;
 		case X86_VENDOR_CENTAUR:
-			if (cpu_feature_enabled(X86_FEATURE_CENTAUR_MCR)) {
+			if (cpu_has_centaur_mcr) {
 				mtrr_if = mtrr_ops[X86_VENDOR_CENTAUR];
 				size_or_mask = SIZE_OR_MASK_BITS(32);
 				size_and_mask = 0;
 			}
 			break;
 		case X86_VENDOR_CYRIX:
-			if (cpu_feature_enabled(X86_FEATURE_CYRIX_ARR)) {
+			if (cpu_has_cyrix_arr) {
 				mtrr_if = mtrr_ops[X86_VENDOR_CYRIX];
 				size_or_mask = SIZE_OR_MASK_BITS(32);
 				size_and_mask = 0;
@@ -745,15 +734,10 @@ void __init mtrr_bp_init(void)
 	}
 
 	if (mtrr_if) {
-		__mtrr_enabled = true;
 		set_num_var_ranges();
 		init_table();
 		if (use_intel()) {
-			/* BIOS may override */
-			__mtrr_enabled = get_mtrr_state();
-
-			if (mtrr_enabled())
-				mtrr_bp_pat_init();
+			get_mtrr_state();
 
 			if (mtrr_cleanup(phys_addr)) {
 				changed_by_mtrr_cleanup = 1;
@@ -761,24 +745,10 @@ void __init mtrr_bp_init(void)
 			}
 		}
 	}
-
-	if (!mtrr_enabled()) {
-		pr_info("MTRR: Disabled\n");
-
-		/*
-		 * PAT initialization relies on MTRR's rendezvous handler.
-		 * Skip PAT init until the handler can initialize both
-		 * features independently.
-		 */
-		pat_disable("MTRRs disabled, skipping PAT initialization too.");
-	}
 }
 
 void mtrr_ap_init(void)
 {
-	if (!mtrr_enabled())
-		return;
-
 	if (!use_intel() || mtrr_aps_delayed_init)
 		return;
 	/*
@@ -804,9 +774,6 @@ void mtrr_save_state(void)
 {
 	int first_cpu;
 
-	if (!mtrr_enabled())
-		return;
-
 	get_online_cpus();
 	first_cpu = cpumask_first(cpu_online_mask);
 	smp_call_function_single(first_cpu, mtrr_save_fixed_ranges, NULL, 1);
@@ -815,8 +782,6 @@ void mtrr_save_state(void)
 
 void set_mtrr_aps_delayed_init(void)
 {
-	if (!mtrr_enabled())
-		return;
 	if (!use_intel())
 		return;
 
@@ -828,7 +793,7 @@ void set_mtrr_aps_delayed_init(void)
  */
 void mtrr_aps_init(void)
 {
-	if (!use_intel() || !mtrr_enabled())
+	if (!use_intel())
 		return;
 
 	/*
@@ -845,7 +810,7 @@ void mtrr_aps_init(void)
 
 void mtrr_bp_restore(void)
 {
-	if (!use_intel() || !mtrr_enabled())
+	if (!use_intel())
 		return;
 
 	mtrr_if->set_all();
@@ -853,7 +818,7 @@ void mtrr_bp_restore(void)
 
 static int __init mtrr_init_finialize(void)
 {
-	if (!mtrr_enabled())
+	if (!mtrr_if)
 		return 0;
 
 	if (use_intel()) {

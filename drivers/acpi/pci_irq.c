@@ -19,6 +19,10 @@
  *  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
  *  General Public License for more details.
  *
+ *  You should have received a copy of the GNU General Public License along
+ *  with this program; if not, write to the Free Software Foundation, Inc.,
+ *  59 Temple Place, Suite 330, Boston, MA 02111-1307 USA.
+ *
  * ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
  */
 
@@ -40,6 +44,7 @@
 ACPI_MODULE_NAME("pci_irq");
 
 struct acpi_prt_entry {
+	struct list_head	list;
 	struct acpi_pci_id	id;
 	u8			pin;
 	acpi_handle		link;
@@ -158,7 +163,7 @@ static int acpi_pci_irq_check_entry(acpi_handle handle, struct pci_dev *dev,
 {
 	int segment = pci_domain_nr(dev->bus);
 	int bus = dev->bus->number;
-	int device = pci_ari_enabled(dev->bus) ? 0 : PCI_SLOT(dev->devfn);
+	int device = PCI_SLOT(dev->devfn);
 	struct acpi_prt_entry *entry;
 
 	if (((prt->address >> 16) & 0xffff) != device ||
@@ -365,31 +370,6 @@ static struct acpi_prt_entry *acpi_pci_irq_lookup(struct pci_dev *dev, int pin)
 	return NULL;
 }
 
-#if IS_ENABLED(CONFIG_ISA) || IS_ENABLED(CONFIG_EISA)
-static int acpi_isa_register_gsi(struct pci_dev *dev)
-{
-	u32 dev_gsi;
-
-	/* Interrupt Line values above 0xF are forbidden */
-	if (dev->irq > 0 && (dev->irq <= 0xF) &&
-	    acpi_isa_irq_available(dev->irq) &&
-	    (acpi_isa_irq_to_gsi(dev->irq, &dev_gsi) == 0)) {
-		dev_warn(&dev->dev, "PCI INT %c: no GSI - using ISA IRQ %d\n",
-			 pin_name(dev->pin), dev->irq);
-		acpi_register_gsi(&dev->dev, dev_gsi,
-				  ACPI_LEVEL_SENSITIVE,
-				  ACPI_ACTIVE_LOW);
-		return 0;
-	}
-	return -EINVAL;
-}
-#else
-static inline int acpi_isa_register_gsi(struct pci_dev *dev)
-{
-	return -ENODEV;
-}
-#endif
-
 int acpi_pci_irq_enable(struct pci_dev *dev)
 {
 	struct acpi_prt_entry *entry;
@@ -408,9 +388,6 @@ int acpi_pci_irq_enable(struct pci_dev *dev)
 				  pci_name(dev)));
 		return 0;
 	}
-
-	if (pci_has_managed_irq(dev))
-		return 0;
 
 	entry = acpi_pci_irq_lookup(dev, pin);
 	if (!entry) {
@@ -439,9 +416,19 @@ int acpi_pci_irq_enable(struct pci_dev *dev)
 	 * driver reported one, then use it. Exit in any case.
 	 */
 	if (gsi < 0) {
-		if (acpi_isa_register_gsi(dev))
+		u32 dev_gsi;
+		/* Interrupt Line values above 0xF are forbidden */
+		if (dev->irq > 0 && (dev->irq <= 0xF) &&
+		    (acpi_isa_irq_to_gsi(dev->irq, &dev_gsi) == 0)) {
+			dev_warn(&dev->dev, "PCI INT %c: no GSI - using ISA IRQ %d\n",
+				 pin_name(pin), dev->irq);
+			acpi_register_gsi(&dev->dev, dev_gsi,
+					  ACPI_LEVEL_SENSITIVE,
+					  ACPI_ACTIVE_LOW);
+		} else {
 			dev_warn(&dev->dev, "PCI INT %c: no GSI\n",
 				 pin_name(pin));
+		}
 
 		kfree(entry);
 		return 0;
@@ -454,7 +441,7 @@ int acpi_pci_irq_enable(struct pci_dev *dev)
 		kfree(entry);
 		return rc;
 	}
-	pci_set_managed_irq(dev, rc);
+	dev->irq = rc;
 
 	if (link)
 		snprintf(link_desc, sizeof(link_desc), " -> Link[%s]", link);
@@ -477,7 +464,7 @@ void acpi_pci_irq_disable(struct pci_dev *dev)
 	u8 pin;
 
 	pin = dev->pin;
-	if (!pin || !pci_has_managed_irq(dev))
+	if (!pin)
 		return;
 
 	entry = acpi_pci_irq_lookup(dev, pin);
@@ -497,8 +484,5 @@ void acpi_pci_irq_disable(struct pci_dev *dev)
 	 */
 
 	dev_dbg(&dev->dev, "PCI INT %c disabled\n", pin_name(pin));
-	if (gsi >= 0) {
-		acpi_unregister_gsi(gsi);
-		pci_reset_managed_irq(dev);
-	}
+	acpi_unregister_gsi(gsi);
 }

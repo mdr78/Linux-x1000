@@ -752,6 +752,15 @@ static int open(struct tty_struct *tty, struct file *filp)
 		printk("%s(%d):%s open(), old ref count = %d\n",
 			 __FILE__,__LINE__,tty->driver->name, info->port.count);
 
+	/* If port is closing, signal caller to try again */
+	if (tty_hung_up_p(filp) || info->port.flags & ASYNC_CLOSING){
+		wait_event_interruptible_tty(tty, info->port.close_wait,
+					     !(info->port.flags & ASYNC_CLOSING));
+		retval = ((info->port.flags & ASYNC_HUP_NOTIFY) ?
+			-EAGAIN : -ERESTARTSYS);
+		goto cleanup;
+	}
+
 	info->port.low_latency = (info->port.flags & ASYNC_LOW_LATENCY) ? 1 : 0;
 
 	spin_lock_irqsave(&info->netlock, flags);
@@ -1646,8 +1655,7 @@ static int hdlcdev_open(struct net_device *dev)
 		printk("%s:hdlcdev_open(%s)\n",__FILE__,dev->name);
 
 	/* generic HDLC layer open processing */
-	rc = hdlc_open(dev);
-	if (rc)
+	if ((rc = hdlc_open(dev)))
 		return rc;
 
 	/* arbitrate between network and tty opens */
@@ -1758,7 +1766,6 @@ static int hdlcdev_ioctl(struct net_device *dev, struct ifreq *ifr, int cmd)
 					      HDLC_FLAG_TXC_TXCPIN | HDLC_FLAG_TXC_DPLL |
 					      HDLC_FLAG_TXC_BRG    | HDLC_FLAG_TXC_RXCPIN);
 
-		memset(&new_line, 0, sizeof(new_line));
 		switch (flags){
 		case (HDLC_FLAG_RXC_RXCPIN | HDLC_FLAG_TXC_TXCPIN): new_line.clock_type = CLOCK_EXT; break;
 		case (HDLC_FLAG_RXC_BRG    | HDLC_FLAG_TXC_BRG):    new_line.clock_type = CLOCK_INT; break;
@@ -1914,8 +1921,7 @@ static int hdlcdev_init(SLMP_INFO *info)
 
 	/* allocate and initialize network and HDLC layer objects */
 
-	dev = alloc_hdlcdev(info);
-	if (!dev) {
+	if (!(dev = alloc_hdlcdev(info))) {
 		printk(KERN_ERR "%s:hdlc device allocation failure\n",__FILE__);
 		return -ENOMEM;
 	}
@@ -1936,8 +1942,7 @@ static int hdlcdev_init(SLMP_INFO *info)
 	hdlc->xmit   = hdlcdev_xmit;
 
 	/* register objects with HDLC layer */
-	rc = register_hdlc_device(dev);
-	if (rc) {
+	if ((rc = register_hdlc_device(dev))) {
 		printk(KERN_WARNING "%s:unable to register hdlc device\n",__FILE__);
 		free_netdev(dev);
 		return rc;
@@ -3282,6 +3287,7 @@ static int block_til_ready(struct tty_struct *tty, struct file *filp,
 	DECLARE_WAITQUEUE(wait, current);
 	int		retval;
 	bool		do_clocal = false;
+	bool		extra_count = false;
 	unsigned long	flags;
 	int		cd;
 	struct tty_port *port = &info->port;
@@ -3315,7 +3321,10 @@ static int block_til_ready(struct tty_struct *tty, struct file *filp,
 			 __FILE__,__LINE__, tty->driver->name, port->count );
 
 	spin_lock_irqsave(&info->lock, flags);
-	port->count--;
+	if (!tty_hung_up_p(filp)) {
+		extra_count = true;
+		port->count--;
+	}
 	spin_unlock_irqrestore(&info->lock, flags);
 	port->blocked_open++;
 
@@ -3332,8 +3341,9 @@ static int block_til_ready(struct tty_struct *tty, struct file *filp,
 		}
 
 		cd = tty_port_carrier_raised(port);
-		if (do_clocal || cd)
-			break;
+
+ 		if (!(port->flags & ASYNC_CLOSING) && (do_clocal || cd))
+ 			break;
 
 		if (signal_pending(current)) {
 			retval = -ERESTARTSYS;
@@ -3351,7 +3361,8 @@ static int block_til_ready(struct tty_struct *tty, struct file *filp,
 
 	set_current_state(TASK_RUNNING);
 	remove_wait_queue(&port->open_wait, &wait);
-	if (!tty_hung_up_p(filp))
+
+	if (extra_count)
 		port->count++;
 	port->blocked_open--;
 
@@ -3913,8 +3924,7 @@ static void synclinkmp_cleanup(void)
 	printk("Unloading %s %s\n", driver_name, driver_version);
 
 	if (serial_driver) {
-		rc = tty_unregister_driver(serial_driver);
-		if (rc)
+		if ((rc = tty_unregister_driver(serial_driver)))
 			printk("%s(%d) failed to unregister tty driver err=%d\n",
 			       __FILE__,__LINE__,rc);
 		put_tty_driver(serial_driver);

@@ -20,8 +20,6 @@
 #include "internal.h"
 #include <keys/user-type.h>
 
-static int request_key_auth_preparse(struct key_preparsed_payload *);
-static void request_key_auth_free_preparse(struct key_preparsed_payload *);
 static int request_key_auth_instantiate(struct key *,
 					struct key_preparsed_payload *);
 static void request_key_auth_describe(const struct key *, struct seq_file *);
@@ -35,8 +33,6 @@ static long request_key_auth_read(const struct key *, char __user *, size_t);
 struct key_type key_type_request_key_auth = {
 	.name		= ".request_key_auth",
 	.def_datalen	= sizeof(struct request_key_auth),
-	.preparse	= request_key_auth_preparse,
-	.free_preparse	= request_key_auth_free_preparse,
 	.instantiate	= request_key_auth_instantiate,
 	.describe	= request_key_auth_describe,
 	.revoke		= request_key_auth_revoke,
@@ -44,22 +40,13 @@ struct key_type key_type_request_key_auth = {
 	.read		= request_key_auth_read,
 };
 
-static int request_key_auth_preparse(struct key_preparsed_payload *prep)
-{
-	return 0;
-}
-
-static void request_key_auth_free_preparse(struct key_preparsed_payload *prep)
-{
-}
-
 /*
  * Instantiate a request-key authorisation key.
  */
 static int request_key_auth_instantiate(struct key *key,
 					struct key_preparsed_payload *prep)
 {
-	key->payload.data[0] = (struct request_key_auth *)prep->data;
+	key->payload.data = (struct request_key_auth *)prep->data;
 	return 0;
 }
 
@@ -69,7 +56,7 @@ static int request_key_auth_instantiate(struct key *key,
 static void request_key_auth_describe(const struct key *key,
 				      struct seq_file *m)
 {
-	struct request_key_auth *rka = key->payload.data[0];
+	struct request_key_auth *rka = key->payload.data;
 
 	seq_puts(m, "key:");
 	seq_puts(m, key->description);
@@ -84,7 +71,7 @@ static void request_key_auth_describe(const struct key *key,
 static long request_key_auth_read(const struct key *key,
 				  char __user *buffer, size_t buflen)
 {
-	struct request_key_auth *rka = key->payload.data[0];
+	struct request_key_auth *rka = key->payload.data;
 	size_t datalen;
 	long ret;
 
@@ -110,7 +97,7 @@ static long request_key_auth_read(const struct key *key,
  */
 static void request_key_auth_revoke(struct key *key)
 {
-	struct request_key_auth *rka = key->payload.data[0];
+	struct request_key_auth *rka = key->payload.data;
 
 	kenter("{%d}", key->serial);
 
@@ -125,7 +112,7 @@ static void request_key_auth_revoke(struct key *key)
  */
 static void request_key_auth_destroy(struct key *key)
 {
-	struct request_key_auth *rka = key->payload.data[0];
+	struct request_key_auth *rka = key->payload.data;
 
 	kenter("{%d}", key->serial);
 
@@ -179,7 +166,7 @@ struct key *request_key_auth_new(struct key *target, const void *callout_info,
 		if (test_bit(KEY_FLAG_REVOKED, &cred->request_key_auth->flags))
 			goto auth_key_revoked;
 
-		irka = cred->request_key_auth->payload.data[0];
+		irka = cred->request_key_auth->payload.data;
 		rka->cred = get_cred(irka->cred);
 		rka->pid = irka->pid;
 
@@ -246,10 +233,9 @@ struct key *key_get_instantiation_authkey(key_serial_t target_id)
 		.index_key.type		= &key_type_request_key_auth,
 		.index_key.description	= description,
 		.cred			= current_cred(),
-		.match_data.cmp		= key_default_cmp,
-		.match_data.raw_data	= description,
-		.match_data.lookup_type	= KEYRING_SEARCH_LOOKUP_DIRECT,
-		.flags			= KEYRING_SEARCH_DO_STATE_CHECK,
+		.match			= user_match,
+		.match_data		= description,
+		.flags			= KEYRING_SEARCH_LOOKUP_DIRECT,
 	};
 	struct key *authkey;
 	key_ref_t authkey_ref;

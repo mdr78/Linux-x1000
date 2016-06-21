@@ -245,7 +245,7 @@ static void r852_write_buf(struct mtd_info *mtd, const uint8_t *buf, int len)
 	}
 
 	/* write DWORD chinks - faster */
-	while (len >= 4) {
+	while (len) {
 		reg = buf[0] | buf[1] << 8 | buf[2] << 16 | buf[3] << 24;
 		r852_write_reg_dword(dev, R852_DATALINE, reg);
 		buf += 4;
@@ -254,10 +254,8 @@ static void r852_write_buf(struct mtd_info *mtd, const uint8_t *buf, int len)
 	}
 
 	/* write rest */
-	while (len > 0) {
+	while (len)
 		r852_write_reg(dev, R852_DATALINE, *buf++);
-		len--;
-	}
 }
 
 /*
@@ -466,7 +464,7 @@ static int r852_ecc_calculate(struct mtd_info *mtd, const uint8_t *dat,
 static int r852_ecc_correct(struct mtd_info *mtd, uint8_t *dat,
 				uint8_t *read_ecc, uint8_t *calc_ecc)
 {
-	uint32_t ecc_reg;
+	uint16_t ecc_reg;
 	uint8_t ecc_status, err_byte;
 	int i, error = 0;
 
@@ -641,6 +639,7 @@ static int r852_register_nand_device(struct r852_device *dev)
 
 	WARN_ON(dev->card_registred);
 
+	dev->mtd->owner = THIS_MODULE;
 	dev->mtd->priv = dev->chip;
 	dev->mtd->dev.parent = &dev->pci_dev->dev;
 
@@ -652,15 +651,11 @@ static int r852_register_nand_device(struct r852_device *dev)
 	if (sm_register_device(dev->mtd, dev->sm))
 		goto error2;
 
-	if (device_create_file(&dev->mtd->dev, &dev_attr_media_type)) {
+	if (device_create_file(&dev->mtd->dev, &dev_attr_media_type))
 		message("can't create media type sysfs attribute");
-		goto error3;
-	}
 
 	dev->card_registred = 1;
 	return 0;
-error3:
-	nand_release(dev->mtd);
 error2:
 	kfree(dev->mtd);
 error1:

@@ -396,8 +396,7 @@ config MCS_FIR
 
 config SH_IRDA
 	tristate "SuperH IrDA driver"
-	depends on IRDA
-	depends on (ARCH_SHMOBILE || COMPILE_TEST) && HAS_IOMEM
+	depends on IRDA && ARCH_SHMOBILE
 	help
 	  Say Y here if your want to enable SuperH IrDA devices.
 

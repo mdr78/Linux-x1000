@@ -1123,7 +1123,6 @@ struct il_power_mgr {
 	struct il_powertable_cmd sleep_cmd_next;
 	int debug_sleep_level_override;
 	bool pci_pm;
-	bool ps_disabled;
 };
 
 struct il_priv {
@@ -1425,9 +1424,9 @@ struct il_priv {
 #endif				/* CONFIG_IWLEGACY_DEBUGFS */
 
 	struct work_struct txpower_work;
-	bool disable_sens_cal;
-	bool disable_chain_noise_cal;
-	bool disable_tx_power_cal;
+	u32 disable_sens_cal;
+	u32 disable_chain_noise_cal;
+	u32 disable_tx_power_cal;
 	struct work_struct run_time_calib_work;
 	struct timer_list stats_periodic;
 	struct timer_list watchdog;
@@ -1598,7 +1597,7 @@ struct il_mod_params {
 	int disable_hw_scan;	/* def: 0 = use h/w scan */
 	int num_of_queues;	/* def: HW dependent */
 	int disable_11n;	/* def: 0 = 11n capabilities enabled */
-	int amsdu_size_8K;	/* def: 0 = disable 8K amsdu size */
+	int amsdu_size_8K;	/* def: 1 = enable 8K amsdu size */
 	int antenna;		/* def: 0 = both antennas (use diversity) */
 	int restart_fw;		/* def: 1 = restart firmware */
 };
@@ -1723,8 +1722,7 @@ void il_mac_remove_interface(struct ieee80211_hw *hw,
 			     struct ieee80211_vif *vif);
 int il_mac_change_interface(struct ieee80211_hw *hw, struct ieee80211_vif *vif,
 			    enum nl80211_iftype newtype, bool newp2p);
-void il_mac_flush(struct ieee80211_hw *hw, struct ieee80211_vif *vif,
-		  u32 queues, bool drop);
+void il_mac_flush(struct ieee80211_hw *hw, u32 queues, bool drop);
 int il_alloc_txq_mem(struct il_priv *il);
 void il_free_txq_mem(struct il_priv *il);
 
@@ -1787,7 +1785,7 @@ int il_scan_cancel(struct il_priv *il);
 int il_scan_cancel_timeout(struct il_priv *il, unsigned long ms);
 void il_force_scan_end(struct il_priv *il);
 int il_mac_hw_scan(struct ieee80211_hw *hw, struct ieee80211_vif *vif,
-		   struct ieee80211_scan_request *hw_req);
+		   struct cfg80211_scan_request *req);
 void il_internal_short_hw_scan(struct il_priv *il);
 int il_force_reset(struct il_priv *il, bool external);
 u16 il_fill_probe_req(struct il_priv *il, struct ieee80211_mgmt *frame,
@@ -1979,20 +1977,6 @@ u32 il_rd_prph(struct il_priv *il, u32 reg);
 void il_wr_prph(struct il_priv *il, u32 addr, u32 val);
 u32 il_read_targ_mem(struct il_priv *il, u32 addr);
 void il_write_targ_mem(struct il_priv *il, u32 addr, u32 val);
-
-static inline bool il_need_reclaim(struct il_priv *il, struct il_rx_pkt *pkt)
-{
-	/* Reclaim a command buffer only if this packet is a response
-	 * to a (driver-originated) command. If the packet (e.g. Rx frame)
-	 * originated from uCode, there is no command buffer to reclaim.
-	 * Ucode should set SEQ_RX_FRAME bit if ucode-originated, but
-	 * apparently a few don't get set; catch them here.
-	 */
-	return !(pkt->hdr.sequence & SEQ_RX_FRAME) &&
-	       pkt->hdr.cmd != N_STATS && pkt->hdr.cmd != C_TX &&
-	       pkt->hdr.cmd != N_RX_PHY && pkt->hdr.cmd != N_RX &&
-	       pkt->hdr.cmd != N_RX_MPDU && pkt->hdr.cmd != N_COMPRESSED_BA;
-}
 
 static inline void
 _il_write8(struct il_priv *il, u32 ofs, u8 val)

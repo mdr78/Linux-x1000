@@ -178,7 +178,7 @@ EXPORT_SYMBOL_GPL(usb_control_msg);
  *
  * Return:
  * If successful, 0. Otherwise a negative error number. The number of actual
- * bytes transferred will be stored in the @actual_length parameter.
+ * bytes transferred will be stored in the @actual_length paramater.
  */
 int usb_interrupt_msg(struct usb_device *usb_dev, unsigned int pipe,
 		      void *data, int len, int *actual_length, int timeout)
@@ -770,7 +770,9 @@ static int usb_get_langid(struct usb_device *dev, unsigned char *tbuf)
 		dev->string_langid = 0x0409;
 		dev->have_langid = 1;
 		dev_err(&dev->dev,
-			"language id specifier not provided by device, defaulting to English\n");
+			"string descriptor 0 malformed (err = %d), "
+			"defaulting to 0x%04x\n",
+				err, dev->string_langid);
 		return 0;
 	}
 
@@ -1291,7 +1293,8 @@ int usb_set_interface(struct usb_device *dev, int interface, int alternate)
 	struct usb_interface *iface;
 	struct usb_host_interface *alt;
 	struct usb_hcd *hcd = bus_to_hcd(dev->bus);
-	int i, ret, manual = 0;
+	int ret;
+	int manual = 0;
 	unsigned int epaddr;
 	unsigned int pipe;
 
@@ -1326,10 +1329,6 @@ int usb_set_interface(struct usb_device *dev, int interface, int alternate)
 		mutex_unlock(hcd->bandwidth_mutex);
 		return -ENOMEM;
 	}
-	/* Changing alt-setting also frees any allocated streams */
-	for (i = 0; i < iface->cur_altsetting->desc.bNumEndpoints; i++)
-		iface->cur_altsetting->endpoint[i].streams = 0;
-
 	ret = usb_hcd_alloc_bandwidth(dev, NULL, iface->cur_altsetting, alt);
 	if (ret < 0) {
 		dev_info(&dev->dev, "Not enough bandwidth for altsetting %d\n",
@@ -1387,6 +1386,8 @@ int usb_set_interface(struct usb_device *dev, int interface, int alternate)
 	 * new altsetting.
 	 */
 	if (manual) {
+		int i;
+
 		for (i = 0; i < alt->desc.bNumEndpoints; i++) {
 			epaddr = alt->endpoint[i].desc.bEndpointAddress;
 			pipe = __create_pipe(dev,
@@ -1549,46 +1550,7 @@ static void usb_release_interface(struct device *dev)
 			altsetting_to_usb_interface_cache(intf->altsetting);
 
 	kref_put(&intfc->ref, usb_release_interface_cache);
-	usb_put_dev(interface_to_usbdev(intf));
 	kfree(intf);
-}
-
-/*
- * usb_deauthorize_interface - deauthorize an USB interface
- *
- * @intf: USB interface structure
- */
-void usb_deauthorize_interface(struct usb_interface *intf)
-{
-	struct device *dev = &intf->dev;
-
-	device_lock(dev->parent);
-
-	if (intf->authorized) {
-		device_lock(dev);
-		intf->authorized = 0;
-		device_unlock(dev);
-
-		usb_forced_unbind_intf(intf);
-	}
-
-	device_unlock(dev->parent);
-}
-
-/*
- * usb_authorize_interface - authorize an USB interface
- *
- * @intf: USB interface structure
- */
-void usb_authorize_interface(struct usb_interface *intf)
-{
-	struct device *dev = &intf->dev;
-
-	if (!intf->authorized) {
-		device_lock(dev);
-		intf->authorized = 1; /* authorize interface */
-		device_unlock(dev);
-	}
 }
 
 static int usb_if_uevent(struct device *dev, struct kobj_uevent_env *env)
@@ -1663,6 +1625,24 @@ static struct usb_interface_assoc_descriptor *find_iad(struct usb_device *dev,
 
 /*
  * Internal function to queue a device reset
+ *
+ * This is initialized into the workstruct in 'struct
+ * usb_device->reset_ws' that is launched by
+ * message.c:usb_set_configuration() when initializing each 'struct
+ * usb_interface'.
+ *
+ * It is safe to get the USB device without reference counts because
+ * the life cycle of @iface is bound to the life cycle of @udev. Then,
+ * this function will be ran only if @iface is alive (and before
+ * freeing it any scheduled instances of it will have been cancelled).
+ *
+ * We need to set a flag (usb_dev->reset_running) because when we call
+ * the reset, the interfaces might be unbound. The current interface
+ * cannot try to remove the queued work as it would cause a deadlock
+ * (you cannot remove your work from within your executing
+ * workqueue). This flag lets it know, so that
+ * usb_cancel_queued_reset() doesn't try to do it.
+ *
  * See usb_queue_reset_device() for more details
  */
 static void __usb_queue_reset_device(struct work_struct *ws)
@@ -1674,10 +1654,11 @@ static void __usb_queue_reset_device(struct work_struct *ws)
 
 	rc = usb_lock_device_for_reset(udev, iface);
 	if (rc >= 0) {
+		iface->reset_running = 1;
 		usb_reset_device(udev);
+		iface->reset_running = 0;
 		usb_unlock_device(udev);
 	}
-	usb_put_intf(iface);	/* Undo _get_ in usb_queue_reset_device() */
 }
 
 
@@ -1843,7 +1824,6 @@ free_interfaces:
 		intfc = cp->intf_cache[i];
 		intf->altsetting = intfc->altsetting;
 		intf->num_altsetting = intfc->num_altsetting;
-		intf->authorized = !!HCD_INTF_AUTHORIZED(hcd);
 		kref_get(&intfc->ref);
 
 		alt = usb_altnum_to_altsetting(intf, 0);
@@ -1873,7 +1853,6 @@ free_interfaces:
 		dev_set_name(&intf->dev, "%d-%s:%d.%d",
 			dev->bus->busnum, dev->devpath,
 			configuration, alt->desc.bInterfaceNumber);
-		usb_get_dev(dev);
 	}
 	kfree(new_interfaces);
 
@@ -1941,7 +1920,6 @@ free_interfaces:
 	usb_autosuspend_device(dev);
 	return 0;
 }
-EXPORT_SYMBOL_GPL(usb_set_configuration);
 
 static LIST_HEAD(set_config_list);
 static DEFINE_SPINLOCK(set_config_lock);

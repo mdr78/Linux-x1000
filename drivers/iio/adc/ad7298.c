@@ -16,7 +16,6 @@
 #include <linux/delay.h>
 #include <linux/module.h>
 #include <linux/interrupt.h>
-#include <linux/bitops.h>
 
 #include <linux/iio/iio.h>
 #include <linux/iio/sysfs.h>
@@ -26,23 +25,27 @@
 
 #include <linux/platform_data/ad7298.h>
 
-#define AD7298_WRITE	BIT(15) /* write to the control register */
-#define AD7298_REPEAT	BIT(14) /* repeated conversion enable */
-#define AD7298_CH(x)	BIT(13 - (x)) /* channel select */
-#define AD7298_TSENSE	BIT(5) /* temperature conversion enable */
-#define AD7298_EXTREF	BIT(2) /* external reference enable */
-#define AD7298_TAVG	BIT(1) /* temperature sensor averaging enable */
-#define AD7298_PDD	BIT(0) /* partial power down enable */
+#define AD7298_WRITE	(1 << 15) /* write to the control register */
+#define AD7298_REPEAT	(1 << 14) /* repeated conversion enable */
+#define AD7298_CH(x)	(1 << (13 - (x))) /* channel select */
+#define AD7298_TSENSE	(1 << 5) /* temperature conversion enable */
+#define AD7298_EXTREF	(1 << 2) /* external reference enable */
+#define AD7298_TAVG	(1 << 1) /* temperature sensor averaging enable */
+#define AD7298_PDD	(1 << 0) /* partial power down enable */
 
-#define AD7298_MAX_CHAN		8
+#define AD7298_BITS		12
+#define AD7298_STORAGE_BITS	16
 #define AD7298_INTREF_mV	2500
 
 #define AD7298_CH_TEMP		9
+
+#define RES_MASK(bits)	((1 << (bits)) - 1)
 
 struct ad7298_state {
 	struct spi_device		*spi;
 	struct regulator		*reg;
 	unsigned			ext_ref;
+	u16				ext_vin_max[AD7298_MAX_CHAN];
 	struct spi_transfer		ring_xfer[10];
 	struct spi_transfer		scan_single_xfer[3];
 	struct spi_message		ring_msg;
@@ -254,13 +257,16 @@ static int ad7298_read_raw(struct iio_dev *indio_dev,
 			return ret;
 
 		if (chan->address != AD7298_CH_TEMP)
-			*val = ret & GENMASK(chan->scan_type.realbits - 1, 0);
+			*val = ret & RES_MASK(AD7298_BITS);
 
 		return IIO_VAL_INT;
 	case IIO_CHAN_INFO_SCALE:
 		switch (chan->type) {
 		case IIO_VOLTAGE:
-			*val = ad7298_get_ref_voltage(st);
+			if (st->ext_vin_max[chan->channel])
+				*val = st->ext_vin_max[chan->channel];
+			else
+				*val = ad7298_get_ref_voltage(st);
 			*val2 = chan->scan_type.realbits;
 			return IIO_VAL_FRACTIONAL_LOG2;
 		case IIO_TEMP:
@@ -296,8 +302,15 @@ static int ad7298_probe(struct spi_device *spi)
 
 	st = iio_priv(indio_dev);
 
-	if (pdata && pdata->ext_ref)
-		st->ext_ref = AD7298_EXTREF;
+	if (pdata) {
+		int i;
+
+		if (pdata->ext_ref)
+			st->ext_ref = AD7298_EXTREF;
+
+		for (i = 0; i < AD7298_MAX_CHAN; i++)
+			st->ext_vin_max[i] = pdata->ext_vin_max[i];
+	}
 
 	if (st->ext_ref) {
 		st->reg = devm_regulator_get(&spi->dev, "vref");
@@ -378,6 +391,7 @@ MODULE_DEVICE_TABLE(spi, ad7298_id);
 static struct spi_driver ad7298_driver = {
 	.driver = {
 		.name	= "ad7298",
+		.owner	= THIS_MODULE,
 	},
 	.probe		= ad7298_probe,
 	.remove		= ad7298_remove,

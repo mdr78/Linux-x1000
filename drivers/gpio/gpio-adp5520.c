@@ -106,8 +106,10 @@ static int adp5520_gpio_probe(struct platform_device *pdev)
 	}
 
 	dev = devm_kzalloc(&pdev->dev, sizeof(*dev), GFP_KERNEL);
-	if (dev == NULL)
+	if (dev == NULL) {
+		dev_err(&pdev->dev, "failed to alloc memory\n");
 		return -ENOMEM;
+	}
 
 	dev->master = pdev->dev.parent;
 
@@ -177,6 +179,7 @@ static int adp5520_gpio_remove(struct platform_device *pdev)
 static struct platform_driver adp5520_gpio_driver = {
 	.driver	= {
 		.name	= "adp5520-gpio",
+		.owner	= THIS_MODULE,
 	},
 	.probe		= adp5520_gpio_probe,
 	.remove		= adp5520_gpio_remove,

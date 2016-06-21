@@ -318,9 +318,6 @@ static void __init h2_init_smc91x(void)
 
 static int tps_setup(struct i2c_client *client, void *context)
 {
-	if (!IS_BUILTIN(CONFIG_TPS65010))
-		return -ENOSYS;
-	
 	tps65010_config_vregs1(TPS_LDO2_ENABLE | TPS_VLDO2_3_0V |
 				TPS_LDO1_ENABLE | TPS_VLDO1_3_0V);
 
@@ -426,7 +423,6 @@ MACHINE_START(OMAP_H2, "TI-H2")
 	.map_io		= omap16xx_map_io,
 	.init_early     = omap1_init_early,
 	.init_irq	= omap1_init_irq,
-	.handle_irq	= omap1_handle_irq,
 	.init_machine	= h2_init,
 	.init_late	= omap1_init_late,
 	.init_time	= omap1_timer_init,

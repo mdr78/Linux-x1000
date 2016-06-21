@@ -50,7 +50,7 @@ static int cr_wdt_control;	/* WDT control register */
 
 enum chips { w83627hf, w83627s, w83697hf, w83697ug, w83637hf, w83627thf,
 	     w83687thf, w83627ehf, w83627dhg, w83627uhg, w83667hg, w83627dhg_p,
-	     w83667hg_b, nct6775, nct6776, nct6779, nct6791, nct6792 };
+	     w83667hg_b, nct6775, nct6776, nct6779 };
 
 static int timeout;			/* in seconds */
 module_param(timeout, int, 0);
@@ -63,10 +63,6 @@ module_param(nowayout, bool, 0);
 MODULE_PARM_DESC(nowayout,
 		"Watchdog cannot be stopped once started (default="
 				__MODULE_STRING(WATCHDOG_NOWAYOUT) ")");
-
-static int early_disable;
-module_param(early_disable, int, 0);
-MODULE_PARM_DESC(early_disable, "Disable watchdog at boot time (default=0)");
 
 /*
  *	Kernel methods.
@@ -95,8 +91,6 @@ MODULE_PARM_DESC(early_disable, "Disable watchdog at boot time (default=0)");
 #define NCT6775_ID		0xb4
 #define NCT6776_ID		0xc3
 #define NCT6779_ID		0xc5
-#define NCT6791_ID		0xc8
-#define NCT6792_ID		0xc9
 
 #define W83627HF_WDT_TIMEOUT	0xf6
 #define W83697HF_WDT_TIMEOUT	0xf4
@@ -197,8 +191,6 @@ static int w83627hf_init(struct watchdog_device *wdog, enum chips chip)
 	case nct6775:
 	case nct6776:
 	case nct6779:
-	case nct6791:
-	case nct6792:
 		/*
 		 * These chips have a fixed WDTO# output pin (W83627UHG),
 		 * or support more than one WDTO# output pin.
@@ -216,14 +208,9 @@ static int w83627hf_init(struct watchdog_device *wdog, enum chips chip)
 
 	t = superio_inb(cr_wdt_timeout);
 	if (t != 0) {
-		if (early_disable) {
-			pr_warn("Stopping previously enabled watchdog until userland kicks in\n");
-			superio_outb(cr_wdt_timeout, 0);
-		} else {
-			pr_info("Watchdog already running. Resetting timeout to %d sec\n",
-				wdog->timeout);
-			superio_outb(cr_wdt_timeout, wdog->timeout);
-		}
+		pr_info("Watchdog already running. Resetting timeout to %d sec\n",
+			wdog->timeout);
+		superio_outb(cr_wdt_timeout, wdog->timeout);
 	}
 
 	/* set second mode & disable keyboard turning off watchdog */
@@ -399,12 +386,6 @@ static int wdt_find(int addr)
 	case NCT6779_ID:
 		ret = nct6779;
 		break;
-	case NCT6791_ID:
-		ret = nct6791;
-		break;
-	case NCT6792_ID:
-		ret = nct6792;
-		break;
 	case 0xff:
 		ret = -ENODEV;
 		break;
@@ -438,8 +419,6 @@ static int __init wdt_init(void)
 		"NCT6775",
 		"NCT6776",
 		"NCT6779",
-		"NCT6791",
-		"NCT6792",
 	};
 
 	wdt_io = 0x2e;

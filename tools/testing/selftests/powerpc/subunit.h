@@ -26,11 +26,6 @@ static inline void test_error(char *name)
 	printf("error: %s\n", name);
 }
 
-static inline void test_skip(char *name)
-{
-	printf("skip: %s\n", name);
-}
-
 static inline void test_success(char *name)
 {
 	printf("success: %s\n", name);

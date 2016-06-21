@@ -37,6 +37,7 @@
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/pci.h>
+#include <linux/init.h>
 #include <linux/blkdev.h>
 #include <linux/delay.h>
 #include <scsi/scsi_host.h>
@@ -122,10 +123,10 @@ static int ninja32_init_one(struct pci_dev *dev, const struct pci_device_id *id)
 		return rc;
 
 	host->iomap = pcim_iomap_table(dev);
-	rc = dma_set_mask(&dev->dev, ATA_DMA_MASK);
+	rc = pci_set_dma_mask(dev, ATA_DMA_MASK);
 	if (rc)
 		return rc;
-	rc = dma_set_coherent_mask(&dev->dev, ATA_DMA_MASK);
+	rc = pci_set_consistent_dma_mask(dev, ATA_DMA_MASK);
 	if (rc)
 		return rc;
 	pci_set_master(dev);

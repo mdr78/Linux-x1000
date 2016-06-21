@@ -68,7 +68,7 @@ static u8 w1_gpio_read_bit(void *data)
 }
 
 #if defined(CONFIG_OF)
-static const struct of_device_id w1_gpio_dt_ids[] = {
+static struct of_device_id w1_gpio_dt_ids[] = {
 	{ .compatible = "w1-gpio" },
 	{}
 };
@@ -89,22 +89,11 @@ static int w1_gpio_probe_dt(struct platform_device *pdev)
 		pdata->is_open_drain = 1;
 
 	gpio = of_get_gpio(np, 0);
-	if (gpio < 0) {
-		if (gpio != -EPROBE_DEFER)
-			dev_err(&pdev->dev,
-					"Failed to parse gpio property for data pin (%d)\n",
-					gpio);
-
+	if (gpio < 0)
 		return gpio;
-	}
 	pdata->pin = gpio;
 
-	gpio = of_get_gpio(np, 1);
-	if (gpio == -EPROBE_DEFER)
-		return gpio;
-	/* ignore other errors as the pullup gpio is optional */
-	pdata->ext_pullup_enable_pin = gpio;
-
+	pdata->ext_pullup_enable_pin = of_get_gpio(np, 1);
 	pdev->dev.platform_data = pdata;
 
 	return 0;
@@ -118,8 +107,10 @@ static int w1_gpio_probe(struct platform_device *pdev)
 
 	if (of_have_populated_dt()) {
 		err = w1_gpio_probe_dt(pdev);
-		if (err < 0)
+		if (err < 0) {
+			dev_err(&pdev->dev, "Failed to parse DT\n");
 			return err;
+		}
 	}
 
 	pdata = dev_get_platdata(&pdev->dev);
@@ -198,9 +189,11 @@ static int w1_gpio_remove(struct platform_device *pdev)
 	return 0;
 }
 
-static int __maybe_unused w1_gpio_suspend(struct device *dev)
+#ifdef CONFIG_PM
+
+static int w1_gpio_suspend(struct platform_device *pdev, pm_message_t state)
 {
-	struct w1_gpio_platform_data *pdata = dev_get_platdata(dev);
+	struct w1_gpio_platform_data *pdata = dev_get_platdata(&pdev->dev);
 
 	if (pdata->enable_external_pullup)
 		pdata->enable_external_pullup(0);
@@ -208,9 +201,9 @@ static int __maybe_unused w1_gpio_suspend(struct device *dev)
 	return 0;
 }
 
-static int __maybe_unused w1_gpio_resume(struct device *dev)
+static int w1_gpio_resume(struct platform_device *pdev)
 {
-	struct w1_gpio_platform_data *pdata = dev_get_platdata(dev);
+	struct w1_gpio_platform_data *pdata = dev_get_platdata(&pdev->dev);
 
 	if (pdata->enable_external_pullup)
 		pdata->enable_external_pullup(1);
@@ -218,16 +211,21 @@ static int __maybe_unused w1_gpio_resume(struct device *dev)
 	return 0;
 }
 
-static SIMPLE_DEV_PM_OPS(w1_gpio_pm_ops, w1_gpio_suspend, w1_gpio_resume);
+#else
+#define w1_gpio_suspend	NULL
+#define w1_gpio_resume	NULL
+#endif
 
 static struct platform_driver w1_gpio_driver = {
 	.driver = {
 		.name	= "w1-gpio",
-		.pm	= &w1_gpio_pm_ops,
+		.owner	= THIS_MODULE,
 		.of_match_table = of_match_ptr(w1_gpio_dt_ids),
 	},
 	.probe = w1_gpio_probe,
-	.remove = w1_gpio_remove,
+	.remove	= w1_gpio_remove,
+	.suspend = w1_gpio_suspend,
+	.resume = w1_gpio_resume,
 };
 
 module_platform_driver(w1_gpio_driver);

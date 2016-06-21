@@ -6,6 +6,7 @@
  * the terms of the GNU General Public License version 2 as published by the
  * Free Software Foundation.
  */
+#include <linux/clk.h>
 #include <linux/io.h>
 #include <linux/clk-provider.h>
 #include <linux/of.h>
@@ -21,7 +22,7 @@ static struct clk_onecell_data clk_data = {
 	.clk_num = ARRAY_SIZE(clk),
 };
 
-static void __init efm32gg_cmu_init(struct device_node *np)
+static int __init efm32gg_cmu_init(struct device_node *np)
 {
 	int i;
 	void __iomem *base;
@@ -32,7 +33,7 @@ static void __init efm32gg_cmu_init(struct device_node *np)
 	base = of_iomap(np, 0);
 	if (!base) {
 		pr_warn("Failed to map address range for efm32gg,cmu node\n");
-		return;
+		return -EADDRNOTAVAIL;
 	}
 
 	clk[clk_HFXO] = clk_register_fixed_rate(NULL, "HFXO", NULL,
@@ -75,6 +76,6 @@ static void __init efm32gg_cmu_init(struct device_node *np)
 	clk[clk_HFPERCLKDAC0] = clk_register_gate(NULL, "HFPERCLK.DAC0",
 			"HFXO", 0, base + CMU_HFPERCLKEN0, 17, 0, NULL);
 
-	of_clk_add_provider(np, of_clk_src_onecell_get, &clk_data);
+	return of_clk_add_provider(np, of_clk_src_onecell_get, &clk_data);
 }
 CLK_OF_DECLARE(efm32ggcmu, "efm32gg,cmu", efm32gg_cmu_init);

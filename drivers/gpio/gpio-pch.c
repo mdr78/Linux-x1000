@@ -20,7 +20,6 @@
 #include <linux/gpio.h>
 #include <linux/interrupt.h>
 #include <linux/irq.h>
-#include <linux/slab.h>
 
 #define PCH_EDGE_FALLING	0
 #define PCH_EDGE_RISING		BIT(0)
@@ -139,6 +138,9 @@ static int pch_gpio_direction_output(struct gpio_chip *gpio, unsigned nr,
 	unsigned long flags;
 
 	spin_lock_irqsave(&chip->spinlock, flags);
+	pm = ioread32(&chip->reg->pm) & ((1 << gpio_pins[chip->ioh]) - 1);
+	pm |= (1 << nr);
+	iowrite32(pm, &chip->reg->pm);
 
 	reg_val = ioread32(&chip->reg->po);
 	if (val)
@@ -146,11 +148,6 @@ static int pch_gpio_direction_output(struct gpio_chip *gpio, unsigned nr,
 	else
 		reg_val &= ~(1 << nr);
 	iowrite32(reg_val, &chip->reg->po);
-
-	pm = ioread32(&chip->reg->pm) & ((1 << gpio_pins[chip->ioh]) - 1);
-	pm |= (1 << nr);
-	iowrite32(pm, &chip->reg->pm);
-
 	spin_unlock_irqrestore(&chip->spinlock, flags);
 
 	return 0;
@@ -171,7 +168,6 @@ static int pch_gpio_direction_input(struct gpio_chip *gpio, unsigned nr)
 	return 0;
 }
 
-#ifdef CONFIG_PM
 /*
  * Save register configuration and disable interrupts.
  */
@@ -207,7 +203,6 @@ static void pch_gpio_restore_reg_conf(struct pch_gpio *chip)
 		iowrite32(chip->pch_gpio_reg.gpio_use_sel_reg,
 			  &chip->reg->gpio_use_sel);
 }
-#endif
 
 static int pch_gpio_to_irq(struct gpio_chip *gpio, unsigned offset)
 {
@@ -281,9 +276,9 @@ static int pch_irq_type(struct irq_data *d, unsigned int type)
 
 	/* And the handler */
 	if (type & (IRQ_TYPE_LEVEL_LOW | IRQ_TYPE_LEVEL_HIGH))
-		irq_set_handler_locked(d, handle_level_irq);
+		__irq_set_handler_locked(d->irq, handle_level_irq);
 	else if (type & (IRQ_TYPE_EDGE_FALLING | IRQ_TYPE_EDGE_RISING))
-		irq_set_handler_locked(d, handle_edge_irq);
+		__irq_set_handler_locked(d->irq, handle_edge_irq);
 
 unlock:
 	spin_unlock_irqrestore(&chip->spinlock, flags);

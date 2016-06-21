@@ -151,20 +151,12 @@ static inline struct asc_port *to_asc_port(struct uart_port *port)
 
 static inline u32 asc_in(struct uart_port *port, u32 offset)
 {
-#ifdef readl_relaxed
-	return readl_relaxed(port->membase + offset);
-#else
 	return readl(port->membase + offset);
-#endif
 }
 
 static inline void asc_out(struct uart_port *port, u32 offset, u32 value)
 {
-#ifdef writel_relaxed
-	writel_relaxed(value, port->membase + offset);
-#else
 	writel(value, port->membase + offset);
-#endif
 }
 
 /*
@@ -202,9 +194,9 @@ static inline u32 asc_txfifo_is_empty(struct uart_port *port)
 	return asc_in(port, ASC_STA) & ASC_STA_TE;
 }
 
-static inline u32 asc_txfifo_is_half_empty(struct uart_port *port)
+static inline int asc_txfifo_is_full(struct uart_port *port)
 {
-	return asc_in(port, ASC_STA) & ASC_STA_THE;
+	return asc_in(port, ASC_STA) & ASC_STA_TF;
 }
 
 static inline const char *asc_port_name(struct uart_port *port)
@@ -303,7 +295,7 @@ static void asc_receive_chars(struct uart_port *port)
 			status & ASC_STA_OE) {
 
 			if (c & ASC_RXBUF_FE) {
-				if (c == (ASC_RXBUF_FE | ASC_RXBUF_DUMMY_RX)) {
+				if (c == ASC_RXBUF_FE) {
 					port->icount.brk++;
 					if (uart_handle_break(port))
 						continue;
@@ -333,7 +325,7 @@ static void asc_receive_chars(struct uart_port *port)
 				flag = TTY_FRAME;
 		}
 
-		if (uart_handle_sysrq_char(port, c & 0xff))
+		if (uart_handle_sysrq_char(port, c))
 			continue;
 
 		uart_insert_char(port, c, ASC_RXBUF_DUMMY_OE, c & 0xff, flag);
@@ -419,6 +411,12 @@ static void asc_stop_rx(struct uart_port *port)
 	asc_disable_rx_interrupts(port);
 }
 
+/* Force modem status interrupts on */
+static void asc_enable_ms(struct uart_port *port)
+{
+	/* Nothing here yet .. */
+}
+
 /* Handle breaks - ignored by us */
 static void asc_break_ctl(struct uart_port *port, int break_state)
 {
@@ -430,7 +428,7 @@ static void asc_break_ctl(struct uart_port *port, int break_state)
  */
 static int asc_startup(struct uart_port *port)
 {
-	if (request_irq(port->irq, asc_interrupt, 0,
+	if (request_irq(port->irq, asc_interrupt, IRQF_NO_SUSPEND,
 			asc_port_name(port), port)) {
 		dev_err(port->dev, "cannot allocate irq.\n");
 		return -ENODEV;
@@ -535,12 +533,12 @@ static void asc_set_termios(struct uart_port *port, struct ktermios *termios,
 		 * ASCBaudRate =   ------------------------
 		 *                          inputclock
 		 *
-		 * To keep maths inside 64bits, we divide inputclock by 16.
+		 * However to keep the maths inside 32bits we divide top and
+		 * bottom by 64. The +1 is to avoid a divide by zero if the
+		 * input clock rate is something unexpected.
 		 */
-		u64 dividend = (u64)baud * (1 << 16);
-
-		do_div(dividend, port->uartclk / 16);
-		asc_out(port, ASC_BAUDRATE, dividend);
+		u32 counter = (baud * 16384) / ((port->uartclk / 64) + 1);
+		asc_out(port, ASC_BAUDRATE, counter);
 		ctrl_val |= ASC_CTL_BAUDMODE;
 	}
 
@@ -630,7 +628,7 @@ static int asc_get_poll_char(struct uart_port *port)
 
 static void asc_put_poll_char(struct uart_port *port, unsigned char c)
 {
-	while (!asc_txfifo_is_half_empty(port))
+	while (asc_txfifo_is_full(port))
 		cpu_relax();
 	asc_out(port, ASC_TXBUF, c);
 }
@@ -646,6 +644,7 @@ static struct uart_ops asc_uart_ops = {
 	.start_tx	= asc_start_tx,
 	.stop_tx	= asc_stop_tx,
 	.stop_rx	= asc_stop_rx,
+	.enable_ms	= asc_enable_ms,
 	.break_ctl	= asc_break_ctl,
 	.startup	= asc_startup,
 	.shutdown	= asc_shutdown,
@@ -720,7 +719,7 @@ static struct asc_port *asc_of_get_asc_port(struct platform_device *pdev)
 }
 
 #ifdef CONFIG_OF
-static const struct of_device_id asc_match[] = {
+static struct of_device_id asc_match[] = {
 	{ .compatible = "st,asc", },
 	{},
 };
@@ -784,7 +783,7 @@ static void asc_console_putchar(struct uart_port *port, int ch)
 	unsigned int timeout = 1000000;
 
 	/* Wait for upto 1 second in case flow control is stopping us. */
-	while (--timeout && !asc_txfifo_is_half_empty(port))
+	while (--timeout && asc_txfifo_is_full(port))
 		udelay(1);
 
 	asc_out(port, ASC_TXBUF, ch);
@@ -850,8 +849,7 @@ static int asc_console_setup(struct console *co, char *options)
 	 * this to be called during the uart port registration when the
 	 * driver gets probed and the port should be mapped at that point.
 	 */
-	if (ascport->port.mapbase == 0 || ascport->port.membase == NULL)
-		return -ENXIO;
+	BUG_ON(ascport->port.mapbase == 0 || ascport->port.membase == NULL);
 
 	if (options)
 		uart_parse_options(options, &baud, &parity, &bits, &flow);
@@ -895,6 +893,7 @@ static struct platform_driver asc_serial_driver = {
 	.driver	= {
 		.name	= DRIVER_NAME,
 		.pm	= &asc_serial_pm_ops,
+		.owner	= THIS_MODULE,
 		.of_match_table = of_match_ptr(asc_match),
 	},
 };

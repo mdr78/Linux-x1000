@@ -13,12 +13,17 @@
 #include <linux/init.h>
 #include <linux/llist.h>
 
+extern void cpu_idle(void);
+
 typedef void (*smp_call_func_t)(void *info);
 struct call_single_data {
-	struct llist_node llist;
+	union {
+		struct list_head list;
+		struct llist_node llist;
+	};
 	smp_call_func_t func;
 	void *info;
-	unsigned int flags;
+	u16 flags;
 };
 
 /* total number of cpus in this system (may exceed NR_CPUS) */
@@ -48,7 +53,8 @@ void on_each_cpu_cond(bool (*cond_func)(int cpu, void *info),
 		smp_call_func_t func, void *info, bool wait,
 		gfp_t gfp_flags);
 
-int smp_call_function_single_async(int cpu, struct call_single_data *csd);
+void __smp_call_function_single(int cpuid, struct call_single_data *data,
+				int wait);
 
 #ifdef CONFIG_SMP
 
@@ -100,7 +106,6 @@ int smp_call_function_any(const struct cpumask *mask,
 			  smp_call_func_t func, void *info, int wait);
 
 void kick_all_cpus_sync(void);
-void wake_up_all_idle_cpus(void);
 
 /*
  * Generic and arch helpers
@@ -149,14 +154,6 @@ smp_call_function_any(const struct cpumask *mask, smp_call_func_t func,
 }
 
 static inline void kick_all_cpus_sync(void) {  }
-static inline void wake_up_all_idle_cpus(void) {  }
-
-#ifdef CONFIG_UP_LATE_INIT
-extern void __init up_late_init(void);
-static inline void smp_init(void) { up_late_init(); }
-#else
-static inline void smp_init(void) { }
-#endif
 
 #endif /* !SMP */
 

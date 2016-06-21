@@ -16,11 +16,8 @@
 
 #include <linux/kernel.h>
 #include <linux/list.h>
-#include <linux/clk.h>
 #include <linux/clk-provider.h>
 #include <linux/clk/ti.h>
-
-#include "clock.h"
 
 static struct ti_dt_clk am33xx_clks[] = {
 	DT_CLK(NULL, "clk_32768_ck", "clk_32768_ck"),
@@ -37,6 +34,7 @@ static struct ti_dt_clk am33xx_clks[] = {
 	DT_CLK(NULL, "dpll_core_m5_ck", "dpll_core_m5_ck"),
 	DT_CLK(NULL, "dpll_core_m6_ck", "dpll_core_m6_ck"),
 	DT_CLK(NULL, "dpll_mpu_ck", "dpll_mpu_ck"),
+	DT_CLK("cpu0", NULL, "dpll_mpu_ck"),
 	DT_CLK(NULL, "dpll_mpu_m2_ck", "dpll_mpu_m2_ck"),
 	DT_CLK(NULL, "dpll_ddr_ck", "dpll_ddr_ck"),
 	DT_CLK(NULL, "dpll_ddr_m2_ck", "dpll_ddr_m2_ck"),

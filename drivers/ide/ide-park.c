@@ -31,10 +31,10 @@ static void issue_park_cmd(ide_drive_t *drive, unsigned long timeout)
 	}
 	spin_unlock_irq(&hwif->lock);
 
-	rq = blk_get_request(q, READ, __GFP_RECLAIM);
+	rq = blk_get_request(q, READ, __GFP_WAIT);
 	rq->cmd[0] = REQ_PARK_HEADS;
 	rq->cmd_len = 1;
-	rq->cmd_type = REQ_TYPE_DRV_PRIV;
+	rq->cmd_type = REQ_TYPE_SPECIAL;
 	rq->special = &timeout;
 	rc = blk_execute_rq(q, NULL, rq, 1);
 	blk_put_request(rq);
@@ -46,12 +46,12 @@ static void issue_park_cmd(ide_drive_t *drive, unsigned long timeout)
 	 * timeout has expired, so power management will be reenabled.
 	 */
 	rq = blk_get_request(q, READ, GFP_NOWAIT);
-	if (IS_ERR(rq))
+	if (unlikely(!rq))
 		goto out;
 
 	rq->cmd[0] = REQ_UNPARK_HEADS;
 	rq->cmd_len = 1;
-	rq->cmd_type = REQ_TYPE_DRV_PRIV;
+	rq->cmd_type = REQ_TYPE_SPECIAL;
 	elv_add_request(q, rq, ELEVATOR_INSERT_FRONT);
 
 out:

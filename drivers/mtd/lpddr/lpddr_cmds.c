@@ -55,8 +55,10 @@ struct mtd_info *lpddr_cmdset(struct map_info *map)
 	int i, j;
 
 	mtd = kzalloc(sizeof(*mtd), GFP_KERNEL);
-	if (!mtd)
+	if (!mtd) {
+		printk(KERN_ERR "Failed to allocate memory for MTD device\n");
 		return NULL;
+	}
 	mtd->priv = map;
 	mtd->type = MTD_NORFLASH;
 

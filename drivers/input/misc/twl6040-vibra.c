@@ -236,7 +236,8 @@ static void twl6040_vibra_close(struct input_dev *input)
 	mutex_unlock(&info->mutex);
 }
 
-static int __maybe_unused twl6040_vibra_suspend(struct device *dev)
+#ifdef CONFIG_PM_SLEEP
+static int twl6040_vibra_suspend(struct device *dev)
 {
 	struct platform_device *pdev = to_platform_device(dev);
 	struct vibra_info *info = platform_get_drvdata(pdev);
@@ -250,6 +251,7 @@ static int __maybe_unused twl6040_vibra_suspend(struct device *dev)
 
 	return 0;
 }
+#endif
 
 static SIMPLE_DEV_PM_OPS(twl6040_vibra_pm_ops, twl6040_vibra_suspend, NULL);
 
@@ -260,7 +262,7 @@ static int twl6040_vibra_probe(struct platform_device *pdev)
 	struct vibra_info *info;
 	int vddvibl_uV = 0;
 	int vddvibr_uV = 0;
-	int error;
+	int ret;
 
 	twl6040_core_node = of_find_node_by_name(twl6040_core_dev->of_node,
 						 "vibra");
@@ -307,13 +309,12 @@ static int twl6040_vibra_probe(struct platform_device *pdev)
 
 	mutex_init(&info->mutex);
 
-	error = devm_request_threaded_irq(&pdev->dev, info->irq, NULL,
-					  twl6040_vib_irq_handler,
-					  IRQF_ONESHOT,
-					  "twl6040_irq_vib", info);
-	if (error) {
-		dev_err(info->dev, "VIB IRQ request failed: %d\n", error);
-		return error;
+	ret = devm_request_threaded_irq(&pdev->dev, info->irq, NULL,
+					twl6040_vib_irq_handler, 0,
+					"twl6040_irq_vib", info);
+	if (ret) {
+		dev_err(info->dev, "VIB IRQ request failed: %d\n", ret);
+		return ret;
 	}
 
 	info->supplies[0].supply = "vddvibl";
@@ -322,40 +323,40 @@ static int twl6040_vibra_probe(struct platform_device *pdev)
 	 * When booted with Device tree the regulators are attached to the
 	 * parent device (twl6040 MFD core)
 	 */
-	error = devm_regulator_bulk_get(twl6040_core_dev,
-					ARRAY_SIZE(info->supplies),
-					info->supplies);
-	if (error) {
-		dev_err(info->dev, "couldn't get regulators %d\n", error);
-		return error;
+	ret = regulator_bulk_get(twl6040_core_dev, ARRAY_SIZE(info->supplies),
+				 info->supplies);
+	if (ret) {
+		dev_err(info->dev, "couldn't get regulators %d\n", ret);
+		return ret;
 	}
 
 	if (vddvibl_uV) {
-		error = regulator_set_voltage(info->supplies[0].consumer,
-					      vddvibl_uV, vddvibl_uV);
-		if (error) {
+		ret = regulator_set_voltage(info->supplies[0].consumer,
+					    vddvibl_uV, vddvibl_uV);
+		if (ret) {
 			dev_err(info->dev, "failed to set VDDVIBL volt %d\n",
-				error);
-			return error;
+				ret);
+			goto err_regulator;
 		}
 	}
 
 	if (vddvibr_uV) {
-		error = regulator_set_voltage(info->supplies[1].consumer,
-					      vddvibr_uV, vddvibr_uV);
-		if (error) {
+		ret = regulator_set_voltage(info->supplies[1].consumer,
+					    vddvibr_uV, vddvibr_uV);
+		if (ret) {
 			dev_err(info->dev, "failed to set VDDVIBR volt %d\n",
-				error);
-			return error;
+				ret);
+			goto err_regulator;
 		}
 	}
 
 	INIT_WORK(&info->play_work, vibra_play_work);
 
-	info->input_dev = devm_input_allocate_device(&pdev->dev);
-	if (!info->input_dev) {
+	info->input_dev = input_allocate_device();
+	if (info->input_dev == NULL) {
 		dev_err(info->dev, "couldn't allocate input device\n");
-		return -ENOMEM;
+		ret = -ENOMEM;
+		goto err_regulator;
 	}
 
 	input_set_drvdata(info->input_dev, info);
@@ -366,27 +367,47 @@ static int twl6040_vibra_probe(struct platform_device *pdev)
 	info->input_dev->close = twl6040_vibra_close;
 	__set_bit(FF_RUMBLE, info->input_dev->ffbit);
 
-	error = input_ff_create_memless(info->input_dev, NULL, vibra_play);
-	if (error) {
+	ret = input_ff_create_memless(info->input_dev, NULL, vibra_play);
+	if (ret < 0) {
 		dev_err(info->dev, "couldn't register vibrator to FF\n");
-		return error;
+		goto err_ialloc;
 	}
 
-	error = input_register_device(info->input_dev);
-	if (error) {
+	ret = input_register_device(info->input_dev);
+	if (ret < 0) {
 		dev_err(info->dev, "couldn't register input device\n");
-		return error;
+		goto err_iff;
 	}
 
 	platform_set_drvdata(pdev, info);
+
+	return 0;
+
+err_iff:
+	input_ff_destroy(info->input_dev);
+err_ialloc:
+	input_free_device(info->input_dev);
+err_regulator:
+	regulator_bulk_free(ARRAY_SIZE(info->supplies), info->supplies);
+	return ret;
+}
+
+static int twl6040_vibra_remove(struct platform_device *pdev)
+{
+	struct vibra_info *info = platform_get_drvdata(pdev);
+
+	input_unregister_device(info->input_dev);
+	regulator_bulk_free(ARRAY_SIZE(info->supplies), info->supplies);
 
 	return 0;
 }
 
 static struct platform_driver twl6040_vibra_driver = {
 	.probe		= twl6040_vibra_probe,
+	.remove		= twl6040_vibra_remove,
 	.driver		= {
 		.name	= "twl6040-vibra",
+		.owner	= THIS_MODULE,
 		.pm	= &twl6040_vibra_pm_ops,
 	},
 };

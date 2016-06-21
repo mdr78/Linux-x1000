@@ -211,16 +211,6 @@ static void dlm_purge_lockres(struct dlm_ctxt *dlm,
 
 	__dlm_unhash_lockres(dlm, res);
 
-	spin_lock(&dlm->track_lock);
-	if (!list_empty(&res->tracking))
-		list_del_init(&res->tracking);
-	else {
-		mlog(ML_ERROR, "Resource %.*s not on the Tracking list\n",
-				res->lockname.len, res->lockname.name);
-		__dlm_print_one_lock_resource(res);
-	}
-	spin_unlock(&dlm->track_lock);
-
 	/* lockres is not in the hash now.  drop the flag and wake up
 	 * any processes waiting in dlm_get_lock_resource. */
 	if (!master) {
@@ -269,15 +259,12 @@ static void dlm_run_purge_list(struct dlm_ctxt *dlm,
 		 * refs on it. */
 		unused = __dlm_lockres_unused(lockres);
 		if (!unused ||
-		    (lockres->state & DLM_LOCK_RES_MIGRATING) ||
-		    (lockres->inflight_assert_workers != 0)) {
+		    (lockres->state & DLM_LOCK_RES_MIGRATING)) {
 			mlog(0, "%s: res %.*s is in use or being remastered, "
-			     "used %d, state %d, assert master workers %u\n",
-			     dlm->name, lockres->lockname.len,
-			     lockres->lockname.name,
-			     !unused, lockres->state,
-			     lockres->inflight_assert_workers);
-			list_move_tail(&lockres->purge, &dlm->purge_list);
+			     "used %d, state %d\n", dlm->name,
+			     lockres->lockname.len, lockres->lockname.name,
+			     !unused, lockres->state);
+			list_move_tail(&dlm->purge_list, &lockres->purge);
 			spin_unlock(&lockres->spinlock);
 			continue;
 		}
@@ -493,8 +480,7 @@ int dlm_launch_thread(struct dlm_ctxt *dlm)
 {
 	mlog(0, "Starting dlm_thread...\n");
 
-	dlm->dlm_thread_task = kthread_run(dlm_thread, dlm, "dlm-%s",
-			dlm->name);
+	dlm->dlm_thread_task = kthread_run(dlm_thread, dlm, "dlm_thread");
 	if (IS_ERR(dlm->dlm_thread_task)) {
 		mlog_errno(PTR_ERR(dlm->dlm_thread_task));
 		dlm->dlm_thread_task = NULL;

@@ -6,7 +6,6 @@
  * Copyright (C) 1995-99, 2000- 02, 06 Ralf Baechle <ralf@linux-mips.org>
  * Copyright (C) 2001 MIPS Technologies, Inc.
  * Copyright (C) 2004 Thiemo Seufer
- * Copyright (C) 2014 Imagination Technologies Ltd.
  */
 #include <linux/errno.h>
 #include <asm/asm.h>
@@ -36,8 +35,16 @@ NESTED(handle_sys, PT_SIZE, sp)
 	lw	t1, PT_EPC(sp)		# skip syscall on return
 
 	subu	v0, v0, __NR_O32_Linux	# check syscall number
+	sltiu	t0, v0, __NR_O32_Linux_syscalls + 1
 	addiu	t1, 4			# skip to next instruction
 	sw	t1, PT_EPC(sp)
+	beqz	t0, illegal_syscall
+
+	sll	t0, v0, 2
+	la	t1, sys_call_table
+	addu	t1, t0
+	lw	t2, (t1)		# syscall routine
+	beqz	t2, illegal_syscall
 
 	sw	a3, PT_R26(sp)		# save a3 for syscall restarting
 
@@ -59,17 +66,18 @@ NESTED(handle_sys, PT_SIZE, sp)
 
 	/*
 	 * Ok, copy the args from the luser stack to the kernel stack.
+	 * t3 is the precomputed number of instruction bytes needed to
+	 * load or store arguments 6-8.
 	 */
 
 	.set    push
 	.set    noreorder
 	.set	nomacro
 
-load_a4: user_lw(t5, 16(t0))		# argument #5 from usp
-load_a5: user_lw(t6, 20(t0))		# argument #6 from usp
-load_a6: user_lw(t7, 24(t0))		# argument #7 from usp
-load_a7: user_lw(t8, 28(t0))		# argument #8 from usp
-loads_done:
+1:	lw	t5, 16(t0)		# argument #5 from usp
+4:	lw	t6, 20(t0)		# argument #6 from usp
+3:	lw	t7, 24(t0)		# argument #7 from usp
+2:	lw	t8, 28(t0)		# argument #8 from usp
 
 	sw	t5, 16(sp)		# argument #5 to ksp
 	sw	t6, 20(sp)		# argument #6 to ksp
@@ -78,26 +86,16 @@ loads_done:
 	.set	pop
 
 	.section __ex_table,"a"
-	PTR	load_a4, bad_stack_a4
-	PTR	load_a5, bad_stack_a5
-	PTR	load_a6, bad_stack_a6
-	PTR	load_a7, bad_stack_a7
+	PTR	1b,bad_stack
+	PTR	2b,bad_stack
+	PTR	3b,bad_stack
+	PTR	4b,bad_stack
 	.previous
 
 	lw	t0, TI_FLAGS($28)	# syscall tracing enabled?
 	li	t1, _TIF_WORK_SYSCALL_ENTRY
 	and	t0, t1
 	bnez	t0, syscall_trace_entry # -> yes
-syscall_common:
-	sltiu	t0, v0, __NR_O32_Linux_syscalls + 1
-	beqz	t0, illegal_syscall
-
-	sll	t0, v0, 2
-	la	t1, sys_call_table
-	addu	t1, t0
-	lw	t2, (t1)		# syscall routine
-
-	beqz	t2, illegal_syscall
 
 	jalr	t2			# Do The Real Thing (TM)
 
@@ -118,37 +116,35 @@ o32_syscall_exit:
 
 syscall_trace_entry:
 	SAVE_STATIC
-	move	s0, v0
+	move	s0, t2
 	move	a0, sp
+	jal	syscall_trace_enter
 
-	/*
-	 * syscall number is in v0 unless we called syscall(__NR_###)
-	 * where the real syscall number is in a0
-	 */
-	addiu	a1, v0,  __NR_O32_Linux
-	bnez	v0, 1f /* __NR_syscall at offset 0 */
-	lw	a1, PT_R4(sp)
-
-1:	jal	syscall_trace_enter
-
-	bltz	v0, 1f			# seccomp failed? Skip syscall
-
-	move	v0, s0			# restore syscall
-
+	move	t0, s0
 	RESTORE_STATIC
 	lw	a0, PT_R4(sp)		# Restore argument registers
 	lw	a1, PT_R5(sp)
 	lw	a2, PT_R6(sp)
 	lw	a3, PT_R7(sp)
-	j	syscall_common
+	jalr	t0
 
-1:	j	syscall_exit
+	li	t0, -EMAXERRNO - 1	# error?
+	sltu	t0, t0, v0
+	sw	t0, PT_R7(sp)		# set error flag
+	beqz	t0, 1f
+
+	lw	t1, PT_R2(sp)		# syscall number
+	negu	v0			# error
+	sw	t1, PT_R0(sp)		# save it for syscall restarting
+1:	sw	v0, PT_R2(sp)		# result
+
+	j	syscall_exit
 
 /* ------------------------------------------------------------------------ */
 
 	/*
-	 * Our open-coded access area sanity test for the stack pointer
-	 * failed. We probably should handle this case a bit more drastic.
+	 * The stackpointer for a call with more than 4 arguments is bad.
+	 * We probably should handle this case a bit more drastic.
 	 */
 bad_stack:
 	li	v0, EFAULT
@@ -156,22 +152,6 @@ bad_stack:
 	li	t0, 1				# set error flag
 	sw	t0, PT_R7(sp)
 	j	o32_syscall_exit
-
-bad_stack_a4:
-	li	t5, 0
-	b	load_a5
-
-bad_stack_a5:
-	li	t6, 0
-	b	load_a6
-
-bad_stack_a6:
-	li	t7, 0
-	b	load_a7
-
-bad_stack_a7:
-	li	t8, 0
-	b	loads_done
 
 	/*
 	 * The system call does not exist in this kernel
@@ -191,7 +171,6 @@ illegal_syscall:
 	sll	t1, t0, 2
 	beqz	v0, einval
 	lw	t2, sys_call_table(t1)		# syscall routine
-	sw	a0, PT_R2(sp)			# call routine directly on restart
 
 	/* Some syscalls like execve get their arguments from struct pt_regs
 	   and claim zero arguments in the syscall table. Thus we have to
@@ -504,8 +483,8 @@ EXPORT(sys_call_table)
 	PTR	sys_tgkill
 	PTR	sys_utimes
 	PTR	sys_mbind
-	PTR	sys_get_mempolicy
-	PTR	sys_set_mempolicy		/* 4270 */
+	PTR	sys_ni_syscall			/* sys_get_mempolicy */
+	PTR	sys_ni_syscall			/* 4270 sys_set_mempolicy */
 	PTR	sys_mq_open
 	PTR	sys_mq_unlink
 	PTR	sys_mq_timedsend
@@ -586,12 +565,3 @@ EXPORT(sys_call_table)
 	PTR	sys_finit_module
 	PTR	sys_sched_setattr
 	PTR	sys_sched_getattr		/* 4350 */
-	PTR	sys_renameat2
-	PTR	sys_seccomp
-	PTR	sys_getrandom
-	PTR	sys_memfd_create
-	PTR	sys_bpf				/* 4355 */
-	PTR	sys_execveat
-	PTR	sys_userfaultfd
-	PTR	sys_membarrier
-	PTR	sys_mlock2

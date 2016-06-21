@@ -24,7 +24,7 @@
 #include "mpc10x.h"
 
 
-static const struct of_device_id storcenter_of_bus[] __initconst = {
+static __initdata struct of_device_id storcenter_of_bus[] = {
 	{ .name = "soc", },
 	{},
 };

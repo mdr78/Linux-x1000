@@ -27,20 +27,29 @@ struct msm_iommu {
 static int msm_fault_handler(struct iommu_domain *iommu, struct device *dev,
 		unsigned long iova, int flags, void *arg)
 {
-	pr_warn_ratelimited("*** fault: iova=%08lx, flags=%d\n", iova, flags);
+	DBG("*** fault: iova=%08lx, flags=%d", iova, flags);
 	return 0;
 }
 
 static int msm_iommu_attach(struct msm_mmu *mmu, const char **names, int cnt)
 {
+	struct drm_device *dev = mmu->dev;
 	struct msm_iommu *iommu = to_msm_iommu(mmu);
-	return iommu_attach_device(iommu->domain, mmu->dev);
-}
+	int i, ret;
 
-static void msm_iommu_detach(struct msm_mmu *mmu, const char **names, int cnt)
-{
-	struct msm_iommu *iommu = to_msm_iommu(mmu);
-	iommu_detach_device(iommu->domain, mmu->dev);
+	for (i = 0; i < cnt; i++) {
+		struct device *msm_iommu_get_ctx(const char *ctx_name);
+		struct device *ctx = msm_iommu_get_ctx(names[i]);
+		if (IS_ERR_OR_NULL(ctx))
+			continue;
+		ret = iommu_attach_device(iommu->domain, ctx);
+		if (ret) {
+			dev_warn(dev->dev, "could not attach iommu to %s", names[i]);
+			return ret;
+		}
+	}
+
+	return 0;
 }
 
 static int msm_iommu_map(struct msm_mmu *mmu, uint32_t iova,
@@ -60,7 +69,7 @@ static int msm_iommu_map(struct msm_mmu *mmu, uint32_t iova,
 		u32 pa = sg_phys(sg) - sg->offset;
 		size_t bytes = sg->length + sg->offset;
 
-		VERB("map[%d]: %08x %08x(%zx)", i, iova, pa, bytes);
+		VERB("map[%d]: %08x %08x(%x)", i, iova, pa, bytes);
 
 		ret = iommu_map(domain, da, pa, bytes, prot);
 		if (ret)
@@ -99,9 +108,9 @@ static int msm_iommu_unmap(struct msm_mmu *mmu, uint32_t iova,
 		if (unmapped < bytes)
 			return unmapped;
 
-		VERB("unmap[%d]: %08x(%zx)", i, iova, bytes);
+		VERB("unmap[%d]: %08x(%x)", i, iova, bytes);
 
-		BUG_ON(!PAGE_ALIGNED(bytes));
+		BUG_ON(!IS_ALIGNED(bytes, PAGE_SIZE));
 
 		da += bytes;
 	}
@@ -118,13 +127,12 @@ static void msm_iommu_destroy(struct msm_mmu *mmu)
 
 static const struct msm_mmu_funcs funcs = {
 		.attach = msm_iommu_attach,
-		.detach = msm_iommu_detach,
 		.map = msm_iommu_map,
 		.unmap = msm_iommu_unmap,
 		.destroy = msm_iommu_destroy,
 };
 
-struct msm_mmu *msm_iommu_new(struct device *dev, struct iommu_domain *domain)
+struct msm_mmu *msm_iommu_new(struct drm_device *dev, struct iommu_domain *domain)
 {
 	struct msm_iommu *iommu;
 

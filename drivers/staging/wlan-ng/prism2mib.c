@@ -85,7 +85,7 @@ struct mibrec {
 	u16 parm1;
 	u16 parm2;
 	u16 parm3;
-	int (*func)(struct mibrec *mib,
+	int (*func) (struct mibrec *mib,
 		     int isget,
 		     wlandevice_t *wlandev,
 		     hfa384x_t *hw,
@@ -582,6 +582,8 @@ static int prism2mib_privacyinvoked(struct mibrec *mib,
 				    struct p80211msg_dot11req_mibset *msg,
 				    void *data)
 {
+	int result;
+
 	if (wlandev->hostwep & HOSTWEP_DECRYPT) {
 		if (wlandev->hostwep & HOSTWEP_DECRYPT)
 			mib->parm2 |= HFA384x_WEPFLAGS_DISABLE_RXCRYPT;
@@ -589,7 +591,9 @@ static int prism2mib_privacyinvoked(struct mibrec *mib,
 			mib->parm2 |= HFA384x_WEPFLAGS_DISABLE_TXCRYPT;
 	}
 
-	return prism2mib_flag(mib, isget, wlandev, hw, msg, data);
+	result = prism2mib_flag(mib, isget, wlandev, hw, msg, data);
+
+	return result;
 }
 
 /*----------------------------------------------------------------
@@ -624,8 +628,11 @@ static int prism2mib_excludeunencrypted(struct mibrec *mib,
 					struct p80211msg_dot11req_mibset *msg,
 					void *data)
 {
+	int result;
 
-	return prism2mib_flag(mib, isget, wlandev, hw, msg, data);
+	result = prism2mib_flag(mib, isget, wlandev, hw, msg, data);
+
+	return result;
 }
 
 /*----------------------------------------------------------------
@@ -665,8 +672,8 @@ static int prism2mib_fragmentationthreshold(struct mibrec *mib,
 
 	if (!isget)
 		if ((*uint32) % 2) {
-			netdev_warn(wlandev->netdev,
-				    "Attempt to set odd number FragmentationThreshold\n");
+			printk(KERN_WARNING "Attempt to set odd number "
+			       "FragmentationThreshold\n");
 			msg->resultcode.data =
 			    P80211ENUM_resultcode_not_supported;
 			return 0;
@@ -710,10 +717,11 @@ static int prism2mib_priv(struct mibrec *mib,
 {
 	p80211pstrd_t *pstr = (p80211pstrd_t *) data;
 
+	int result;
+
 	switch (mib->did) {
 	case DIDmib_lnx_lnxConfigTable_lnxRSNAIE:{
 			hfa384x_WPAData_t wpa;
-
 			if (isget) {
 				hfa384x_drvr_getconfig(hw,
 						       HFA384x_RID_CNFWPADATA,
@@ -725,15 +733,16 @@ static int prism2mib_priv(struct mibrec *mib,
 				wpa.datalen = cpu_to_le16(pstr->len);
 				memcpy(wpa.data, pstr->data, pstr->len);
 
-				hfa384x_drvr_setconfig(hw,
-						       HFA384x_RID_CNFWPADATA,
-						       (u8 *) &wpa,
-						       sizeof(wpa));
+				result =
+				    hfa384x_drvr_setconfig(hw,
+						   HFA384x_RID_CNFWPADATA,
+						   (u8 *) &wpa,
+						   sizeof(wpa));
 			}
 			break;
 		}
 	default:
-		netdev_err(wlandev->netdev, "Unhandled DID 0x%08x\n", mib->did);
+		printk(KERN_ERR "Unhandled DID 0x%08x\n", mib->did);
 	}
 
 	return 0;

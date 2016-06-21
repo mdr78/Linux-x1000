@@ -1,11 +1,29 @@
-#include <asm/branch.h>
-#include <asm/cacheflush.h>
-#include <asm/fpu_emulator.h>
+#include <linux/compiler.h>
+#include <linux/mm.h>
+#include <linux/signal.h>
+#include <linux/smp.h>
+
+#include <asm/asm.h>
+#include <asm/bootinfo.h>
+#include <asm/byteorder.h>
+#include <asm/cpu.h>
 #include <asm/inst.h>
-#include <asm/mipsregs.h>
+#include <asm/processor.h>
 #include <asm/uaccess.h>
+#include <asm/branch.h>
+#include <asm/mipsregs.h>
+#include <asm/cacheflush.h>
+
+#include <asm/fpu_emulator.h>
 
 #include "ieee754.h"
+
+/* Strap kernel emulator for full MIPS IV emulation */
+
+#ifdef __mips
+#undef __mips
+#endif
+#define __mips 4
 
 /*
  * Emulate the arbritrary instruction ir at xcp->cp0_epc.  Required when
@@ -33,6 +51,7 @@ struct emuframe {
 
 int mips_dsemul(struct pt_regs *regs, mips_instruction ir, unsigned long cpc)
 {
+	extern asmlinkage void handle_dsemulret(void);
 	struct emuframe __user *fr;
 	int err;
 
@@ -40,11 +59,13 @@ int mips_dsemul(struct pt_regs *regs, mips_instruction ir, unsigned long cpc)
 		(ir == 0)) {
 		/* NOP is easy */
 		regs->cp0_epc = cpc;
-		clear_delay_slot(regs);
+		regs->cp0_cause &= ~CAUSEF_BD;
 		return 0;
 	}
+#ifdef DSEMUL_TRACE
+	printk("dsemul %lx %lx\n", regs->cp0_epc, cpc);
 
-	pr_debug("dsemul %lx %lx\n", regs->cp0_epc, cpc);
+#endif
 
 	/*
 	 * The strategy is to push the instruction onto the user stack
@@ -93,9 +114,9 @@ int mips_dsemul(struct pt_regs *regs, mips_instruction ir, unsigned long cpc)
 	regs->cp0_epc = ((unsigned long) &fr->emul) |
 		get_isa16_mode(regs->cp0_epc);
 
-	flush_cache_sigtramp((unsigned long)&fr->emul);
+	flush_cache_sigtramp((unsigned long)&fr->badinst);
 
-	return 0;
+	return SIGILL;		/* force out of emulation loop */
 }
 
 int do_dsemulret(struct pt_regs *xcp)
@@ -146,8 +167,9 @@ int do_dsemulret(struct pt_regs *xcp)
 	 * emulating the branch delay instruction.
 	 */
 
-	pr_debug("dsemulret\n");
-
+#ifdef DSEMUL_TRACE
+	printk("dsemulret\n");
+#endif
 	if (__get_user(epc, &fr->epc)) {		/* Saved EPC */
 		/* This is not a good situation to be in */
 		force_sig(SIGBUS, current);
@@ -157,6 +179,6 @@ int do_dsemulret(struct pt_regs *xcp)
 
 	/* Set EPC to return to post-branch instruction */
 	xcp->cp0_epc = epc;
-	MIPS_FPU_EMU_INC_STATS(ds_emul);
+
 	return 1;
 }

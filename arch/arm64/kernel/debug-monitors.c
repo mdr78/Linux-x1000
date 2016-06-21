@@ -26,16 +26,23 @@
 #include <linux/stat.h>
 #include <linux/uaccess.h>
 
-#include <asm/cpufeature.h>
-#include <asm/cputype.h>
 #include <asm/debug-monitors.h>
+#include <asm/cputype.h>
 #include <asm/system_misc.h>
+
+/* Low-level stepping controls. */
+#define DBG_MDSCR_SS		(1 << 0)
+#define DBG_SPSR_SS		(1 << 21)
+
+/* MDSCR_EL1 enabling bits */
+#define DBG_MDSCR_KDE		(1 << 13)
+#define DBG_MDSCR_MDE		(1 << 15)
+#define DBG_MDSCR_MASK		~(DBG_MDSCR_KDE | DBG_MDSCR_MDE)
 
 /* Determine debug architecture. */
 u8 debug_monitors_arch(void)
 {
-	return cpuid_feature_extract_field(read_system_reg(SYS_ID_AA64DFR0_EL1),
-						ID_AA64DFR0_DEBUGVER_SHIFT);
+	return read_cpuid(ID_AA64DFR0_EL1) & 0xf;
 }
 
 /*
@@ -60,7 +67,7 @@ static u32 mdscr_read(void)
  * Allow root to disable self-hosted debug from userspace.
  * This is useful if you want to connect an external JTAG debugger.
  */
-static bool debug_enabled = true;
+static u32 debug_enabled = 1;
 
 static int create_debug_debugfs_entry(void)
 {
@@ -71,7 +78,7 @@ fs_initcall(create_debug_debugfs_entry);
 
 static int __init early_debug_disable(char *buf)
 {
-	debug_enabled = false;
+	debug_enabled = 0;
 	return 0;
 }
 
@@ -84,7 +91,7 @@ early_param("nodebugmon", early_debug_disable);
 static DEFINE_PER_CPU(int, mde_ref_count);
 static DEFINE_PER_CPU(int, kde_ref_count);
 
-void enable_debug_monitors(enum dbg_active_el el)
+void enable_debug_monitors(enum debug_el el)
 {
 	u32 mdscr, enable = 0;
 
@@ -104,7 +111,7 @@ void enable_debug_monitors(enum dbg_active_el el)
 	}
 }
 
-void disable_debug_monitors(enum dbg_active_el el)
+void disable_debug_monitors(enum debug_el el)
 {
 	u32 mdscr, disable = 0;
 
@@ -130,13 +137,14 @@ void disable_debug_monitors(enum dbg_active_el el)
 static void clear_os_lock(void *unused)
 {
 	asm volatile("msr oslar_el1, %0" : : "r" (0));
+	isb();
 }
 
 static int os_lock_notify(struct notifier_block *self,
 				    unsigned long action, void *data)
 {
 	int cpu = (unsigned long)data;
-	if ((action & ~CPU_TASKS_FROZEN) == CPU_ONLINE)
+	if (action == CPU_ONLINE)
 		smp_call_function_single(cpu, clear_os_lock, NULL, 1);
 	return NOTIFY_OK;
 }
@@ -147,17 +155,12 @@ static struct notifier_block os_lock_nb = {
 
 static int debug_monitors_init(void)
 {
-	cpu_notifier_register_begin();
-
 	/* Clear the OS lock. */
-	on_each_cpu(clear_os_lock, NULL, 1);
-	isb();
-	local_dbg_enable();
+	smp_call_function(clear_os_lock, NULL, 1);
+	clear_os_lock(NULL);
 
 	/* Register hotplug handler. */
-	__register_cpu_notifier(&os_lock_nb);
-
-	cpu_notifier_register_done();
+	register_cpu_notifier(&os_lock_nb);
 	return 0;
 }
 postcore_initcall(debug_monitors_init);
@@ -186,7 +189,7 @@ static void clear_regs_spsr_ss(struct pt_regs *regs)
 
 /* EL1 Single Step Handler hooks */
 static LIST_HEAD(step_hook);
-static DEFINE_RWLOCK(step_hook_lock);
+DEFINE_RWLOCK(step_hook_lock);
 
 void register_step_hook(struct step_hook *hook)
 {
@@ -203,7 +206,7 @@ void unregister_step_hook(struct step_hook *hook)
 }
 
 /*
- * Call registered single step handlers
+ * Call registered single step handers
  * There is no Syndrome info to check for determining the handler.
  * So we call all the registered handlers, until the right handler is
  * found which returns zero.
@@ -273,21 +276,20 @@ static int single_step_handler(unsigned long addr, unsigned int esr,
  * Use reader/writer locks instead of plain spinlock.
  */
 static LIST_HEAD(break_hook);
-static DEFINE_SPINLOCK(break_hook_lock);
+DEFINE_RWLOCK(break_hook_lock);
 
 void register_break_hook(struct break_hook *hook)
 {
-	spin_lock(&break_hook_lock);
-	list_add_rcu(&hook->node, &break_hook);
-	spin_unlock(&break_hook_lock);
+	write_lock(&break_hook_lock);
+	list_add(&hook->node, &break_hook);
+	write_unlock(&break_hook_lock);
 }
 
 void unregister_break_hook(struct break_hook *hook)
 {
-	spin_lock(&break_hook_lock);
-	list_del_rcu(&hook->node);
-	spin_unlock(&break_hook_lock);
-	synchronize_rcu();
+	write_lock(&break_hook_lock);
+	list_del(&hook->node);
+	write_unlock(&break_hook_lock);
 }
 
 static int call_break_hook(struct pt_regs *regs, unsigned int esr)
@@ -295,11 +297,11 @@ static int call_break_hook(struct pt_regs *regs, unsigned int esr)
 	struct break_hook *hook;
 	int (*fn)(struct pt_regs *regs, unsigned int esr) = NULL;
 
-	rcu_read_lock();
-	list_for_each_entry_rcu(hook, &break_hook, node)
+	read_lock(&break_hook_lock);
+	list_for_each_entry(hook, &break_hook, node)
 		if ((esr & hook->esr_mask) == hook->esr_val)
 			fn = hook->fn;
-	rcu_read_unlock();
+	read_unlock(&break_hook_lock);
 
 	return fn ? fn(regs, esr) : DBG_HOOK_ERROR;
 }
@@ -309,20 +311,23 @@ static int brk_handler(unsigned long addr, unsigned int esr,
 {
 	siginfo_t info;
 
-	if (user_mode(regs)) {
-		info = (siginfo_t) {
-			.si_signo = SIGTRAP,
-			.si_errno = 0,
-			.si_code  = TRAP_BRKPT,
-			.si_addr  = (void __user *)instruction_pointer(regs),
-		};
+	if (call_break_hook(regs, esr) == DBG_HOOK_HANDLED)
+		return 0;
 
-		force_sig_info(SIGTRAP, &info, current);
-	} else if (call_break_hook(regs, esr) != DBG_HOOK_HANDLED) {
-		pr_warning("Unexpected kernel BRK exception at EL1\n");
+	pr_warn("unexpected brk exception at %lx, esr=0x%x\n",
+			(long)instruction_pointer(regs), esr);
+
+	if (!user_mode(regs))
 		return -EFAULT;
-	}
 
+	info = (siginfo_t) {
+		.si_signo = SIGTRAP,
+		.si_errno = 0,
+		.si_code  = TRAP_BRKPT,
+		.si_addr  = (void __user *)instruction_pointer(regs),
+	};
+
+	force_sig_info(SIGTRAP, &info, current);
 	return 0;
 }
 

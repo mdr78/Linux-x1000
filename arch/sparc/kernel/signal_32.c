@@ -28,7 +28,6 @@
 #include <asm/switch_to.h>
 
 #include "sigutil.h"
-#include "kernel.h"
 
 extern void fpsave(unsigned long *fpregs, unsigned long *fsr,
 		   void *fpqueue, unsigned long *fpqdepth);
@@ -70,7 +69,7 @@ asmlinkage void do_sigreturn(struct pt_regs *regs)
 	int err;
 
 	/* Always make any pending restarted system calls return -EINTR */
-	current->restart_block.fn = do_no_restart_syscall;
+	current_thread_info()->restart_block.fn = do_no_restart_syscall;
 
 	synchronize_user_stack();
 
@@ -342,7 +341,7 @@ static int setup_rt_frame(struct ksignal *ksig, struct pt_regs *regs,
 	err |= __put_user(0, &sf->extra_size);
 
 	if (psr & PSR_EF) {
-		__siginfo_fpu_t __user *fp = tail;
+		__siginfo_fpu_t *fp = tail;
 		tail += sizeof(*fp);
 		err |= save_fpu_state(regs, fp);
 		err |= __put_user(fp, &sf->fpu_save);
@@ -350,7 +349,7 @@ static int setup_rt_frame(struct ksignal *ksig, struct pt_regs *regs,
 		err |= __put_user(0, &sf->fpu_save);
 	}
 	if (wsaved) {
-		__siginfo_rwin_t __user *rwp = tail;
+		__siginfo_rwin_t *rwp = tail;
 		tail += sizeof(*rwp);
 		err |= save_rwin_state(wsaved, rwp);
 		err |= __put_user(rwp, &sf->rwin_save);
@@ -518,9 +517,9 @@ void do_notify_resume(struct pt_regs *regs, unsigned long orig_i0,
 	}
 }
 
-asmlinkage int do_sys_sigstack(struct sigstack __user *ssptr,
-                               struct sigstack __user *ossptr,
-                               unsigned long sp)
+asmlinkage int
+do_sys_sigstack(struct sigstack __user *ssptr, struct sigstack __user *ossptr,
+		unsigned long sp)
 {
 	int ret = -EFAULT;
 

@@ -58,16 +58,17 @@ void (*mach_halt)(void);
 void (*mach_power_off)(void);
 
 #ifdef CONFIG_M68000
-#if defined(CONFIG_M68328)
-#define CPU_NAME	"MC68328"
-#elif defined(CONFIG_M68EZ328)
-#define CPU_NAME	"MC68EZ328"
-#elif defined(CONFIG_M68VZ328)
-#define CPU_NAME	"MC68VZ328"
-#else
 #define CPU_NAME	"MC68000"
 #endif
-#endif /* CONFIG_M68000 */
+#ifdef CONFIG_M68328
+#define CPU_NAME	"MC68328"
+#endif
+#ifdef CONFIG_M68EZ328
+#define CPU_NAME	"MC68EZ328"
+#endif
+#ifdef CONFIG_M68VZ328
+#define CPU_NAME	"MC68VZ328"
+#endif
 #ifdef CONFIG_M68360
 #define CPU_NAME	"MC68360"
 #endif
@@ -238,14 +239,11 @@ void __init setup_arch(char **cmdline_p)
 	 * Give all the memory to the bootmap allocator, tell it to put the
 	 * boot mem_map at the start of memory.
 	 */
-	min_low_pfn = PFN_DOWN(memory_start);
-	max_pfn = max_low_pfn = PFN_DOWN(memory_end);
-
 	bootmap_size = init_bootmem_node(
 			NODE_DATA(0),
-			min_low_pfn,		/* map goes here */
-			PFN_DOWN(PAGE_OFFSET),
-			max_pfn);
+			memory_start >> PAGE_SHIFT, /* map goes here */
+			PAGE_OFFSET >> PAGE_SHIFT,	/* 0 on coldfire */
+			memory_end >> PAGE_SHIFT);
 	/*
 	 * Free the usable memory, we have to make sure we do not free
 	 * the bootmem bitmap so we then reserve it after freeing it :-)

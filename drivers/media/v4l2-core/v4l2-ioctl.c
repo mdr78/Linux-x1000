@@ -26,8 +26,9 @@
 #include <media/v4l2-fh.h>
 #include <media/v4l2-event.h>
 #include <media/v4l2-device.h>
-#include <media/videobuf2-v4l2.h>
+#include <media/videobuf2-core.h>
 
+#define CREATE_TRACE_POINTS
 #include <trace/events/v4l2.h>
 
 /* Zero out the end of the struct pointed to by p.  Everything after, but
@@ -141,7 +142,6 @@ const char *v4l2_field_names[] = {
 EXPORT_SYMBOL(v4l2_field_names);
 
 const char *v4l2_type_names[] = {
-	[0]				   = "0",
 	[V4L2_BUF_TYPE_VIDEO_CAPTURE]      = "vid-cap",
 	[V4L2_BUF_TYPE_VIDEO_OVERLAY]      = "vid-overlay",
 	[V4L2_BUF_TYPE_VIDEO_OUTPUT]       = "vid-out",
@@ -152,8 +152,6 @@ const char *v4l2_type_names[] = {
 	[V4L2_BUF_TYPE_VIDEO_OUTPUT_OVERLAY] = "vid-out-overlay",
 	[V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE] = "vid-cap-mplane",
 	[V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE] = "vid-out-mplane",
-	[V4L2_BUF_TYPE_SDR_CAPTURE]        = "sdr-cap",
-	[V4L2_BUF_TYPE_SDR_OUTPUT]         = "sdr-out",
 };
 EXPORT_SYMBOL(v4l2_type_names);
 
@@ -247,7 +245,6 @@ static void v4l_print_format(const void *arg, bool write_only)
 	const struct v4l2_vbi_format *vbi;
 	const struct v4l2_sliced_vbi_format *sliced;
 	const struct v4l2_window *win;
-	const struct v4l2_sdr_format *sdr;
 	unsigned i;
 
 	pr_cont("type=%s", prt_names(p->type, v4l2_type_names));
@@ -258,8 +255,7 @@ static void v4l_print_format(const void *arg, bool write_only)
 		pr_cont(", width=%u, height=%u, "
 			"pixelformat=%c%c%c%c, field=%s, "
 			"bytesperline=%u, sizeimage=%u, colorspace=%d, "
-			"flags=0x%x, ycbcr_enc=%u, quantization=%u, "
-			"xfer_func=%u\n",
+			"flags %u\n",
 			pix->width, pix->height,
 			(pix->pixelformat & 0xff),
 			(pix->pixelformat >>  8) & 0xff,
@@ -267,24 +263,21 @@ static void v4l_print_format(const void *arg, bool write_only)
 			(pix->pixelformat >> 24) & 0xff,
 			prt_names(pix->field, v4l2_field_names),
 			pix->bytesperline, pix->sizeimage,
-			pix->colorspace, pix->flags, pix->ycbcr_enc,
-			pix->quantization, pix->xfer_func);
+			pix->colorspace, pix->flags);
 		break;
 	case V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE:
 	case V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE:
 		mp = &p->fmt.pix_mp;
 		pr_cont(", width=%u, height=%u, "
 			"format=%c%c%c%c, field=%s, "
-			"colorspace=%d, num_planes=%u, flags=0x%x, "
-			"ycbcr_enc=%u, quantization=%u, xfer_func=%u\n",
+			"colorspace=%d, num_planes=%u\n",
 			mp->width, mp->height,
 			(mp->pixelformat & 0xff),
 			(mp->pixelformat >>  8) & 0xff,
 			(mp->pixelformat >> 16) & 0xff,
 			(mp->pixelformat >> 24) & 0xff,
 			prt_names(mp->field, v4l2_field_names),
-			mp->colorspace, mp->num_planes, mp->flags,
-			mp->ycbcr_enc, mp->quantization, mp->xfer_func);
+			mp->colorspace, mp->num_planes);
 		for (i = 0; i < mp->num_planes; i++)
 			printk(KERN_DEBUG "plane %u: bytesperline=%u sizeimage=%u\n", i,
 					mp->plane_fmt[i].bytesperline,
@@ -325,15 +318,6 @@ static void v4l_print_format(const void *arg, bool write_only)
 			printk(KERN_DEBUG "line[%02u]=0x%04x, 0x%04x\n", i,
 				sliced->service_lines[0][i],
 				sliced->service_lines[1][i]);
-		break;
-	case V4L2_BUF_TYPE_SDR_CAPTURE:
-	case V4L2_BUF_TYPE_SDR_OUTPUT:
-		sdr = &p->fmt.sdr;
-		pr_cont(", pixelformat=%c%c%c%c\n",
-			(sdr->pixelformat >>  0) & 0xff,
-			(sdr->pixelformat >>  8) & 0xff,
-			(sdr->pixelformat >> 16) & 0xff,
-			(sdr->pixelformat >> 24) & 0xff);
 		break;
 	}
 }
@@ -532,20 +516,6 @@ static void v4l_print_queryctrl(const void *arg, bool write_only)
 			p->step, p->default_value, p->flags);
 }
 
-static void v4l_print_query_ext_ctrl(const void *arg, bool write_only)
-{
-	const struct v4l2_query_ext_ctrl *p = arg;
-
-	pr_cont("id=0x%x, type=%d, name=%.*s, min/max=%lld/%lld, "
-		"step=%lld, default=%lld, flags=0x%08x, elem_size=%u, elems=%u, "
-		"nr_of_dims=%u, dims=%u,%u,%u,%u\n",
-			p->id, p->type, (int)sizeof(p->name), p->name,
-			p->minimum, p->maximum,
-			p->step, p->default_value, p->flags,
-			p->elem_size, p->elems, p->nr_of_dims,
-			p->dims[0], p->dims[1], p->dims[2], p->dims[3]);
-}
-
 static void v4l_print_querymenu(const void *arg, bool write_only)
 {
 	const struct v4l2_querymenu *p = arg;
@@ -568,7 +538,7 @@ static void v4l_print_ext_controls(const void *arg, bool write_only)
 	pr_cont("class=0x%x, count=%d, error_idx=%d",
 			p->ctrl_class, p->count, p->error_idx);
 	for (i = 0; i < p->count; i++) {
-		if (!p->controls[i].size)
+		if (p->controls[i].size)
 			pr_cont(", id/val=0x%x/0x%x",
 				p->controls[i].id, p->controls[i].value);
 		else
@@ -583,7 +553,7 @@ static void v4l_print_cropcap(const void *arg, bool write_only)
 	const struct v4l2_cropcap *p = arg;
 
 	pr_cont("type=%s, bounds wxh=%dx%d, x,y=%d,%d, "
-		"defrect wxh=%dx%d, x,y=%d,%d, "
+		"defrect wxh=%dx%d, x,y=%d,%d\n, "
 		"pixelaspect %d/%d\n",
 		prt_names(p->type, v4l2_type_names),
 		p->bounds.width, p->bounds.height,
@@ -865,14 +835,6 @@ static void v4l_print_freq_band(const void *arg, bool write_only)
 			p->rangehigh, p->modulation);
 }
 
-static void v4l_print_edid(const void *arg, bool write_only)
-{
-	const struct v4l2_edid *p = arg;
-
-	pr_cont("pad=%u, start_block=%u, blocks=%u\n",
-		p->pad, p->start_block, p->blocks);
-}
-
 static void v4l_print_u32(const void *arg, bool write_only)
 {
 	pr_cont("value=%u\n", *(const u32 *)arg);
@@ -904,8 +866,6 @@ static int check_ext_ctrls(struct v4l2_ext_controls *c, int allow_priv)
 	 */
 	if (!allow_priv && c->ctrl_class == V4L2_CID_PRIVATE_BASE)
 		return 0;
-	if (c->ctrl_class == 0)
-		return 1;
 	/* Check that all controls are from the same control class. */
 	for (i = 0; i < c->count; i++) {
 		if (V4L2_CTRL_ID2CLASS(c->controls[i].id) != c->ctrl_class) {
@@ -922,7 +882,6 @@ static int check_fmt(struct file *file, enum v4l2_buf_type type)
 	const struct v4l2_ioctl_ops *ops = vfd->ioctl_ops;
 	bool is_vid = vfd->vfl_type == VFL_TYPE_GRABBER;
 	bool is_vbi = vfd->vfl_type == VFL_TYPE_VBI;
-	bool is_sdr = vfd->vfl_type == VFL_TYPE_SDR;
 	bool is_rx = vfd->vfl_dir != VFL_DIR_TX;
 	bool is_tx = vfd->vfl_dir != VFL_DIR_RX;
 
@@ -972,14 +931,6 @@ static int check_fmt(struct file *file, enum v4l2_buf_type type)
 		if (is_vbi && is_tx && ops->vidioc_g_fmt_sliced_vbi_out)
 			return 0;
 		break;
-	case V4L2_BUF_TYPE_SDR_CAPTURE:
-		if (is_sdr && is_rx && ops->vidioc_g_fmt_sdr_cap)
-			return 0;
-		break;
-	case V4L2_BUF_TYPE_SDR_OUTPUT:
-		if (is_sdr && is_tx && ops->vidioc_g_fmt_sdr_out)
-			return 0;
-		break;
 	default:
 		break;
 	}
@@ -1026,14 +977,6 @@ static int v4l_querycap(const struct v4l2_ioctl_ops *ops,
 	ret = ops->vidioc_querycap(file, fh, cap);
 
 	cap->capabilities |= V4L2_CAP_EXT_PIX_FORMAT;
-	/*
-	 * Drivers MUST fill in device_caps, so check for this and
-	 * warn if it was forgotten.
-	 */
-	WARN(!(cap->capabilities & V4L2_CAP_DEVICE_CAPS) ||
-		!cap->device_caps, "Bad caps for driver %s, %x %x",
-		cap->driver, cap->capabilities, cap->device_caps);
-	cap->device_caps |= V4L2_CAP_EXT_PIX_FORMAT;
 
 	return ret;
 }
@@ -1056,8 +999,10 @@ static int v4l_g_priority(const struct v4l2_ioctl_ops *ops,
 	struct video_device *vfd;
 	u32 *p = arg;
 
+	if (ops->vidioc_g_priority)
+		return ops->vidioc_g_priority(file, fh, arg);
 	vfd = video_devdata(file);
-	*p = v4l2_prio_max(vfd->prio);
+	*p = v4l2_prio_max(&vfd->v4l2_dev->prio);
 	return 0;
 }
 
@@ -1068,11 +1013,11 @@ static int v4l_s_priority(const struct v4l2_ioctl_ops *ops,
 	struct v4l2_fh *vfh;
 	u32 *p = arg;
 
+	if (ops->vidioc_s_priority)
+		return ops->vidioc_s_priority(file, fh, *p);
 	vfd = video_devdata(file);
-	if (!test_bit(V4L2_FL_USES_V4L2_FH, &vfd->flags))
-		return -ENOTTY;
 	vfh = file->private_data;
-	return v4l2_prio_change(vfd->prio, &vfh->prio, *p);
+	return v4l2_prio_change(&vfd->v4l2_dev->prio, &vfh->prio, *p);
 }
 
 static int v4l_enuminput(const struct v4l2_ioctl_ops *ops,
@@ -1111,234 +1056,37 @@ static int v4l_enumoutput(const struct v4l2_ioctl_ops *ops,
 	return ops->vidioc_enum_output(file, fh, p);
 }
 
-static void v4l_fill_fmtdesc(struct v4l2_fmtdesc *fmt)
-{
-	const unsigned sz = sizeof(fmt->description);
-	const char *descr = NULL;
-	u32 flags = 0;
-
-	/*
-	 * We depart from the normal coding style here since the descriptions
-	 * should be aligned so it is easy to see which descriptions will be
-	 * longer than 31 characters (the max length for a description).
-	 * And frankly, this is easier to read anyway.
-	 *
-	 * Note that gcc will use O(log N) comparisons to find the right case.
-	 */
-	switch (fmt->pixelformat) {
-	/* Max description length mask:	descr = "0123456789012345678901234567890" */
-	case V4L2_PIX_FMT_RGB332:	descr = "8-bit RGB 3-3-2"; break;
-	case V4L2_PIX_FMT_RGB444:	descr = "16-bit A/XRGB 4-4-4-4"; break;
-	case V4L2_PIX_FMT_ARGB444:	descr = "16-bit ARGB 4-4-4-4"; break;
-	case V4L2_PIX_FMT_XRGB444:	descr = "16-bit XRGB 4-4-4-4"; break;
-	case V4L2_PIX_FMT_RGB555:	descr = "16-bit A/XRGB 1-5-5-5"; break;
-	case V4L2_PIX_FMT_ARGB555:	descr = "16-bit ARGB 1-5-5-5"; break;
-	case V4L2_PIX_FMT_XRGB555:	descr = "16-bit XRGB 1-5-5-5"; break;
-	case V4L2_PIX_FMT_RGB565:	descr = "16-bit RGB 5-6-5"; break;
-	case V4L2_PIX_FMT_RGB555X:	descr = "16-bit A/XRGB 1-5-5-5 BE"; break;
-	case V4L2_PIX_FMT_ARGB555X:	descr = "16-bit ARGB 1-5-5-5 BE"; break;
-	case V4L2_PIX_FMT_XRGB555X:	descr = "16-bit XRGB 1-5-5-5 BE"; break;
-	case V4L2_PIX_FMT_RGB565X:	descr = "16-bit RGB 5-6-5 BE"; break;
-	case V4L2_PIX_FMT_BGR666:	descr = "18-bit BGRX 6-6-6-14"; break;
-	case V4L2_PIX_FMT_BGR24:	descr = "24-bit BGR 8-8-8"; break;
-	case V4L2_PIX_FMT_RGB24:	descr = "24-bit RGB 8-8-8"; break;
-	case V4L2_PIX_FMT_BGR32:	descr = "32-bit BGRA/X 8-8-8-8"; break;
-	case V4L2_PIX_FMT_ABGR32:	descr = "32-bit BGRA 8-8-8-8"; break;
-	case V4L2_PIX_FMT_XBGR32:	descr = "32-bit BGRX 8-8-8-8"; break;
-	case V4L2_PIX_FMT_RGB32:	descr = "32-bit A/XRGB 8-8-8-8"; break;
-	case V4L2_PIX_FMT_ARGB32:	descr = "32-bit ARGB 8-8-8-8"; break;
-	case V4L2_PIX_FMT_XRGB32:	descr = "32-bit XRGB 8-8-8-8"; break;
-	case V4L2_PIX_FMT_GREY:		descr = "8-bit Greyscale"; break;
-	case V4L2_PIX_FMT_Y4:		descr = "4-bit Greyscale"; break;
-	case V4L2_PIX_FMT_Y6:		descr = "6-bit Greyscale"; break;
-	case V4L2_PIX_FMT_Y10:		descr = "10-bit Greyscale"; break;
-	case V4L2_PIX_FMT_Y12:		descr = "12-bit Greyscale"; break;
-	case V4L2_PIX_FMT_Y16:		descr = "16-bit Greyscale"; break;
-	case V4L2_PIX_FMT_Y16_BE:	descr = "16-bit Greyscale BE"; break;
-	case V4L2_PIX_FMT_Y10BPACK:	descr = "10-bit Greyscale (Packed)"; break;
-	case V4L2_PIX_FMT_PAL8:		descr = "8-bit Palette"; break;
-	case V4L2_PIX_FMT_UV8:		descr = "8-bit Chrominance UV 4-4"; break;
-	case V4L2_PIX_FMT_YVU410:	descr = "Planar YVU 4:1:0"; break;
-	case V4L2_PIX_FMT_YVU420:	descr = "Planar YVU 4:2:0"; break;
-	case V4L2_PIX_FMT_YUYV:		descr = "YUYV 4:2:2"; break;
-	case V4L2_PIX_FMT_YYUV:		descr = "YYUV 4:2:2"; break;
-	case V4L2_PIX_FMT_YVYU:		descr = "YVYU 4:2:2"; break;
-	case V4L2_PIX_FMT_UYVY:		descr = "UYVY 4:2:2"; break;
-	case V4L2_PIX_FMT_VYUY:		descr = "VYUY 4:2:2"; break;
-	case V4L2_PIX_FMT_YUV422P:	descr = "Planar YVU 4:2:2"; break;
-	case V4L2_PIX_FMT_YUV411P:	descr = "Planar YUV 4:1:1"; break;
-	case V4L2_PIX_FMT_Y41P:		descr = "YUV 4:1:1 (Packed)"; break;
-	case V4L2_PIX_FMT_YUV444:	descr = "16-bit A/XYUV 4-4-4-4"; break;
-	case V4L2_PIX_FMT_YUV555:	descr = "16-bit A/XYUV 1-5-5-5"; break;
-	case V4L2_PIX_FMT_YUV565:	descr = "16-bit YUV 5-6-5"; break;
-	case V4L2_PIX_FMT_YUV32:	descr = "32-bit A/XYUV 8-8-8-8"; break;
-	case V4L2_PIX_FMT_YUV410:	descr = "Planar YUV 4:1:0"; break;
-	case V4L2_PIX_FMT_YUV420:	descr = "Planar YUV 4:2:0"; break;
-	case V4L2_PIX_FMT_HI240:	descr = "8-bit Dithered RGB (BTTV)"; break;
-	case V4L2_PIX_FMT_HM12:		descr = "YUV 4:2:0 (16x16 Macroblocks)"; break;
-	case V4L2_PIX_FMT_M420:		descr = "YUV 4:2:0 (M420)"; break;
-	case V4L2_PIX_FMT_NV12:		descr = "Y/CbCr 4:2:0"; break;
-	case V4L2_PIX_FMT_NV21:		descr = "Y/CrCb 4:2:0"; break;
-	case V4L2_PIX_FMT_NV16:		descr = "Y/CbCr 4:2:2"; break;
-	case V4L2_PIX_FMT_NV61:		descr = "Y/CrCb 4:2:2"; break;
-	case V4L2_PIX_FMT_NV24:		descr = "Y/CbCr 4:4:4"; break;
-	case V4L2_PIX_FMT_NV42:		descr = "Y/CrCb 4:4:4"; break;
-	case V4L2_PIX_FMT_NV12M:	descr = "Y/CbCr 4:2:0 (N-C)"; break;
-	case V4L2_PIX_FMT_NV21M:	descr = "Y/CrCb 4:2:0 (N-C)"; break;
-	case V4L2_PIX_FMT_NV16M:	descr = "Y/CbCr 4:2:2 (N-C)"; break;
-	case V4L2_PIX_FMT_NV61M:	descr = "Y/CrCb 4:2:2 (N-C)"; break;
-	case V4L2_PIX_FMT_NV12MT:	descr = "Y/CbCr 4:2:0 (64x32 MB, N-C)"; break;
-	case V4L2_PIX_FMT_NV12MT_16X16:	descr = "Y/CbCr 4:2:0 (16x16 MB, N-C)"; break;
-	case V4L2_PIX_FMT_YUV420M:	descr = "Planar YUV 4:2:0 (N-C)"; break;
-	case V4L2_PIX_FMT_YVU420M:	descr = "Planar YVU 4:2:0 (N-C)"; break;
-	case V4L2_PIX_FMT_SBGGR8:	descr = "8-bit Bayer BGBG/GRGR"; break;
-	case V4L2_PIX_FMT_SGBRG8:	descr = "8-bit Bayer GBGB/RGRG"; break;
-	case V4L2_PIX_FMT_SGRBG8:	descr = "8-bit Bayer GRGR/BGBG"; break;
-	case V4L2_PIX_FMT_SRGGB8:	descr = "8-bit Bayer RGRG/GBGB"; break;
-	case V4L2_PIX_FMT_SBGGR10:	descr = "10-bit Bayer BGBG/GRGR"; break;
-	case V4L2_PIX_FMT_SGBRG10:	descr = "10-bit Bayer GBGB/RGRG"; break;
-	case V4L2_PIX_FMT_SGRBG10:	descr = "10-bit Bayer GRGR/BGBG"; break;
-	case V4L2_PIX_FMT_SRGGB10:	descr = "10-bit Bayer RGRG/GBGB"; break;
-	case V4L2_PIX_FMT_SBGGR12:	descr = "12-bit Bayer BGBG/GRGR"; break;
-	case V4L2_PIX_FMT_SGBRG12:	descr = "12-bit Bayer GBGB/RGRG"; break;
-	case V4L2_PIX_FMT_SGRBG12:	descr = "12-bit Bayer GRGR/BGBG"; break;
-	case V4L2_PIX_FMT_SRGGB12:	descr = "12-bit Bayer RGRG/GBGB"; break;
-	case V4L2_PIX_FMT_SBGGR10P:	descr = "10-bit Bayer BGBG/GRGR Packed"; break;
-	case V4L2_PIX_FMT_SGBRG10P:	descr = "10-bit Bayer GBGB/RGRG Packed"; break;
-	case V4L2_PIX_FMT_SGRBG10P:	descr = "10-bit Bayer GRGR/BGBG Packed"; break;
-	case V4L2_PIX_FMT_SRGGB10P:	descr = "10-bit Bayer RGRG/GBGB Packed"; break;
-	case V4L2_PIX_FMT_SBGGR10ALAW8:	descr = "8-bit Bayer BGBG/GRGR (A-law)"; break;
-	case V4L2_PIX_FMT_SGBRG10ALAW8:	descr = "8-bit Bayer GBGB/RGRG (A-law)"; break;
-	case V4L2_PIX_FMT_SGRBG10ALAW8:	descr = "8-bit Bayer GRGR/BGBG (A-law)"; break;
-	case V4L2_PIX_FMT_SRGGB10ALAW8:	descr = "8-bit Bayer RGRG/GBGB (A-law)"; break;
-	case V4L2_PIX_FMT_SBGGR10DPCM8:	descr = "8-bit Bayer BGBG/GRGR (DPCM)"; break;
-	case V4L2_PIX_FMT_SGBRG10DPCM8:	descr = "8-bit Bayer GBGB/RGRG (DPCM)"; break;
-	case V4L2_PIX_FMT_SGRBG10DPCM8:	descr = "8-bit Bayer GRGR/BGBG (DPCM)"; break;
-	case V4L2_PIX_FMT_SRGGB10DPCM8:	descr = "8-bit Bayer RGRG/GBGB (DPCM)"; break;
-	case V4L2_PIX_FMT_SBGGR16:	descr = "16-bit Bayer BGBG/GRGR (Exp.)"; break;
-	case V4L2_PIX_FMT_SN9C20X_I420:	descr = "GSPCA SN9C20X I420"; break;
-	case V4L2_PIX_FMT_SPCA501:	descr = "GSPCA SPCA501"; break;
-	case V4L2_PIX_FMT_SPCA505:	descr = "GSPCA SPCA505"; break;
-	case V4L2_PIX_FMT_SPCA508:	descr = "GSPCA SPCA508"; break;
-	case V4L2_PIX_FMT_STV0680:	descr = "GSPCA STV0680"; break;
-	case V4L2_PIX_FMT_TM6000:	descr = "A/V + VBI Mux Packet"; break;
-	case V4L2_PIX_FMT_CIT_YYVYUY:	descr = "GSPCA CIT YYVYUY"; break;
-	case V4L2_PIX_FMT_KONICA420:	descr = "GSPCA KONICA420"; break;
-	case V4L2_SDR_FMT_CU8:		descr = "Complex U8"; break;
-	case V4L2_SDR_FMT_CU16LE:	descr = "Complex U16LE"; break;
-	case V4L2_SDR_FMT_CS8:		descr = "Complex S8"; break;
-	case V4L2_SDR_FMT_CS14LE:	descr = "Complex S14LE"; break;
-	case V4L2_SDR_FMT_RU12LE:	descr = "Real U12LE"; break;
-
-	default:
-		/* Compressed formats */
-		flags = V4L2_FMT_FLAG_COMPRESSED;
-		switch (fmt->pixelformat) {
-		/* Max description length mask:	descr = "0123456789012345678901234567890" */
-		case V4L2_PIX_FMT_MJPEG:	descr = "Motion-JPEG"; break;
-		case V4L2_PIX_FMT_JPEG:		descr = "JFIF JPEG"; break;
-		case V4L2_PIX_FMT_DV:		descr = "1394"; break;
-		case V4L2_PIX_FMT_MPEG:		descr = "MPEG-1/2/4"; break;
-		case V4L2_PIX_FMT_H264:		descr = "H.264"; break;
-		case V4L2_PIX_FMT_H264_NO_SC:	descr = "H.264 (No Start Codes)"; break;
-		case V4L2_PIX_FMT_H264_MVC:	descr = "H.264 MVC"; break;
-		case V4L2_PIX_FMT_H263:		descr = "H.263"; break;
-		case V4L2_PIX_FMT_MPEG1:	descr = "MPEG-1 ES"; break;
-		case V4L2_PIX_FMT_MPEG2:	descr = "MPEG-2 ES"; break;
-		case V4L2_PIX_FMT_MPEG4:	descr = "MPEG-4 part 2 ES"; break;
-		case V4L2_PIX_FMT_XVID:		descr = "Xvid"; break;
-		case V4L2_PIX_FMT_VC1_ANNEX_G:	descr = "VC-1 (SMPTE 412M Annex G)"; break;
-		case V4L2_PIX_FMT_VC1_ANNEX_L:	descr = "VC-1 (SMPTE 412M Annex L)"; break;
-		case V4L2_PIX_FMT_VP8:		descr = "VP8"; break;
-		case V4L2_PIX_FMT_CPIA1:	descr = "GSPCA CPiA YUV"; break;
-		case V4L2_PIX_FMT_WNVA:		descr = "WNVA"; break;
-		case V4L2_PIX_FMT_SN9C10X:	descr = "GSPCA SN9C10X"; break;
-		case V4L2_PIX_FMT_PWC1:		descr = "Raw Philips Webcam Type (Old)"; break;
-		case V4L2_PIX_FMT_PWC2:		descr = "Raw Philips Webcam Type (New)"; break;
-		case V4L2_PIX_FMT_ET61X251:	descr = "GSPCA ET61X251"; break;
-		case V4L2_PIX_FMT_SPCA561:	descr = "GSPCA SPCA561"; break;
-		case V4L2_PIX_FMT_PAC207:	descr = "GSPCA PAC207"; break;
-		case V4L2_PIX_FMT_MR97310A:	descr = "GSPCA MR97310A"; break;
-		case V4L2_PIX_FMT_JL2005BCD:	descr = "GSPCA JL2005BCD"; break;
-		case V4L2_PIX_FMT_SN9C2028:	descr = "GSPCA SN9C2028"; break;
-		case V4L2_PIX_FMT_SQ905C:	descr = "GSPCA SQ905C"; break;
-		case V4L2_PIX_FMT_PJPG:		descr = "GSPCA PJPG"; break;
-		case V4L2_PIX_FMT_OV511:	descr = "GSPCA OV511"; break;
-		case V4L2_PIX_FMT_OV518:	descr = "GSPCA OV518"; break;
-		case V4L2_PIX_FMT_JPGL:		descr = "JPEG Lite"; break;
-		case V4L2_PIX_FMT_SE401:	descr = "GSPCA SE401"; break;
-		case V4L2_PIX_FMT_S5C_UYVY_JPG:	descr = "S5C73MX interleaved UYVY/JPEG"; break;
-		default:
-			WARN(1, "Unknown pixelformat 0x%08x\n", fmt->pixelformat);
-			if (fmt->description[0])
-				return;
-			flags = 0;
-			snprintf(fmt->description, sz, "%c%c%c%c%s",
-					(char)(fmt->pixelformat & 0x7f),
-					(char)((fmt->pixelformat >> 8) & 0x7f),
-					(char)((fmt->pixelformat >> 16) & 0x7f),
-					(char)((fmt->pixelformat >> 24) & 0x7f),
-					(fmt->pixelformat & (1 << 31)) ? "-BE" : "");
-			break;
-		}
-	}
-
-	if (descr)
-		WARN_ON(strlcpy(fmt->description, descr, sz) >= sz);
-	fmt->flags = flags;
-}
-
 static int v4l_enum_fmt(const struct v4l2_ioctl_ops *ops,
 				struct file *file, void *fh, void *arg)
 {
 	struct v4l2_fmtdesc *p = arg;
 	struct video_device *vfd = video_devdata(file);
-	bool is_vid = vfd->vfl_type == VFL_TYPE_GRABBER;
-	bool is_sdr = vfd->vfl_type == VFL_TYPE_SDR;
 	bool is_rx = vfd->vfl_dir != VFL_DIR_TX;
 	bool is_tx = vfd->vfl_dir != VFL_DIR_RX;
-	int ret = -EINVAL;
 
 	switch (p->type) {
 	case V4L2_BUF_TYPE_VIDEO_CAPTURE:
-		if (unlikely(!is_rx || !is_vid || !ops->vidioc_enum_fmt_vid_cap))
+		if (unlikely(!is_rx || !ops->vidioc_enum_fmt_vid_cap))
 			break;
-		ret = ops->vidioc_enum_fmt_vid_cap(file, fh, arg);
-		break;
+		return ops->vidioc_enum_fmt_vid_cap(file, fh, arg);
 	case V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE:
-		if (unlikely(!is_rx || !is_vid || !ops->vidioc_enum_fmt_vid_cap_mplane))
+		if (unlikely(!is_rx || !ops->vidioc_enum_fmt_vid_cap_mplane))
 			break;
-		ret = ops->vidioc_enum_fmt_vid_cap_mplane(file, fh, arg);
-		break;
+		return ops->vidioc_enum_fmt_vid_cap_mplane(file, fh, arg);
 	case V4L2_BUF_TYPE_VIDEO_OVERLAY:
-		if (unlikely(!is_rx || !is_vid || !ops->vidioc_enum_fmt_vid_overlay))
+		if (unlikely(!is_rx || !ops->vidioc_enum_fmt_vid_overlay))
 			break;
-		ret = ops->vidioc_enum_fmt_vid_overlay(file, fh, arg);
-		break;
+		return ops->vidioc_enum_fmt_vid_overlay(file, fh, arg);
 	case V4L2_BUF_TYPE_VIDEO_OUTPUT:
-		if (unlikely(!is_tx || !is_vid || !ops->vidioc_enum_fmt_vid_out))
+		if (unlikely(!is_tx || !ops->vidioc_enum_fmt_vid_out))
 			break;
-		ret = ops->vidioc_enum_fmt_vid_out(file, fh, arg);
-		break;
+		return ops->vidioc_enum_fmt_vid_out(file, fh, arg);
 	case V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE:
-		if (unlikely(!is_tx || !is_vid || !ops->vidioc_enum_fmt_vid_out_mplane))
+		if (unlikely(!is_tx || !ops->vidioc_enum_fmt_vid_out_mplane))
 			break;
-		ret = ops->vidioc_enum_fmt_vid_out_mplane(file, fh, arg);
-		break;
-	case V4L2_BUF_TYPE_SDR_CAPTURE:
-		if (unlikely(!is_rx || !is_sdr || !ops->vidioc_enum_fmt_sdr_cap))
-			break;
-		ret = ops->vidioc_enum_fmt_sdr_cap(file, fh, arg);
-		break;
-	case V4L2_BUF_TYPE_SDR_OUTPUT:
-		if (unlikely(!is_tx || !is_sdr || !ops->vidioc_enum_fmt_sdr_out))
-			break;
-		ret = ops->vidioc_enum_fmt_sdr_out(file, fh, arg);
-		break;
+		return ops->vidioc_enum_fmt_vid_out_mplane(file, fh, arg);
 	}
-	if (ret == 0)
-		v4l_fill_fmtdesc(p);
-	return ret;
+	return -EINVAL;
 }
 
 static int v4l_g_fmt(const struct v4l2_ioctl_ops *ops,
@@ -1347,42 +1095,17 @@ static int v4l_g_fmt(const struct v4l2_ioctl_ops *ops,
 	struct v4l2_format *p = arg;
 	struct video_device *vfd = video_devdata(file);
 	bool is_vid = vfd->vfl_type == VFL_TYPE_GRABBER;
-	bool is_sdr = vfd->vfl_type == VFL_TYPE_SDR;
 	bool is_rx = vfd->vfl_dir != VFL_DIR_TX;
 	bool is_tx = vfd->vfl_dir != VFL_DIR_RX;
 	int ret;
 
-	/*
-	 * fmt can't be cleared for these overlay types due to the 'clips'
-	 * 'clipcount' and 'bitmap' pointers in struct v4l2_window.
-	 * Those are provided by the user. So handle these two overlay types
-	 * first, and then just do a simple memset for the other types.
-	 */
-	switch (p->type) {
-	case V4L2_BUF_TYPE_VIDEO_OVERLAY:
-	case V4L2_BUF_TYPE_VIDEO_OUTPUT_OVERLAY: {
-		struct v4l2_clip __user *clips = p->fmt.win.clips;
-		u32 clipcount = p->fmt.win.clipcount;
-		void __user *bitmap = p->fmt.win.bitmap;
-
-		memset(&p->fmt, 0, sizeof(p->fmt));
-		p->fmt.win.clips = clips;
-		p->fmt.win.clipcount = clipcount;
-		p->fmt.win.bitmap = bitmap;
-		break;
-	}
-	default:
-		memset(&p->fmt, 0, sizeof(p->fmt));
-		break;
-	}
+	v4l_sanitize_format(p);
 
 	switch (p->type) {
 	case V4L2_BUF_TYPE_VIDEO_CAPTURE:
 		if (unlikely(!is_rx || !is_vid || !ops->vidioc_g_fmt_vid_cap))
 			break;
-		p->fmt.pix.priv = V4L2_PIX_FMT_PRIV_MAGIC;
 		ret = ops->vidioc_g_fmt_vid_cap(file, fh, arg);
-		/* just in case the driver zeroed it again */
 		p->fmt.pix.priv = V4L2_PIX_FMT_PRIV_MAGIC;
 		return ret;
 	case V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE:
@@ -1404,9 +1127,7 @@ static int v4l_g_fmt(const struct v4l2_ioctl_ops *ops,
 	case V4L2_BUF_TYPE_VIDEO_OUTPUT:
 		if (unlikely(!is_tx || !is_vid || !ops->vidioc_g_fmt_vid_out))
 			break;
-		p->fmt.pix.priv = V4L2_PIX_FMT_PRIV_MAGIC;
 		ret = ops->vidioc_g_fmt_vid_out(file, fh, arg);
-		/* just in case the driver zeroed it again */
 		p->fmt.pix.priv = V4L2_PIX_FMT_PRIV_MAGIC;
 		return ret;
 	case V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE:
@@ -1425,14 +1146,6 @@ static int v4l_g_fmt(const struct v4l2_ioctl_ops *ops,
 		if (unlikely(!is_tx || is_vid || !ops->vidioc_g_fmt_sliced_vbi_out))
 			break;
 		return ops->vidioc_g_fmt_sliced_vbi_out(file, fh, arg);
-	case V4L2_BUF_TYPE_SDR_CAPTURE:
-		if (unlikely(!is_rx || !is_sdr || !ops->vidioc_g_fmt_sdr_cap))
-			break;
-		return ops->vidioc_g_fmt_sdr_cap(file, fh, arg);
-	case V4L2_BUF_TYPE_SDR_OUTPUT:
-		if (unlikely(!is_tx || !is_sdr || !ops->vidioc_g_fmt_sdr_out))
-			break;
-		return ops->vidioc_g_fmt_sdr_out(file, fh, arg);
 	}
 	return -EINVAL;
 }
@@ -1443,22 +1156,15 @@ static int v4l_s_fmt(const struct v4l2_ioctl_ops *ops,
 	struct v4l2_format *p = arg;
 	struct video_device *vfd = video_devdata(file);
 	bool is_vid = vfd->vfl_type == VFL_TYPE_GRABBER;
-	bool is_sdr = vfd->vfl_type == VFL_TYPE_SDR;
 	bool is_rx = vfd->vfl_dir != VFL_DIR_TX;
 	bool is_tx = vfd->vfl_dir != VFL_DIR_RX;
-	int ret;
-
-	v4l_sanitize_format(p);
 
 	switch (p->type) {
 	case V4L2_BUF_TYPE_VIDEO_CAPTURE:
 		if (unlikely(!is_rx || !is_vid || !ops->vidioc_s_fmt_vid_cap))
 			break;
 		CLEAR_AFTER_FIELD(p, fmt.pix);
-		ret = ops->vidioc_s_fmt_vid_cap(file, fh, arg);
-		/* just in case the driver zeroed it again */
-		p->fmt.pix.priv = V4L2_PIX_FMT_PRIV_MAGIC;
-		return ret;
+		return ops->vidioc_s_fmt_vid_cap(file, fh, arg);
 	case V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE:
 		if (unlikely(!is_rx || !is_vid || !ops->vidioc_s_fmt_vid_cap_mplane))
 			break;
@@ -1483,10 +1189,7 @@ static int v4l_s_fmt(const struct v4l2_ioctl_ops *ops,
 		if (unlikely(!is_tx || !is_vid || !ops->vidioc_s_fmt_vid_out))
 			break;
 		CLEAR_AFTER_FIELD(p, fmt.pix);
-		ret = ops->vidioc_s_fmt_vid_out(file, fh, arg);
-		/* just in case the driver zeroed it again */
-		p->fmt.pix.priv = V4L2_PIX_FMT_PRIV_MAGIC;
-		return ret;
+		return ops->vidioc_s_fmt_vid_out(file, fh, arg);
 	case V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE:
 		if (unlikely(!is_tx || !is_vid || !ops->vidioc_s_fmt_vid_out_mplane))
 			break;
@@ -1507,16 +1210,6 @@ static int v4l_s_fmt(const struct v4l2_ioctl_ops *ops,
 			break;
 		CLEAR_AFTER_FIELD(p, fmt.sliced);
 		return ops->vidioc_s_fmt_sliced_vbi_out(file, fh, arg);
-	case V4L2_BUF_TYPE_SDR_CAPTURE:
-		if (unlikely(!is_rx || !is_sdr || !ops->vidioc_s_fmt_sdr_cap))
-			break;
-		CLEAR_AFTER_FIELD(p, fmt.sdr);
-		return ops->vidioc_s_fmt_sdr_cap(file, fh, arg);
-	case V4L2_BUF_TYPE_SDR_OUTPUT:
-		if (unlikely(!is_tx || !is_sdr || !ops->vidioc_s_fmt_sdr_out))
-			break;
-		CLEAR_AFTER_FIELD(p, fmt.sdr);
-		return ops->vidioc_s_fmt_sdr_out(file, fh, arg);
 	}
 	return -EINVAL;
 }
@@ -1527,22 +1220,15 @@ static int v4l_try_fmt(const struct v4l2_ioctl_ops *ops,
 	struct v4l2_format *p = arg;
 	struct video_device *vfd = video_devdata(file);
 	bool is_vid = vfd->vfl_type == VFL_TYPE_GRABBER;
-	bool is_sdr = vfd->vfl_type == VFL_TYPE_SDR;
 	bool is_rx = vfd->vfl_dir != VFL_DIR_TX;
 	bool is_tx = vfd->vfl_dir != VFL_DIR_RX;
-	int ret;
-
-	v4l_sanitize_format(p);
 
 	switch (p->type) {
 	case V4L2_BUF_TYPE_VIDEO_CAPTURE:
 		if (unlikely(!is_rx || !is_vid || !ops->vidioc_try_fmt_vid_cap))
 			break;
 		CLEAR_AFTER_FIELD(p, fmt.pix);
-		ret = ops->vidioc_try_fmt_vid_cap(file, fh, arg);
-		/* just in case the driver zeroed it again */
-		p->fmt.pix.priv = V4L2_PIX_FMT_PRIV_MAGIC;
-		return ret;
+		return ops->vidioc_try_fmt_vid_cap(file, fh, arg);
 	case V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE:
 		if (unlikely(!is_rx || !is_vid || !ops->vidioc_try_fmt_vid_cap_mplane))
 			break;
@@ -1567,10 +1253,7 @@ static int v4l_try_fmt(const struct v4l2_ioctl_ops *ops,
 		if (unlikely(!is_tx || !is_vid || !ops->vidioc_try_fmt_vid_out))
 			break;
 		CLEAR_AFTER_FIELD(p, fmt.pix);
-		ret = ops->vidioc_try_fmt_vid_out(file, fh, arg);
-		/* just in case the driver zeroed it again */
-		p->fmt.pix.priv = V4L2_PIX_FMT_PRIV_MAGIC;
-		return ret;
+		return ops->vidioc_try_fmt_vid_out(file, fh, arg);
 	case V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE:
 		if (unlikely(!is_tx || !is_vid || !ops->vidioc_try_fmt_vid_out_mplane))
 			break;
@@ -1591,16 +1274,6 @@ static int v4l_try_fmt(const struct v4l2_ioctl_ops *ops,
 			break;
 		CLEAR_AFTER_FIELD(p, fmt.sliced);
 		return ops->vidioc_try_fmt_sliced_vbi_out(file, fh, arg);
-	case V4L2_BUF_TYPE_SDR_CAPTURE:
-		if (unlikely(!is_rx || !is_sdr || !ops->vidioc_try_fmt_sdr_cap))
-			break;
-		CLEAR_AFTER_FIELD(p, fmt.sdr);
-		return ops->vidioc_try_fmt_sdr_cap(file, fh, arg);
-	case V4L2_BUF_TYPE_SDR_OUTPUT:
-		if (unlikely(!is_tx || !is_sdr || !ops->vidioc_try_fmt_sdr_out))
-			break;
-		CLEAR_AFTER_FIELD(p, fmt.sdr);
-		return ops->vidioc_try_fmt_sdr_out(file, fh, arg);
 	}
 	return -EINVAL;
 }
@@ -1646,29 +1319,13 @@ static int v4l_s_tuner(const struct v4l2_ioctl_ops *ops,
 static int v4l_g_modulator(const struct v4l2_ioctl_ops *ops,
 				struct file *file, void *fh, void *arg)
 {
-	struct video_device *vfd = video_devdata(file);
 	struct v4l2_modulator *p = arg;
 	int err;
-
-	if (vfd->vfl_type == VFL_TYPE_RADIO)
-		p->type = V4L2_TUNER_RADIO;
 
 	err = ops->vidioc_g_modulator(file, fh, p);
 	if (!err)
 		p->capability |= V4L2_TUNER_CAP_FREQ_BANDS;
 	return err;
-}
-
-static int v4l_s_modulator(const struct v4l2_ioctl_ops *ops,
-				struct file *file, void *fh, void *arg)
-{
-	struct video_device *vfd = video_devdata(file);
-	struct v4l2_modulator *p = arg;
-
-	if (vfd->vfl_type == VFL_TYPE_RADIO)
-		p->type = V4L2_TUNER_RADIO;
-
-	return ops->vidioc_s_modulator(file, fh, p);
 }
 
 static int v4l_g_frequency(const struct v4l2_ioctl_ops *ops,
@@ -1677,11 +1334,8 @@ static int v4l_g_frequency(const struct v4l2_ioctl_ops *ops,
 	struct video_device *vfd = video_devdata(file);
 	struct v4l2_frequency *p = arg;
 
-	if (vfd->vfl_type == VFL_TYPE_SDR)
-		p->type = V4L2_TUNER_SDR;
-	else
-		p->type = (vfd->vfl_type == VFL_TYPE_RADIO) ?
-				V4L2_TUNER_RADIO : V4L2_TUNER_ANALOG_TV;
+	p->type = (vfd->vfl_type == VFL_TYPE_RADIO) ?
+			V4L2_TUNER_RADIO : V4L2_TUNER_ANALOG_TV;
 	return ops->vidioc_g_frequency(file, fh, p);
 }
 
@@ -1692,15 +1346,10 @@ static int v4l_s_frequency(const struct v4l2_ioctl_ops *ops,
 	const struct v4l2_frequency *p = arg;
 	enum v4l2_tuner_type type;
 
-	if (vfd->vfl_type == VFL_TYPE_SDR) {
-		if (p->type != V4L2_TUNER_SDR && p->type != V4L2_TUNER_RF)
-			return -EINVAL;
-	} else {
-		type = (vfd->vfl_type == VFL_TYPE_RADIO) ?
-				V4L2_TUNER_RADIO : V4L2_TUNER_ANALOG_TV;
-		if (type != p->type)
-			return -EINVAL;
-	}
+	type = (vfd->vfl_type == VFL_TYPE_RADIO) ?
+			V4L2_TUNER_RADIO : V4L2_TUNER_ANALOG_TV;
+	if (p->type != type)
+		return -EINVAL;
 	return ops->vidioc_s_frequency(file, fh, p);
 }
 
@@ -1780,10 +1429,6 @@ static int v4l_s_hw_freq_seek(const struct v4l2_ioctl_ops *ops,
 	struct v4l2_hw_freq_seek *p = arg;
 	enum v4l2_tuner_type type;
 
-	/* s_hw_freq_seek is not supported for SDR for now */
-	if (vfd->vfl_type == VFL_TYPE_SDR)
-		return -EINVAL;
-
 	type = (vfd->vfl_type == VFL_TYPE_RADIO) ?
 		V4L2_TUNER_RADIO : V4L2_TUNER_ANALOG_TV;
 	if (p->type != type)
@@ -1846,8 +1491,6 @@ static int v4l_create_bufs(const struct v4l2_ioctl_ops *ops,
 
 	if (ret)
 		return ret;
-
-	CLEAR_AFTER_FIELD(create, format);
 
 	v4l_sanitize_format(&create->format);
 
@@ -1913,23 +1556,6 @@ static int v4l_queryctrl(const struct v4l2_ioctl_ops *ops,
 		return v4l2_queryctrl(vfd->ctrl_handler, p);
 	if (ops->vidioc_queryctrl)
 		return ops->vidioc_queryctrl(file, fh, p);
-	return -ENOTTY;
-}
-
-static int v4l_query_ext_ctrl(const struct v4l2_ioctl_ops *ops,
-				struct file *file, void *fh, void *arg)
-{
-	struct video_device *vfd = video_devdata(file);
-	struct v4l2_query_ext_ctrl *p = arg;
-	struct v4l2_fh *vfh =
-		test_bit(V4L2_FL_USES_V4L2_FH, &vfd->flags) ? fh : NULL;
-
-	if (vfh && vfh->ctrl_handler)
-		return v4l2_query_ext_ctrl(vfh->ctrl_handler, p);
-	if (vfd->ctrl_handler)
-		return v4l2_query_ext_ctrl(vfd->ctrl_handler, p);
-	if (ops->vidioc_query_ext_ctrl)
-		return ops->vidioc_query_ext_ctrl(file, fh, p);
 	return -ENOTTY;
 }
 
@@ -2123,41 +1749,37 @@ static int v4l_cropcap(const struct v4l2_ioctl_ops *ops,
 				struct file *file, void *fh, void *arg)
 {
 	struct v4l2_cropcap *p = arg;
-
-	if (ops->vidioc_g_selection) {
-		struct v4l2_selection s = { .type = p->type };
-		int ret;
-
-		/* obtaining bounds */
-		if (V4L2_TYPE_IS_OUTPUT(p->type))
-			s.target = V4L2_SEL_TGT_COMPOSE_BOUNDS;
-		else
-			s.target = V4L2_SEL_TGT_CROP_BOUNDS;
-
-		ret = ops->vidioc_g_selection(file, fh, &s);
-		if (ret)
-			return ret;
-		p->bounds = s.r;
-
-		/* obtaining defrect */
-		if (V4L2_TYPE_IS_OUTPUT(p->type))
-			s.target = V4L2_SEL_TGT_COMPOSE_DEFAULT;
-		else
-			s.target = V4L2_SEL_TGT_CROP_DEFAULT;
-
-		ret = ops->vidioc_g_selection(file, fh, &s);
-		if (ret)
-			return ret;
-		p->defrect = s.r;
-	}
-
-	/* setting trivial pixelaspect */
-	p->pixelaspect.numerator = 1;
-	p->pixelaspect.denominator = 1;
+	struct v4l2_selection s = { .type = p->type };
+	int ret;
 
 	if (ops->vidioc_cropcap)
 		return ops->vidioc_cropcap(file, fh, p);
 
+	/* obtaining bounds */
+	if (V4L2_TYPE_IS_OUTPUT(p->type))
+		s.target = V4L2_SEL_TGT_COMPOSE_BOUNDS;
+	else
+		s.target = V4L2_SEL_TGT_CROP_BOUNDS;
+
+	ret = ops->vidioc_g_selection(file, fh, &s);
+	if (ret)
+		return ret;
+	p->bounds = s.r;
+
+	/* obtaining defrect */
+	if (V4L2_TYPE_IS_OUTPUT(p->type))
+		s.target = V4L2_SEL_TGT_COMPOSE_DEFAULT;
+	else
+		s.target = V4L2_SEL_TGT_CROP_DEFAULT;
+
+	ret = ops->vidioc_g_selection(file, fh, &s);
+	if (ret)
+		return ret;
+	p->defrect = s.r;
+
+	/* setting trivial pixelaspect */
+	p->pixelaspect.numerator = 1;
+	p->pixelaspect.denominator = 1;
 	return 0;
 }
 
@@ -2317,21 +1939,13 @@ static int v4l_enum_freq_bands(const struct v4l2_ioctl_ops *ops,
 	enum v4l2_tuner_type type;
 	int err;
 
-	if (vfd->vfl_type == VFL_TYPE_SDR) {
-		if (p->type != V4L2_TUNER_SDR && p->type != V4L2_TUNER_RF)
-			return -EINVAL;
-		type = p->type;
-	} else {
-		type = (vfd->vfl_type == VFL_TYPE_RADIO) ?
-				V4L2_TUNER_RADIO : V4L2_TUNER_ANALOG_TV;
-		if (type != p->type)
-			return -EINVAL;
-	}
-	if (ops->vidioc_enum_freq_bands) {
-		err = ops->vidioc_enum_freq_bands(file, fh, p);
-		if (err != -ENOTTY)
-			return err;
-	}
+	type = (vfd->vfl_type == VFL_TYPE_RADIO) ?
+			V4L2_TUNER_RADIO : V4L2_TUNER_ANALOG_TV;
+
+	if (type != p->type)
+		return -EINVAL;
+	if (ops->vidioc_enum_freq_bands)
+		return ops->vidioc_enum_freq_bands(file, fh, p);
 	if (is_valid_ioctl(vfd, VIDIOC_G_TUNER)) {
 		struct v4l2_tuner t = {
 			.index = p->tuner,
@@ -2421,7 +2035,7 @@ struct v4l2_ioctl_info {
 static struct v4l2_ioctl_info v4l2_ioctls[] = {
 	IOCTL_INFO_FNC(VIDIOC_QUERYCAP, v4l_querycap, v4l_print_querycap, 0),
 	IOCTL_INFO_FNC(VIDIOC_ENUM_FMT, v4l_enum_fmt, v4l_print_fmtdesc, INFO_FL_CLEAR(v4l2_fmtdesc, type)),
-	IOCTL_INFO_FNC(VIDIOC_G_FMT, v4l_g_fmt, v4l_print_format, 0),
+	IOCTL_INFO_FNC(VIDIOC_G_FMT, v4l_g_fmt, v4l_print_format, INFO_FL_CLEAR(v4l2_format, type)),
 	IOCTL_INFO_FNC(VIDIOC_S_FMT, v4l_s_fmt, v4l_print_format, INFO_FL_PRIO),
 	IOCTL_INFO_FNC(VIDIOC_REQBUFS, v4l_reqbufs, v4l_print_requestbuffers, INFO_FL_PRIO | INFO_FL_QUEUE),
 	IOCTL_INFO_FNC(VIDIOC_QUERYBUF, v4l_querybuf, v4l_print_buffer, INFO_FL_QUEUE | INFO_FL_CLEAR(v4l2_buffer, length)),
@@ -2449,22 +2063,20 @@ static struct v4l2_ioctl_info v4l2_ioctls[] = {
 	IOCTL_INFO_FNC(VIDIOC_QUERYMENU, v4l_querymenu, v4l_print_querymenu, INFO_FL_CTRL | INFO_FL_CLEAR(v4l2_querymenu, index)),
 	IOCTL_INFO_STD(VIDIOC_G_INPUT, vidioc_g_input, v4l_print_u32, 0),
 	IOCTL_INFO_FNC(VIDIOC_S_INPUT, v4l_s_input, v4l_print_u32, INFO_FL_PRIO),
-	IOCTL_INFO_STD(VIDIOC_G_EDID, vidioc_g_edid, v4l_print_edid, 0),
-	IOCTL_INFO_STD(VIDIOC_S_EDID, vidioc_s_edid, v4l_print_edid, INFO_FL_PRIO),
 	IOCTL_INFO_STD(VIDIOC_G_OUTPUT, vidioc_g_output, v4l_print_u32, 0),
 	IOCTL_INFO_FNC(VIDIOC_S_OUTPUT, v4l_s_output, v4l_print_u32, INFO_FL_PRIO),
 	IOCTL_INFO_FNC(VIDIOC_ENUMOUTPUT, v4l_enumoutput, v4l_print_enumoutput, INFO_FL_CLEAR(v4l2_output, index)),
 	IOCTL_INFO_STD(VIDIOC_G_AUDOUT, vidioc_g_audout, v4l_print_audioout, 0),
 	IOCTL_INFO_STD(VIDIOC_S_AUDOUT, vidioc_s_audout, v4l_print_audioout, INFO_FL_PRIO),
 	IOCTL_INFO_FNC(VIDIOC_G_MODULATOR, v4l_g_modulator, v4l_print_modulator, INFO_FL_CLEAR(v4l2_modulator, index)),
-	IOCTL_INFO_FNC(VIDIOC_S_MODULATOR, v4l_s_modulator, v4l_print_modulator, INFO_FL_PRIO),
+	IOCTL_INFO_STD(VIDIOC_S_MODULATOR, vidioc_s_modulator, v4l_print_modulator, INFO_FL_PRIO),
 	IOCTL_INFO_FNC(VIDIOC_G_FREQUENCY, v4l_g_frequency, v4l_print_frequency, INFO_FL_CLEAR(v4l2_frequency, tuner)),
 	IOCTL_INFO_FNC(VIDIOC_S_FREQUENCY, v4l_s_frequency, v4l_print_frequency, INFO_FL_PRIO),
 	IOCTL_INFO_FNC(VIDIOC_CROPCAP, v4l_cropcap, v4l_print_cropcap, INFO_FL_CLEAR(v4l2_cropcap, type)),
 	IOCTL_INFO_FNC(VIDIOC_G_CROP, v4l_g_crop, v4l_print_crop, INFO_FL_CLEAR(v4l2_crop, type)),
 	IOCTL_INFO_FNC(VIDIOC_S_CROP, v4l_s_crop, v4l_print_crop, INFO_FL_PRIO),
-	IOCTL_INFO_STD(VIDIOC_G_SELECTION, vidioc_g_selection, v4l_print_selection, INFO_FL_CLEAR(v4l2_selection, r)),
-	IOCTL_INFO_STD(VIDIOC_S_SELECTION, vidioc_s_selection, v4l_print_selection, INFO_FL_PRIO | INFO_FL_CLEAR(v4l2_selection, r)),
+	IOCTL_INFO_STD(VIDIOC_G_SELECTION, vidioc_g_selection, v4l_print_selection, 0),
+	IOCTL_INFO_STD(VIDIOC_S_SELECTION, vidioc_s_selection, v4l_print_selection, INFO_FL_PRIO),
 	IOCTL_INFO_STD(VIDIOC_G_JPEGCOMP, vidioc_g_jpegcomp, v4l_print_jpegcompression, 0),
 	IOCTL_INFO_STD(VIDIOC_S_JPEGCOMP, vidioc_s_jpegcomp, v4l_print_jpegcompression, INFO_FL_PRIO),
 	IOCTL_INFO_FNC(VIDIOC_QUERYSTD, v4l_querystd, v4l_print_std, 0),
@@ -2500,7 +2112,6 @@ static struct v4l2_ioctl_info v4l2_ioctls[] = {
 	IOCTL_INFO_STD(VIDIOC_DV_TIMINGS_CAP, vidioc_dv_timings_cap, v4l_print_dv_timings_cap, INFO_FL_CLEAR(v4l2_dv_timings_cap, type)),
 	IOCTL_INFO_FNC(VIDIOC_ENUM_FREQ_BANDS, v4l_enum_freq_bands, v4l_print_freq_band, 0),
 	IOCTL_INFO_FNC(VIDIOC_DBG_G_CHIP_INFO, v4l_dbg_g_chip_info, v4l_print_dbg_chip_info, INFO_FL_CLEAR(v4l2_dbg_chip_info, match)),
-	IOCTL_INFO_FNC(VIDIOC_QUERY_EXT_CTRL, v4l_query_ext_ctrl, v4l_print_query_ext_ctrl, INFO_FL_CTRL | INFO_FL_CLEAR(v4l2_query_ext_ctrl, id)),
 };
 #define V4L2_IOCTLS ARRAY_SIZE(v4l2_ioctls)
 
@@ -2570,7 +2181,8 @@ static long __video_do_ioctl(struct file *file,
 	const struct v4l2_ioctl_info *info;
 	void *fh = file->private_data;
 	struct v4l2_fh *vfh = NULL;
-	int dev_debug = vfd->dev_debug;
+	int use_fh_prio = 0;
+	int debug = vfd->debug;
 	long ret = -ENOTTY;
 
 	if (ops == NULL) {
@@ -2579,17 +2191,19 @@ static long __video_do_ioctl(struct file *file,
 		return ret;
 	}
 
-	if (test_bit(V4L2_FL_USES_V4L2_FH, &vfd->flags))
+	if (test_bit(V4L2_FL_USES_V4L2_FH, &vfd->flags)) {
 		vfh = file->private_data;
+		use_fh_prio = test_bit(V4L2_FL_USE_FH_PRIO, &vfd->flags);
+	}
 
 	if (v4l2_is_known_ioctl(cmd)) {
 		info = &v4l2_ioctls[_IOC_NR(cmd)];
 
-		if (!test_bit(_IOC_NR(cmd), vfd->valid_ioctls) &&
+	        if (!test_bit(_IOC_NR(cmd), vfd->valid_ioctls) &&
 		    !((info->flags & INFO_FL_CTRL) && vfh && vfh->ctrl_handler))
 			goto done;
 
-		if (vfh && (info->flags & INFO_FL_PRIO)) {
+		if (use_fh_prio && (info->flags & INFO_FL_PRIO)) {
 			ret = v4l2_prio_check(vfd->prio, vfh->prio);
 			if (ret)
 				goto done;
@@ -2614,20 +2228,16 @@ static long __video_do_ioctl(struct file *file,
 		ret = -ENOTTY;
 	} else {
 		ret = ops->vidioc_default(file, fh,
-			vfh ? v4l2_prio_check(vfd->prio, vfh->prio) >= 0 : 0,
+			use_fh_prio ? v4l2_prio_check(vfd->prio, vfh->prio) >= 0 : 0,
 			cmd, arg);
 	}
 
 done:
-	if (dev_debug & (V4L2_DEV_DEBUG_IOCTL | V4L2_DEV_DEBUG_IOCTL_ARG)) {
-		if (!(dev_debug & V4L2_DEV_DEBUG_STREAMING) &&
-		    (cmd == VIDIOC_QBUF || cmd == VIDIOC_DQBUF))
-			return ret;
-
+	if (debug) {
 		v4l_printk_ioctl(video_device_node_name(vfd), cmd);
 		if (ret < 0)
 			pr_cont(": error %ld", ret);
-		if (!(dev_debug & V4L2_DEV_DEBUG_IOCTL_ARG))
+		if (debug == V4L2_DEBUG_IOCTL)
 			pr_cont("\n");
 		else if (_IOC_DIR(cmd) == _IOC_NONE)
 			info->debug(arg, write_only);
@@ -2641,7 +2251,7 @@ done:
 }
 
 static int check_array_args(unsigned int cmd, void *parg, size_t *array_size,
-			    void __user **user_ptr, void ***kernel_ptr)
+			    void * __user *user_ptr, void ***kernel_ptr)
 {
 	int ret = 0;
 
@@ -2658,16 +2268,16 @@ static int check_array_args(unsigned int cmd, void *parg, size_t *array_size,
 				break;
 			}
 			*user_ptr = (void __user *)buf->m.planes;
-			*kernel_ptr = (void **)&buf->m.planes;
+			*kernel_ptr = (void *)&buf->m.planes;
 			*array_size = sizeof(struct v4l2_plane) * buf->length;
 			ret = 1;
 		}
 		break;
 	}
 
-	case VIDIOC_G_EDID:
-	case VIDIOC_S_EDID: {
-		struct v4l2_edid *edid = parg;
+	case VIDIOC_SUBDEV_G_EDID:
+	case VIDIOC_SUBDEV_S_EDID: {
+		struct v4l2_subdev_edid *edid = parg;
 
 		if (edid->blocks) {
 			if (edid->blocks > 256) {
@@ -2675,7 +2285,7 @@ static int check_array_args(unsigned int cmd, void *parg, size_t *array_size,
 				break;
 			}
 			*user_ptr = (void __user *)edid->edid;
-			*kernel_ptr = (void **)&edid->edid;
+			*kernel_ptr = (void *)&edid->edid;
 			*array_size = edid->blocks * 128;
 			ret = 1;
 		}
@@ -2693,7 +2303,7 @@ static int check_array_args(unsigned int cmd, void *parg, size_t *array_size,
 				break;
 			}
 			*user_ptr = (void __user *)ctrls->controls;
-			*kernel_ptr = (void **)&ctrls->controls;
+			*kernel_ptr = (void *)&ctrls->controls;
 			*array_size = sizeof(struct v4l2_ext_control)
 				    * ctrls->count;
 			ret = 1;
@@ -2793,7 +2403,7 @@ video_usercopy(struct file *file, unsigned int cmd, unsigned long arg,
 	}
 
 	if (has_array_args) {
-		*kernel_ptr = (void __force *)user_ptr;
+		*kernel_ptr = user_ptr;
 		if (copy_to_user(user_ptr, mbuf, array_size))
 			err = -EFAULT;
 		goto out_array_args;

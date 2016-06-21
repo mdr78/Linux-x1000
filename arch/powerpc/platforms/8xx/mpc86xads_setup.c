@@ -122,7 +122,7 @@ static int __init mpc86xads_probe(void)
 	return of_flat_dt_is_compatible(root, "fsl,mpc866ads");
 }
 
-static const struct of_device_id of_bus_ids[] __initconst = {
+static struct of_device_id __initdata of_bus_ids[] = {
 	{ .name = "soc", },
 	{ .name = "cpm", },
 	{ .name = "localbus", },

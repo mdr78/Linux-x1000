@@ -52,7 +52,7 @@
 #define TPS6586X_VERSIONCRC	0xcd
 
 /* Maximum register */
-#define TPS6586X_MAX_REGISTER	TPS6586X_VERSIONCRC
+#define TPS6586X_MAX_REGISTER	(TPS6586X_VERSIONCRC + 1)
 
 struct tps6586x_irq_data {
 	u8	mask_reg;
@@ -299,12 +299,19 @@ static int tps6586x_irq_map(struct irq_domain *h, unsigned int virq,
 	irq_set_chip_data(virq, tps6586x);
 	irq_set_chip_and_handler(virq, &tps6586x_irq_chip, handle_simple_irq);
 	irq_set_nested_thread(virq, 1);
+
+	/* ARM needs us to explicitly flag the IRQ as valid
+	 * and will set them noprobe when we do so. */
+#ifdef CONFIG_ARM
+	set_irq_flags(virq, IRQF_VALID);
+#else
 	irq_set_noprobe(virq);
+#endif
 
 	return 0;
 }
 
-static const struct irq_domain_ops tps6586x_domain_ops = {
+static struct irq_domain_ops tps6586x_domain_ops = {
 	.map    = tps6586x_irq_map,
 	.xlate  = irq_domain_xlate_twocell,
 };
@@ -437,7 +444,7 @@ static struct tps6586x_platform_data *tps6586x_parse_dt(struct i2c_client *clien
 	return pdata;
 }
 
-static const struct of_device_id tps6586x_of_match[] = {
+static struct of_device_id tps6586x_of_match[] = {
 	{ .compatible = "ti,tps6586x", },
 	{ },
 };
@@ -460,7 +467,7 @@ static bool is_volatile_reg(struct device *dev, unsigned int reg)
 static const struct regmap_config tps6586x_regmap_config = {
 	.reg_bits = 8,
 	.val_bits = 8,
-	.max_register = TPS6586X_MAX_REGISTER,
+	.max_register = TPS6586X_MAX_REGISTER - 1,
 	.volatile_reg = is_volatile_reg,
 	.cache_type = REGCACHE_RBTREE,
 };
@@ -487,10 +494,6 @@ static void tps6586x_print_version(struct i2c_client *client, int version)
 		break;
 	case TPS658623:
 		name = "TPS658623";
-		break;
-	case TPS658640:
-	case TPS658640v2:
-		name = "TPS658640";
 		break;
 	case TPS658643:
 		name = "TPS658643";
@@ -603,6 +606,7 @@ MODULE_DEVICE_TABLE(i2c, tps6586x_id_table);
 static struct i2c_driver tps6586x_driver = {
 	.driver	= {
 		.name	= "tps6586x",
+		.owner	= THIS_MODULE,
 		.of_match_table = of_match_ptr(tps6586x_of_match),
 	},
 	.probe		= tps6586x_i2c_probe,

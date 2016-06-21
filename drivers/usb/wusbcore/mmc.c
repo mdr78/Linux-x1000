@@ -301,7 +301,7 @@ int wusbhc_chid_set(struct wusbhc *wusbhc, const struct wusb_ckhdid *chid)
 
 	if (chid)
 		result = uwb_radio_start(&wusbhc->pal);
-	else if (wusbhc->uwb_rc)
+	else
 		uwb_radio_stop(&wusbhc->pal);
 
 	return result;

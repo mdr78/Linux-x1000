@@ -327,7 +327,7 @@ static int lp3971_i2c_read(struct i2c_client *i2c, char reg, int count,
 		return -EIO;
 	ret = i2c_smbus_read_byte_data(i2c, reg);
 	if (ret < 0)
-		return ret;
+		return -EIO;
 
 	*dest = ret;
 	return 0;
@@ -452,6 +452,7 @@ MODULE_DEVICE_TABLE(i2c, lp3971_i2c_id);
 static struct i2c_driver lp3971_i2c_driver = {
 	.driver = {
 		.name = "LP3971",
+		.owner = THIS_MODULE,
 	},
 	.probe    = lp3971_i2c_probe,
 	.id_table = lp3971_i2c_id,

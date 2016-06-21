@@ -206,7 +206,6 @@ static int wdt_probe(struct pci_dev *pdev,
 		timeout = WDT_TIMEOUT;
 
 	wdt_dev.timeout = timeout;
-	wdt_dev.parent = &pdev->dev;
 	watchdog_set_nowayout(&wdt_dev, nowayout);
 	if (readl(wdt_mem) & VIA_WDT_FIRED)
 		wdt_dev.bootstatus |= WDIOF_CARDRESET;
@@ -233,7 +232,7 @@ err_out_disable_device:
 static void wdt_remove(struct pci_dev *pdev)
 {
 	watchdog_unregister_device(&wdt_dev);
-	del_timer_sync(&timer);
+	del_timer(&timer);
 	iounmap(wdt_mem);
 	release_mem_region(mmio, VIA_WDT_MMIO_LEN);
 	release_resource(&wdt_res);

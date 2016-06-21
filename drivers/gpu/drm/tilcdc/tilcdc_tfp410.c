@@ -167,7 +167,7 @@ struct tfp410_connector {
 static void tfp410_connector_destroy(struct drm_connector *connector)
 {
 	struct tfp410_connector *tfp410_connector = to_tfp410_connector(connector);
-	drm_connector_unregister(connector);
+	drm_sysfs_connector_remove(connector);
 	drm_connector_cleanup(connector);
 	kfree(tfp410_connector);
 }
@@ -262,7 +262,7 @@ static struct drm_connector *tfp410_connector_create(struct drm_device *dev,
 	if (ret)
 		goto fail;
 
-	drm_connector_register(connector);
+	drm_sysfs_connector_add(connector);
 
 	return connector;
 
@@ -296,8 +296,23 @@ static int tfp410_modeset_init(struct tilcdc_module *mod, struct drm_device *dev
 	return 0;
 }
 
+static void tfp410_destroy(struct tilcdc_module *mod)
+{
+	struct tfp410_module *tfp410_mod = to_tfp410_module(mod);
+
+	if (tfp410_mod->i2c)
+		i2c_put_adapter(tfp410_mod->i2c);
+
+	if (!IS_ERR_VALUE(tfp410_mod->gpio))
+		gpio_free(tfp410_mod->gpio);
+
+	tilcdc_module_cleanup(mod);
+	kfree(tfp410_mod);
+}
+
 static const struct tilcdc_module_ops tfp410_module_ops = {
 		.modeset_init = tfp410_modeset_init,
+		.destroy = tfp410_destroy,
 };
 
 /*
@@ -327,7 +342,6 @@ static int tfp410_probe(struct platform_device *pdev)
 		return -ENOMEM;
 
 	mod = &tfp410_mod->base;
-	pdev->dev.platform_data = mod;
 
 	tilcdc_module_init(mod, "tfp410", &tfp410_module_ops);
 
@@ -351,7 +365,6 @@ static int tfp410_probe(struct platform_device *pdev)
 	tfp410_mod->i2c = of_find_i2c_adapter_by_node(i2c_node);
 	if (!tfp410_mod->i2c) {
 		dev_err(&pdev->dev, "could not get i2c\n");
-		of_node_put(i2c_node);
 		goto fail;
 	}
 
@@ -365,32 +378,19 @@ static int tfp410_probe(struct platform_device *pdev)
 		ret = gpio_request(tfp410_mod->gpio, "DVI_PDn");
 		if (ret) {
 			dev_err(&pdev->dev, "could not get DVI_PDn gpio\n");
-			goto fail_adapter;
+			goto fail;
 		}
 	}
 
 	return 0;
 
-fail_adapter:
-	i2c_put_adapter(tfp410_mod->i2c);
-
 fail:
-	kfree(tfp410_mod);
-	tilcdc_module_cleanup(mod);
+	tfp410_destroy(mod);
 	return ret;
 }
 
 static int tfp410_remove(struct platform_device *pdev)
 {
-	struct tilcdc_module *mod = dev_get_platdata(&pdev->dev);
-	struct tfp410_module *tfp410_mod = to_tfp410_module(mod);
-
-	i2c_put_adapter(tfp410_mod->i2c);
-	gpio_free(tfp410_mod->gpio);
-
-	tilcdc_module_cleanup(mod);
-	kfree(tfp410_mod);
-
 	return 0;
 }
 

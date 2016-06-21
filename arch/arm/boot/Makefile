@@ -12,7 +12,7 @@
 #
 
 ifneq ($(MACHINE),)
-include $(MACHINE)/Makefile.boot
+include $(srctree)/$(MACHINE)/Makefile.boot
 endif
 
 # Note: the following conditions must always be true:
@@ -55,10 +55,6 @@ $(obj)/zImage:	$(obj)/compressed/vmlinux FORCE
 	$(call if_changed,objcopy)
 	@$(kecho) '  Kernel: $@ is ready'
 
-endif
-
-ifeq ($(CONFIG_ARCH_VEXPRESS), y)
-LOADADDR=0x04080000
 endif
 
 ifneq ($(LOADADDR),)

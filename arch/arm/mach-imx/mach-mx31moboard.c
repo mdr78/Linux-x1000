@@ -47,7 +47,6 @@
 #include "board-mx31moboard.h"
 #include "common.h"
 #include "devices-imx31.h"
-#include "ehci.h"
 #include "hardware.h"
 #include "iomux-mx3.h"
 #include "ulpi.h"
@@ -129,15 +128,27 @@ static struct platform_device mx31moboard_flash = {
 	.num_resources = 1,
 };
 
-static void __init moboard_uart0_init(void)
+static int moboard_uart0_init(struct platform_device *pdev)
 {
-	if (!gpio_request(IOMUX_TO_GPIO(MX31_PIN_CTS1), "uart0-cts-hack")) {
-		gpio_direction_output(IOMUX_TO_GPIO(MX31_PIN_CTS1), 0);
+	int ret = gpio_request(IOMUX_TO_GPIO(MX31_PIN_CTS1), "uart0-cts-hack");
+	if (ret)
+		return ret;
+
+	ret = gpio_direction_output(IOMUX_TO_GPIO(MX31_PIN_CTS1), 0);
+	if (ret)
 		gpio_free(IOMUX_TO_GPIO(MX31_PIN_CTS1));
-	}
+
+	return ret;
+}
+
+static void moboard_uart0_exit(struct platform_device *pdev)
+{
+	gpio_free(IOMUX_TO_GPIO(MX31_PIN_CTS1));
 }
 
 static const struct imxuart_platform_data uart0_pdata __initconst = {
+	.init = moboard_uart0_init,
+	.exit = moboard_uart0_exit,
 };
 
 static const struct imxuart_platform_data uart4_pdata __initconst = {
@@ -435,8 +446,10 @@ static int __init moboard_usbh2_init(void)
 		return -ENODEV;
 
 	pdev = imx31_add_mxc_ehci_hs(2, &usbh2_pdata);
+	if (IS_ERR(pdev))
+		return PTR_ERR(pdev);
 
-	return PTR_ERR_OR_ZERO(pdev);
+	return 0;
 }
 
 static const struct gpio_led mx31moboard_leds[] __initconst = {
@@ -530,7 +543,6 @@ static void __init mx31moboard_init(void)
 
 	imx31_add_imx2_wdt();
 
-	moboard_uart0_init();
 	imx31_add_imx_uart0(&uart0_pdata);
 	imx31_add_imx_uart4(&uart4_pdata);
 
@@ -599,6 +611,7 @@ MACHINE_START(MX31MOBOARD, "EPFL Mobots mx31moboard")
 	.map_io = mx31_map_io,
 	.init_early = imx31_init_early,
 	.init_irq = mx31_init_irq,
+	.handle_irq = imx31_handle_irq,
 	.init_time	= mx31moboard_timer_init,
 	.init_machine = mx31moboard_init,
 	.restart	= mxc_restart,

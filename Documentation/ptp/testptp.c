@@ -17,11 +17,8 @@
  *  along with this program; if not, write to the Free Software
  *  Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
  */
-#define _GNU_SOURCE
-#define __SANE_USERSPACE_TYPES__        /* For PPC64, to get LL64 types */
 #include <errno.h>
 #include <fcntl.h>
-#include <inttypes.h>
 #include <math.h>
 #include <signal.h>
 #include <stdio.h>
@@ -48,14 +45,12 @@
 #define CLOCK_INVALID -1
 #endif
 
-/* clock_adjtime is not available in GLIBC < 2.14 */
-#if !__GLIBC_PREREQ(2, 14)
+/* When glibc offers the syscall, this will go away. */
 #include <sys/syscall.h>
 static int clock_adjtime(clockid_t id, struct timex *tx)
 {
 	return syscall(__NR_clock_adjtime, id, tx);
 }
-#endif
 
 static clockid_t get_clockid(int fd)
 {
@@ -136,8 +131,7 @@ static void usage(char *progname)
 		" -P val     enable or disable (val=1|0) the system clock PPS\n"
 		" -s         set the ptp clock time from the system time\n"
 		" -S         set the system time from the ptp clock time\n"
-		" -t val     shift the ptp clock time by 'val' seconds\n"
-		" -T val     set the ptp clock time to 'val' seconds\n",
+		" -t val     shift the ptp clock time by 'val' seconds\n",
 		progname);
 }
 
@@ -178,7 +172,6 @@ int main(int argc, char *argv[])
 	int perout = -1;
 	int pin_index = -1, pin_func;
 	int pps = -1;
-	int seconds = 0;
 	int settime = 0;
 
 	int64_t t1, t2, tp;
@@ -186,7 +179,7 @@ int main(int argc, char *argv[])
 
 	progname = strrchr(argv[0], '/');
 	progname = progname ? 1+progname : argv[0];
-	while (EOF != (c = getopt(argc, argv, "a:A:cd:e:f:ghi:k:lL:p:P:sSt:T:v"))) {
+	while (EOF != (c = getopt(argc, argv, "a:A:cd:e:f:ghi:k:lL:p:P:sSt:v"))) {
 		switch (c) {
 		case 'a':
 			oneshot = atoi(optarg);
@@ -240,10 +233,6 @@ int main(int argc, char *argv[])
 			break;
 		case 't':
 			adjtime = atoi(optarg);
-			break;
-		case 'T':
-			settime = 3;
-			seconds = atoi(optarg);
 			break;
 		case 'h':
 			usage(progname);
@@ -331,16 +320,6 @@ int main(int argc, char *argv[])
 	if (settime == 2) {
 		clock_gettime(clkid, &ts);
 		if (clock_settime(CLOCK_REALTIME, &ts)) {
-			perror("clock_settime");
-		} else {
-			puts("set time okay");
-		}
-	}
-
-	if (settime == 3) {
-		ts.tv_sec = seconds;
-		ts.tv_nsec = 0;
-		if (clock_settime(clkid, &ts)) {
 			perror("clock_settime");
 		} else {
 			puts("set time okay");
@@ -501,14 +480,14 @@ int main(int argc, char *argv[])
 			interval = t2 - t1;
 			offset = (t2 + t1) / 2 - tp;
 
-			printf("system time: %lld.%u\n",
+			printf("system time: %ld.%ld\n",
 				(pct+2*i)->sec, (pct+2*i)->nsec);
-			printf("phc    time: %lld.%u\n",
+			printf("phc    time: %ld.%ld\n",
 				(pct+2*i+1)->sec, (pct+2*i+1)->nsec);
-			printf("system time: %lld.%u\n",
+			printf("system time: %ld.%ld\n",
 				(pct+2*i+2)->sec, (pct+2*i+2)->nsec);
-			printf("system/phc clock time offset is %" PRId64 " ns\n"
-			       "system     clock time delay  is %" PRId64 " ns\n",
+			printf("system/phc clock time offset is %ld ns\n"
+				"system     clock time delay  is %ld ns\n",
 				offset, interval);
 		}
 
