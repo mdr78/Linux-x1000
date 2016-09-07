@@ -35,7 +35,6 @@
 
 #include <linux/gfp.h>
 #include <linux/export.h>
-#include <linux/init.h>
 
 #include <linux/mlx4/cmd.h>
 #include <linux/mlx4/qp.h>
@@ -222,7 +221,7 @@ int __mlx4_qp_reserve_range(struct mlx4_dev *dev, int cnt, int align,
 
 int mlx4_qp_reserve_range(struct mlx4_dev *dev, int cnt, int align, int *base)
 {
-	u64 in_param;
+	u64 in_param = 0;
 	u64 out_param;
 	int err;
 
@@ -250,12 +249,12 @@ void __mlx4_qp_release_range(struct mlx4_dev *dev, int base_qpn, int cnt)
 
 	if (mlx4_is_qp_reserved(dev, (u32) base_qpn))
 		return;
-	mlx4_bitmap_free_range(&qp_table->bitmap, base_qpn, cnt);
+	mlx4_bitmap_free_range(&qp_table->bitmap, base_qpn, cnt, MLX4_USE_RR);
 }
 
 void mlx4_qp_release_range(struct mlx4_dev *dev, int base_qpn, int cnt)
 {
-	u64 in_param;
+	u64 in_param = 0;
 	int err;
 
 	if (mlx4_is_mfunc(dev)) {
@@ -319,7 +318,7 @@ err_out:
 
 static int mlx4_qp_alloc_icm(struct mlx4_dev *dev, int qpn)
 {
-	u64 param;
+	u64 param = 0;
 
 	if (mlx4_is_mfunc(dev)) {
 		set_param_l(&param, qpn);
@@ -344,7 +343,7 @@ void __mlx4_qp_free_icm(struct mlx4_dev *dev, int qpn)
 
 static void mlx4_qp_free_icm(struct mlx4_dev *dev, int qpn)
 {
-	u64 in_param;
+	u64 in_param = 0;
 
 	if (mlx4_is_mfunc(dev)) {
 		set_param_l(&in_param, qpn);
@@ -480,8 +479,7 @@ int mlx4_init_qp_table(struct mlx4_dev *dev)
 	*/
 
 	err = mlx4_bitmap_init(&qp_table->bitmap, dev->caps.num_qps,
-			       (1 << 23) - 1, dev->phys_caps.base_sqpn + 8 +
-			       16 * MLX4_MFUNC_MAX * !!mlx4_is_master(dev),
+			       (1 << 23) - 1, mlx4_num_reserved_sqps(dev),
 			       reserved_from_top);
 	if (err)
 		return err;

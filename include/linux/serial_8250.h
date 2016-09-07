@@ -22,7 +22,7 @@ struct plat_serial8250_port {
 	unsigned long	iobase;		/* io base address */
 	void __iomem	*membase;	/* ioremap cookie or NULL */
 	resource_size_t	mapbase;	/* resource base */
-	resource_size_t	dma_mapbase;	/* DMA internal resource base */
+	resource_size_t	dma_mapbase;	/* resource base */
 	unsigned int	irq;		/* interrupt number */
 	unsigned long	irqflags;	/* request_irq flags */
 	unsigned int	uartclk;	/* UART clock rate */
@@ -61,35 +61,7 @@ enum {
 	PLAT8250_DEV_SM501,
 };
 
-struct uart_8250_dma {
-	dma_filter_fn		fn;
-	void			*rx_param;
-	void			*tx_param;
-
-	int			rx_chan_id;
-	int			tx_chan_id;
-
-	struct dma_slave_config	rxconf;
-	struct dma_slave_config	txconf;
-
-	struct dma_chan		*rxchan;
-	struct dma_chan		*txchan;
-
-	dma_addr_t		rx_addr;
-	dma_addr_t		tx_addr;
-
-	dma_cookie_t		rx_cookie;
-	dma_cookie_t		tx_cookie;
-
-	void			*rx_buf;
-
-	size_t			rx_size;
-	size_t			tx_size;
-
-	unsigned char		tx_running:1;
-
-	resource_size_t		mapbase;
-};
+struct uart_8250_dma;
 
 /*
  * This should be used by drivers which want to register
@@ -107,6 +79,9 @@ struct uart_8250_port {
 	unsigned int		tx_loadsz;	/* transmit fifo load size */
 	unsigned char		acr;
 	unsigned char		ier;
+#ifdef CONFIG_X86_INTEL_QUARK
+	unsigned char		saved_ier;
+#endif
 	unsigned char		lcr;
 	unsigned char		mcr;
 	unsigned char		mcr_mask;	/* mask of user bits */

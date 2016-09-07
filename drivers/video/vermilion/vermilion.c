@@ -383,7 +383,6 @@ static void vmlfb_disable_mmio(struct vml_par *par)
 static void vmlfb_release_devices(struct vml_par *par)
 {
 	if (atomic_dec_and_test(&par->refcount)) {
-		pci_set_drvdata(par->vdc, NULL);
 		pci_disable_device(par->gpu);
 		pci_disable_device(par->vdc);
 	}
@@ -1003,24 +1002,18 @@ static int vmlfb_setcolreg(u_int regno, u_int red, u_int green, u_int blue,
 static int vmlfb_mmap(struct fb_info *info, struct vm_area_struct *vma)
 {
 	struct vml_info *vinfo = container_of(info, struct vml_info, info);
-	unsigned long size = vma->vm_end - vma->vm_start;
 	unsigned long offset = vma->vm_pgoff << PAGE_SHIFT;
 	int ret;
 
-	if (vma->vm_pgoff > (~0UL >> PAGE_SHIFT))
-		return -EINVAL;
-	if (offset + size > vinfo->vram_contig_size)
-		return -EINVAL;
 	ret = vmlfb_vram_offset(vinfo, offset);
 	if (ret)
 		return -EINVAL;
-	offset += vinfo->vram_start;
+
 	pgprot_val(vma->vm_page_prot) |= _PAGE_PCD;
 	pgprot_val(vma->vm_page_prot) &= ~_PAGE_PWT;
-	if (remap_pfn_range(vma, vma->vm_start, offset >> PAGE_SHIFT,
-						size, vma->vm_page_prot))
-		return -EAGAIN;
-	return 0;
+
+	return vm_iomap_memory(vma, vinfo->vram_start,
+			vinfo->vram_contig_size);
 }
 
 static int vmlfb_sync(struct fb_info *info)

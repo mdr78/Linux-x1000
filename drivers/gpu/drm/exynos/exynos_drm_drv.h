@@ -142,7 +142,7 @@ struct exynos_drm_overlay {
  * @is_connected: check for that display is connected or not.
  * @get_edid: get edid modes from display driver.
  * @get_panel: get panel object from display driver.
- * @check_timing: check if timing is valid or not.
+ * @check_mode: check if mode is valid or not.
  * @power_on: display device on or off.
  */
 struct exynos_drm_display_ops {
@@ -151,7 +151,7 @@ struct exynos_drm_display_ops {
 	struct edid *(*get_edid)(struct device *dev,
 			struct drm_connector *connector);
 	void *(*get_panel)(struct device *dev);
-	int (*check_timing)(struct device *dev, void *timing);
+	int (*check_mode)(struct device *dev, struct drm_display_mode *mode);
 	int (*power_on)(struct device *dev, int mode);
 };
 
@@ -226,6 +226,7 @@ struct exynos_drm_ipp_private {
 struct drm_exynos_file_private {
 	struct exynos_drm_g2d_private	*g2d_priv;
 	struct exynos_drm_ipp_private	*ipp_priv;
+	struct file			*anon_filp;
 };
 
 /*
@@ -322,12 +323,22 @@ void exynos_drm_subdrv_close(struct drm_device *dev, struct drm_file *file);
  * this function registers exynos drm hdmi platform device. It ensures only one
  * instance of the device is created.
  */
-extern int exynos_platform_device_hdmi_register(void);
+int exynos_platform_device_hdmi_register(void);
 
 /*
  * this function unregisters exynos drm hdmi platform device if it exists.
  */
 void exynos_platform_device_hdmi_unregister(void);
+
+/*
+ * this function registers exynos drm ipp platform device.
+ */
+int exynos_platform_device_ipp_register(void);
+
+/*
+ * this function unregisters exynos drm ipp platform device if it exists.
+ */
+void exynos_platform_device_ipp_unregister(void);
 
 extern struct platform_driver fimd_driver;
 extern struct platform_driver hdmi_driver;

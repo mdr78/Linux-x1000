@@ -7,273 +7,218 @@
 #include <linux/of_device.h>
 #include <linux/module.h>
 #include <linux/spi/pxa2xx_spi.h>
-#include <linux/irq.h>
-#include <linux/platform_data/quark.h>
+#include <linux/clk.h>
+#include <linux/clk-provider.h>
 
-/* defined here to avoid including arch/x86/pci/intel_media_proc_gen3.c */
-#define CE3100_SOC_DEVICE_ID 0x2E50
-#define CE4100_SOC_DEVICE_ID 0x0708
-#define CE4200_SOC_DEVICE_ID 0x0709
-#define CE5300_SOC_DEVICE_ID 0x0C40
-#define CE2600_SOC_DEVICE_ID 0x0931
+#include <linux/dmaengine.h>
+#include <linux/platform_data/dma-dw.h>
 
-#ifdef CONFIG_INTEL_QUARK_X1000_SOC_FPGAEMU
-#define CE4200_NUM_SPI_MASTER 1
-#else
-#define CE4200_NUM_SPI_MASTER 2
-#endif
-
-#define CE4X00_SPI_MAX_SPEED  1843200
-
-#ifdef CONFIG_INTEL_QUARK_X1000_SOC
-#ifdef CONFIG_INTEL_QUARK_X1000_SOC_FPGAEMU
-#define CE5X00_SPI_MAX_SPEED  3500000
-#else
-#define CE5X00_SPI_MAX_SPEED  50000000
-#endif
-#else
-#define CE5X00_SPI_MAX_SPEED  5000000
-#endif
-
-#define CE4200_NUM_CHIPSELECT 4
-
-#define SPI_CE_DEBUG
-
-static int interface;
-
-#ifdef CONFIG_INTEL_QUARK_X1000_SOC
-static int enable_msi = 1;
-#else
-static int enable_msi;
-#endif
-module_param(enable_msi, int, S_IRUGO | S_IWUSR);
-MODULE_PARM_DESC(enable_msi, "Enable PCI MSI mode");
-
-struct ce4100_info {
-	struct ssp_device ssp;
-	struct platform_device *spi_pdev;
+enum {
+	PORT_CE4100,
+	PORT_BYT,
+	PORT_BSW0,
+	PORT_BSW1,
+	PORT_BSW2,
+	PORT_QUARK_X1000,
 };
 
-static DEFINE_MUTEX(ssp_lock);
-static LIST_HEAD(ssp_list);
+struct pxa_spi_info {
+	enum pxa_ssp_type type;
+	int port_id;
+	int num_chipselect;
+	unsigned long max_clk_rate;
 
-struct ssp_device *pxa_ssp_request(int port, const char *label)
+	/* DMA channel request parameters */
+	void *tx_param;
+	void *rx_param;
+};
+
+static struct dw_dma_slave byt_tx_param = { .dst_id = 0 };
+static struct dw_dma_slave byt_rx_param = { .src_id = 1 };
+
+static struct dw_dma_slave bsw0_tx_param = { .dst_id = 0 };
+static struct dw_dma_slave bsw0_rx_param = { .src_id = 1 };
+static struct dw_dma_slave bsw1_tx_param = { .dst_id = 6 };
+static struct dw_dma_slave bsw1_rx_param = { .src_id = 7 };
+static struct dw_dma_slave bsw2_tx_param = { .dst_id = 8 };
+static struct dw_dma_slave bsw2_rx_param = { .src_id = 9 };
+
+static bool lpss_dma_filter(struct dma_chan *chan, void *param)
 {
-	struct ssp_device *ssp = NULL;
+	struct dw_dma_slave *dws = param;
 
-	mutex_lock(&ssp_lock);
+	if (dws->dma_dev != chan->device->dev)
+		return false;
 
-	list_for_each_entry(ssp, &ssp_list, node) {
-		if (ssp->port_id == port && ssp->use_count == 0) {
-			ssp->use_count++;
-			ssp->label = label;
-			break;
-		}
-	}
-
-	mutex_unlock(&ssp_lock);
-
-	if (&ssp->node == &ssp_list)
-		return NULL;
-
-	return ssp;
+	chan->private = dws;
+	return true;
 }
-EXPORT_SYMBOL_GPL(pxa_ssp_request);
 
-void pxa_ssp_free(struct ssp_device *ssp)
-{
-	mutex_lock(&ssp_lock);
-	if (ssp->use_count) {
-		ssp->use_count--;
-		ssp->label = NULL;
-	} else
-		dev_err(&ssp->pdev->dev, "device already free\n");
-	mutex_unlock(&ssp_lock);
-}
-EXPORT_SYMBOL_GPL(pxa_ssp_free);
+static struct pxa_spi_info spi_info_configs[] = {
+	[PORT_CE4100] = {
+		.type = PXA25x_SSP,
+		.port_id =  -1,
+		.num_chipselect = -1,
+		.max_clk_rate = 3686400,
+	},
+	[PORT_BYT] = {
+		.type = LPSS_SSP,
+		.port_id = 0,
+		.num_chipselect = 1,
+		.max_clk_rate = 50000000,
+		.tx_param = &byt_tx_param,
+		.rx_param = &byt_rx_param,
+	},
+	[PORT_BSW0] = {
+		.type = LPSS_SSP,
+		.port_id = 0,
+		.num_chipselect = 1,
+		.max_clk_rate = 50000000,
+		.tx_param = &bsw0_tx_param,
+		.rx_param = &bsw0_rx_param,
+	},
+	[PORT_BSW1] = {
+		.type = LPSS_SSP,
+		.port_id = 1,
+		.num_chipselect = 1,
+		.max_clk_rate = 50000000,
+		.tx_param = &bsw1_tx_param,
+		.rx_param = &bsw1_rx_param,
+	},
+	[PORT_BSW2] = {
+		.type = LPSS_SSP,
+		.port_id = 2,
+		.num_chipselect = 1,
+		.max_clk_rate = 50000000,
+		.tx_param = &bsw2_tx_param,
+		.rx_param = &bsw2_rx_param,
+	},
+	[PORT_QUARK_X1000] = {
+		.type = QUARK_X1000_SSP,
+		.port_id = -1,
+		.num_chipselect = 4,
+		.max_clk_rate = 50000000,
+	},
+};
 
-static int ce4100_spi_probe(struct pci_dev *dev,
+static int pxa2xx_spi_pci_probe(struct pci_dev *dev,
 		const struct pci_device_id *ent)
 {
+	struct platform_device_info pi;
 	int ret;
-	resource_size_t phys_beg;
-	resource_size_t phys_len;
-	struct ce4100_info *spi_info = NULL;
 	struct platform_device *pdev;
 	struct pxa2xx_spi_master spi_pdata;
 	struct ssp_device *ssp;
-	unsigned int id;
+	struct pxa_spi_info *c;
+	char buf[40];
+	struct pci_dev *dma_dev;
 
-	ret = pci_enable_device(dev);
+	ret = pcim_enable_device(dev);
 	if (ret)
 		return ret;
 
-	phys_beg = pci_resource_start(dev, 0);
-	phys_len = pci_resource_len(dev, 0);
-
-	if (!request_mem_region(phys_beg, phys_len,
-				"CE4100 SPI")) {
-		dev_err(&dev->dev, "Can't request register space.\n");
-		ret = -EBUSY;
+	ret = pcim_iomap_regions(dev, 1 << 0, "PXA2xx SPI");
+	if (ret)
 		return ret;
-	}
 
-	pdev = platform_device_alloc("pxa2xx-spi", dev->devfn);
-	if (!pdev) {
-		ret = -ENOMEM;
-		goto err_release_mem_region;
-	}
-	spi_info = kzalloc(sizeof(*spi_info), GFP_KERNEL);
-	if (!spi_info) {
-		ret = -ENOMEM;
-		goto err_platform_device_put;
-	}
+	c = &spi_info_configs[ent->driver_data];
+
 	memset(&spi_pdata, 0, sizeof(spi_pdata));
-	spi_pdata.num_chipselect = CE4200_NUM_CHIPSELECT;
+	spi_pdata.num_chipselect = (c->num_chipselect > 0) ?
+					c->num_chipselect : dev->devfn;
 
-	ret = platform_device_add_data(pdev, &spi_pdata, sizeof(spi_pdata));
-	if (ret)
-		goto err_free_spi_info;
+	dma_dev = pci_get_slot(dev->bus, PCI_DEVFN(PCI_SLOT(dev->devfn), 0));
 
-	pdev->id = interface;
-	pdev->dev.parent = &dev->dev;
-#ifdef CONFIG_OF
-	pdev->dev.of_node = dev->dev.of_node;
-#endif
-	ssp = &spi_info->ssp;
-	ssp->pcidev = dev;
+	if (c->tx_param) {
+		struct dw_dma_slave *slave = c->tx_param;
+
+		slave->dma_dev = &dma_dev->dev;
+		slave->src_master = 1;
+		slave->dst_master = 0;
+	}
+
+	if (c->rx_param) {
+		struct dw_dma_slave *slave = c->rx_param;
+
+		slave->dma_dev = &dma_dev->dev;
+		slave->src_master = 1;
+		slave->dst_master = 0;
+	}
+
+	spi_pdata.dma_filter = lpss_dma_filter;
+	spi_pdata.tx_param = c->tx_param;
+	spi_pdata.rx_param = c->rx_param;
+	spi_pdata.enable_dma = c->rx_param && c->tx_param;
+
+	ssp = &spi_pdata.ssp;
 	ssp->phys_base = pci_resource_start(dev, 0);
-	ssp->mmio_base = ioremap(phys_beg, phys_len);
+	ssp->mmio_base = pcim_iomap_table(dev)[0];
 	if (!ssp->mmio_base) {
-		dev_err(&pdev->dev, "failed to ioremap() registers\n");
-		ret = -EIO;
-		goto err_ioremap;
+		dev_err(&dev->dev, "failed to ioremap() registers\n");
+		return -EIO;
 	}
-	pci_set_master(dev);
-	if (enable_msi == 1) {
-		ret = pci_enable_msi(dev);
-		if (ret) {
-			dev_dbg(&dev->dev, "failed to allocate MSI entry\n");
-		}
-	}
-
 	ssp->irq = dev->irq;
-	ssp->port_id = pdev->id;
-
-#ifdef CONFIG_INTEL_QUARK_X1000_SOC
-	id = CE5300_SOC_DEVICE_ID;
-#else
-	intelce_get_soc_info(&id, NULL);
+	ssp->port_id = (c->port_id >= 0) ? c->port_id : dev->devfn;
+#ifdef CONFIG_X86_INTEL_QUARK
+	ssp->port_id = PCI_FUNC(ssp->port_id);
 #endif
-	switch (id) {
-	case CE5300_SOC_DEVICE_ID:
-		ssp->type = CE5X00_SSP;
-		break;
-	case CE4200_SOC_DEVICE_ID:
-	default:
-		ssp->type = CE4100_SSP;
-		break;
-	}
-	mutex_lock(&ssp_lock);
-	list_add(&ssp->node, &ssp_list);
-	mutex_unlock(&ssp_lock);
+	ssp->type = c->type;
 
-	pci_set_drvdata(dev, spi_info);
+	snprintf(buf, sizeof(buf), "pxa2xx-spi.%d", ssp->port_id);
+	ssp->clk = clk_register_fixed_rate(&dev->dev, buf , NULL,
+					CLK_IS_ROOT, c->max_clk_rate);
+	 if (IS_ERR(ssp->clk))
+		return PTR_ERR(ssp->clk);
 
-	spi_info->spi_pdev = pdev;
-	ret = platform_device_add(pdev);
-	if (ret)
-		goto err_dev_add;
+	memset(&pi, 0, sizeof(pi));
+	pi.parent = &dev->dev;
+	pi.name = "pxa2xx-spi";
+	pi.id = ssp->port_id;
+	pi.data = &spi_pdata;
+	pi.size_data = sizeof(spi_pdata);
 
-	interface++;
-
-	return ret;
-
-err_dev_add:
-	pci_set_drvdata(dev, NULL);
-	mutex_lock(&ssp_lock);
-	list_del(&ssp->node);
-	mutex_unlock(&ssp_lock);
-	iounmap(ssp->mmio_base);
-err_ioremap:
-
-err_free_spi_info:
-	kfree(spi_info);
-
-err_platform_device_put:
-	platform_device_put(pdev);
-
-err_release_mem_region:
-	release_mem_region(phys_beg, phys_len);
-	return ret;
-}
-
-static void ce4100_spi_remove(struct pci_dev *dev)
-{
-	struct ce4100_info *spi_info;
-	struct ssp_device *ssp;
-
-	spi_info = pci_get_drvdata(dev);
-	ssp = &spi_info->ssp;
-	platform_device_unregister(spi_info->spi_pdev);
-
-	iounmap(ssp->mmio_base);
-	release_mem_region(pci_resource_start(dev, 0),
-			pci_resource_len(dev, 0));
-
-	mutex_lock(&ssp_lock);
-	list_del(&ssp->node);
-	mutex_unlock(&ssp_lock);
-
-	if (enable_msi == 1) {
-		if (pci_dev_msi_enabled(dev))
-			pci_disable_msi(dev);
+	pdev = platform_device_register_full(&pi);
+	if (IS_ERR(pdev)) {
+		clk_unregister(ssp->clk);
+		return PTR_ERR(pdev);
 	}
 
-	pci_set_drvdata(dev, NULL);
-	pci_disable_device(dev);
-	kfree(spi_info);
-}
+	pci_set_drvdata(dev, pdev);
 
-
-#ifdef CONFIG_PM
-static int ce4XXX_spi_suspend(struct pci_dev *dev, pm_message_t state)
-{
-	pci_save_state(dev);
-	pci_set_power_state(dev, pci_choose_state(dev, state));
 	return 0;
 }
 
-static int ce4XXX_spi_resume(struct pci_dev *dev)
+static void pxa2xx_spi_pci_remove(struct pci_dev *dev)
 {
-	pci_set_power_state(dev, PCI_D0);
-	pci_restore_state(dev);
+	struct platform_device *pdev = pci_get_drvdata(dev);
+	struct pxa2xx_spi_master *spi_pdata;
 
-	return 0;
+	spi_pdata = dev_get_platdata(&pdev->dev);
+
+	platform_device_unregister(pdev);
+	clk_unregister(spi_pdata->ssp.clk);
 }
-#endif
 
-static DEFINE_PCI_DEVICE_TABLE(ce4100_spi_devices) = {
-	{ PCI_DEVICE(PCI_VENDOR_ID_INTEL, 0x2e6a) },
-	{ PCI_DEVICE(PCI_VENDOR_ID_INTEL, 0x0935) },
+static const struct pci_device_id pxa2xx_spi_pci_devices[] = {
+	{ PCI_VDEVICE(INTEL, 0x2e6a), PORT_CE4100 },
+	{ PCI_VDEVICE(INTEL, 0x0935), PORT_QUARK_X1000 },
+	{ PCI_VDEVICE(INTEL, 0x0f0e), PORT_BYT },
+	{ PCI_VDEVICE(INTEL, 0x228e), PORT_BSW0 },
+	{ PCI_VDEVICE(INTEL, 0x2290), PORT_BSW1 },
+	{ PCI_VDEVICE(INTEL, 0x22ac), PORT_BSW2 },
 	{ },
 };
+MODULE_DEVICE_TABLE(pci, pxa2xx_spi_pci_devices);
 
-MODULE_DEVICE_TABLE(pci, ce4100_spi_devices);
-
-static struct pci_driver ce4100_spi_driver = {
-	.name           = "ce4100_spi",
-	.id_table       = ce4100_spi_devices,
-	.probe          = ce4100_spi_probe,
-#ifdef CONFIG_PM
-	.suspend        = ce4XXX_spi_suspend,
-	.resume         = ce4XXX_spi_resume,
-#endif
-	.remove         = ce4100_spi_remove,
+static struct pci_driver pxa2xx_spi_pci_driver = {
+	.name           = "pxa2xx_spi_pci",
+	.id_table       = pxa2xx_spi_pci_devices,
+	.probe          = pxa2xx_spi_pci_probe,
+	.remove         = pxa2xx_spi_pci_remove,
 };
 
-module_pci_driver(ce4100_spi_driver);
+module_pci_driver(pxa2xx_spi_pci_driver);
 
-MODULE_DESCRIPTION("CE4100 PCI-SPI glue code for PXA's driver");
+MODULE_DESCRIPTION("CE4100/LPSS PCI-SPI glue code for PXA's driver");
 MODULE_LICENSE("GPL v2");
 MODULE_AUTHOR("Sebastian Andrzej Siewior <bigeasy@linutronix.de>");

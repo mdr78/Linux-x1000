@@ -151,6 +151,16 @@ ENTRY(ia32_sysenter_target)
 1:	movl	(%rbp),%ebp
 	_ASM_EXTABLE(1b,ia32_badarg)
 	ASM_CLAC
+
+	/*
+	 * Sysenter doesn't filter flags, so we need to clear NT
+	 * ourselves.  To save a few cycles, we can check whether
+	 * NT was set instead of doing an unconditional popfq.
+	 */
+	testl $X86_EFLAGS_NT,EFLAGS-ARGOFFSET(%rsp)
+	jnz sysenter_fix_flags
+sysenter_flags_fixed:
+
 	orl     $TS_COMPAT,TI_status+THREAD_INFO(%rsp,RIP-ARGOFFSET)
 	testl   $_TIF_WORK_SYSCALL_ENTRY,TI_flags+THREAD_INFO(%rsp,RIP-ARGOFFSET)
 	CFI_REMEMBER_STATE
@@ -183,6 +193,8 @@ sysexit_from_sys_call:
 	CFI_REGISTER rsp,rcx
 	TRACE_IRQS_ON
 	ENABLE_INTERRUPTS_SYSEXIT32
+
+	CFI_RESTORE_STATE
 
 #ifdef CONFIG_AUDITSYSCALL
 	.macro auditsys_entry_common
@@ -226,7 +238,6 @@ sysexit_from_sys_call:
 	.endm
 
 sysenter_auditsys:
-	CFI_RESTORE_STATE
 	auditsys_entry_common
 	movl %ebp,%r9d			/* reload 6th syscall arg */
 	jmp sysenter_dispatch
@@ -234,6 +245,11 @@ sysenter_auditsys:
 sysexit_audit:
 	auditsys_exit sysexit_from_sys_call
 #endif
+
+sysenter_fix_flags:
+	pushq_cfi $(X86_EFLAGS_IF|X86_EFLAGS_FIXED)
+	popfq_cfi
+	jmp sysenter_flags_fixed
 
 sysenter_tracesys:
 #ifdef CONFIG_AUDITSYSCALL
@@ -452,22 +468,20 @@ ia32_badsys:
 
 	CFI_ENDPROC
 	
-	.macro PTREGSCALL label, func, arg
+	.macro PTREGSCALL label, func
 	ALIGN
 GLOBAL(\label)
 	leaq \func(%rip),%rax
-	leaq -ARGOFFSET+8(%rsp),\arg	/* 8 for return address */
 	jmp  ia32_ptregs_common	
 	.endm
 
 	CFI_STARTPROC32
 
-	PTREGSCALL stub32_rt_sigreturn, sys32_rt_sigreturn, %rdi
-	PTREGSCALL stub32_sigreturn, sys32_sigreturn, %rdi
-	PTREGSCALL stub32_execve, compat_sys_execve, %rcx
-	PTREGSCALL stub32_fork, sys_fork, %rdi
-	PTREGSCALL stub32_vfork, sys_vfork, %rdi
-	PTREGSCALL stub32_iopl, sys_iopl, %rsi
+	PTREGSCALL stub32_rt_sigreturn, sys32_rt_sigreturn
+	PTREGSCALL stub32_sigreturn, sys32_sigreturn
+	PTREGSCALL stub32_execve, compat_sys_execve
+	PTREGSCALL stub32_fork, sys_fork
+	PTREGSCALL stub32_vfork, sys_vfork
 
 	ALIGN
 GLOBAL(stub32_clone)

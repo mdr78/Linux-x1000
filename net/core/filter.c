@@ -36,7 +36,6 @@
 #include <asm/uaccess.h>
 #include <asm/unaligned.h>
 #include <linux/filter.h>
-#include <linux/reciprocal_div.h>
 #include <linux/ratelimit.h>
 #include <linux/seccomp.h>
 #include <linux/if_vlan.h>
@@ -166,7 +165,7 @@ unsigned int sk_run_filter(const struct sk_buff *skb,
 			A /= X;
 			continue;
 		case BPF_S_ALU_DIV_K:
-			A = reciprocal_divide(A, K);
+			A /= K;
 			continue;
 		case BPF_S_ALU_MOD_X:
 			if (X == 0)
@@ -348,10 +347,15 @@ load_b:
 		case BPF_S_ANC_VLAN_TAG_PRESENT:
 			A = !!vlan_tx_tag_present(skb);
 			continue;
+		case BPF_S_ANC_PAY_OFFSET:
+			A = __skb_get_poff(skb);
+			continue;
 		case BPF_S_ANC_NLATTR: {
 			struct nlattr *nla;
 
 			if (skb_is_nonlinear(skb))
+				return 0;
+			if (skb->len < sizeof(struct nlattr))
 				return 0;
 			if (A > skb->len - sizeof(struct nlattr))
 				return 0;
@@ -369,11 +373,13 @@ load_b:
 
 			if (skb_is_nonlinear(skb))
 				return 0;
+			if (skb->len < sizeof(struct nlattr))
+				return 0;
 			if (A > skb->len - sizeof(struct nlattr))
 				return 0;
 
 			nla = (struct nlattr *)&skb->data[A];
-			if (nla->nla_len > A - skb->len)
+			if (nla->nla_len > skb->len - A)
 				return 0;
 
 			nla = nla_find_nested(nla, X);
@@ -532,6 +538,7 @@ int sk_chk_filter(struct sock_filter *filter, unsigned int flen)
 		[BPF_JMP|BPF_JSET|BPF_X] = BPF_S_JMP_JSET_X,
 	};
 	int pc;
+	bool anc_found;
 
 	if (flen == 0 || flen > BPF_MAXINSNS)
 		return -EINVAL;
@@ -549,11 +556,6 @@ int sk_chk_filter(struct sock_filter *filter, unsigned int flen)
 		/* Some instructions need special checks */
 		switch (code) {
 		case BPF_S_ALU_DIV_K:
-			/* check for division by zero */
-			if (ftest->k == 0)
-				return -EINVAL;
-			ftest->k = reciprocal_value(ftest->k);
-			break;
 		case BPF_S_ALU_MOD_K:
 			/* check for division by zero */
 			if (ftest->k == 0)
@@ -592,8 +594,10 @@ int sk_chk_filter(struct sock_filter *filter, unsigned int flen)
 		case BPF_S_LD_W_ABS:
 		case BPF_S_LD_H_ABS:
 		case BPF_S_LD_B_ABS:
+			anc_found = false;
 #define ANCILLARY(CODE) case SKF_AD_OFF + SKF_AD_##CODE:	\
 				code = BPF_S_ANC_##CODE;	\
+				anc_found = true;		\
 				break
 			switch (ftest->k) {
 			ANCILLARY(PROTOCOL);
@@ -609,7 +613,12 @@ int sk_chk_filter(struct sock_filter *filter, unsigned int flen)
 			ANCILLARY(ALU_XOR_X);
 			ANCILLARY(VLAN_TAG);
 			ANCILLARY(VLAN_TAG_PRESENT);
+			ANCILLARY(PAY_OFFSET);
 			}
+
+			/* ancillary operation unknown or unsupported */
+			if (anc_found == false && ftest->k >= SKF_AD_OFF)
+				return -EINVAL;
 		}
 		ftest->code = code;
 	}
@@ -633,7 +642,6 @@ void sk_filter_release_rcu(struct rcu_head *rcu)
 	struct sk_filter *fp = container_of(rcu, struct sk_filter, rcu);
 
 	bpf_jit_free(fp);
-	kfree(fp);
 }
 EXPORT_SYMBOL(sk_filter_release_rcu);
 
@@ -672,7 +680,7 @@ int sk_unattached_filter_create(struct sk_filter **pfp,
 	if (fprog->filter == NULL)
 		return -EINVAL;
 
-	fp = kmalloc(fsize + sizeof(*fp), GFP_KERNEL);
+	fp = kmalloc(sk_filter_size(fprog->len), GFP_KERNEL);
 	if (!fp)
 		return -ENOMEM;
 	memcpy(fp->insns, fprog->filter, fsize);
@@ -712,17 +720,21 @@ int sk_attach_filter(struct sock_fprog *fprog, struct sock *sk)
 {
 	struct sk_filter *fp, *old_fp;
 	unsigned int fsize = sizeof(struct sock_filter) * fprog->len;
+	unsigned int sk_fsize = sk_filter_size(fprog->len);
 	int err;
+
+	if (sock_flag(sk, SOCK_FILTER_LOCKED))
+		return -EPERM;
 
 	/* Make sure new filter is there and in the right amounts. */
 	if (fprog->filter == NULL)
 		return -EINVAL;
 
-	fp = sock_kmalloc(sk, fsize+sizeof(*fp), GFP_KERNEL);
+	fp = sock_kmalloc(sk, sk_fsize, GFP_KERNEL);
 	if (!fp)
 		return -ENOMEM;
 	if (copy_from_user(fp->insns, fprog->filter, fsize)) {
-		sock_kfree_s(sk, fp, fsize+sizeof(*fp));
+		sock_kfree_s(sk, fp, sk_fsize);
 		return -EFAULT;
 	}
 
@@ -750,6 +762,9 @@ int sk_detach_filter(struct sock *sk)
 	int ret = -ENOENT;
 	struct sk_filter *filter;
 
+	if (sock_flag(sk, SOCK_FILTER_LOCKED))
+		return -EPERM;
+
 	filter = rcu_dereference_protected(sk->sk_filter,
 					   sock_owned_by_user(sk));
 	if (filter) {
@@ -761,7 +776,7 @@ int sk_detach_filter(struct sock *sk)
 }
 EXPORT_SYMBOL_GPL(sk_detach_filter);
 
-static void sk_decode_filter(struct sock_filter *filt, struct sock_filter *to)
+void sk_decode_filter(struct sock_filter *filt, struct sock_filter *to)
 {
 	static const u16 decodes[] = {
 		[BPF_S_ALU_ADD_K]	= BPF_ALU|BPF_ADD|BPF_K,
@@ -801,6 +816,7 @@ static void sk_decode_filter(struct sock_filter *filt, struct sock_filter *to)
 		[BPF_S_ANC_SECCOMP_LD_W] = BPF_LD|BPF_B|BPF_ABS,
 		[BPF_S_ANC_VLAN_TAG]	= BPF_LD|BPF_B|BPF_ABS,
 		[BPF_S_ANC_VLAN_TAG_PRESENT] = BPF_LD|BPF_B|BPF_ABS,
+		[BPF_S_ANC_PAY_OFFSET]	= BPF_LD|BPF_B|BPF_ABS,
 		[BPF_S_LD_W_LEN]	= BPF_LD|BPF_W|BPF_LEN,
 		[BPF_S_LD_W_IND]	= BPF_LD|BPF_W|BPF_IND,
 		[BPF_S_LD_H_IND]	= BPF_LD|BPF_H|BPF_IND,
@@ -835,27 +851,7 @@ static void sk_decode_filter(struct sock_filter *filt, struct sock_filter *to)
 	to->code = decodes[code];
 	to->jt = filt->jt;
 	to->jf = filt->jf;
-
-	if (code == BPF_S_ALU_DIV_K) {
-		/*
-		 * When loaded this rule user gave us X, which was
-		 * translated into R = r(X). Now we calculate the
-		 * RR = r(R) and report it back. If next time this
-		 * value is loaded and RRR = r(RR) is calculated
-		 * then the R == RRR will be true.
-		 *
-		 * One exception. X == 1 translates into R == 0 and
-		 * we can't calculate RR out of it with r().
-		 */
-
-		if (filt->k == 0)
-			to->k = 1;
-		else
-			to->k = reciprocal_value(filt->k);
-
-		BUG_ON(reciprocal_value(to->k) != filt->k);
-	} else
-		to->k = filt->k;
+	to->k = filt->k;
 }
 
 int sk_get_filter(struct sock *sk, struct sock_filter __user *ubuf, unsigned int len)

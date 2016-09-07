@@ -224,7 +224,7 @@ static void pch_gpio_setup(struct pch_gpio *chip)
 	gpio->dbg_show = NULL;
 	gpio->base = -1;
 	gpio->ngpio = gpio_pins[chip->ioh];
-	gpio->can_sleep = 0;
+	gpio->can_sleep = false;
 	gpio->to_irq = pch_gpio_to_irq;
 }
 
@@ -423,10 +423,7 @@ end:
 
 err_request_irq:
 	irq_free_descs(irq_base, gpio_pins[chip->ioh]);
-
-	ret = gpiochip_remove(&chip->gpio);
-	if (ret)
-		dev_err(&pdev->dev, "%s gpiochip_remove failed\n", __func__);
+	gpiochip_remove(&chip->gpio);
 
 err_gpiochip_add:
 	pci_iounmap(pdev, chip->base);
@@ -445,7 +442,6 @@ err_pci_enable:
 
 static void pch_gpio_remove(struct pci_dev *pdev)
 {
-	int err;
 	struct pch_gpio *chip = pci_get_drvdata(pdev);
 
 	if (chip->irq_base != -1) {
@@ -454,10 +450,7 @@ static void pch_gpio_remove(struct pci_dev *pdev)
 		irq_free_descs(chip->irq_base, gpio_pins[chip->ioh]);
 	}
 
-	err = gpiochip_remove(&chip->gpio);
-	if (err)
-		dev_err(&pdev->dev, "Failed gpiochip_remove\n");
-
+	gpiochip_remove(&chip->gpio);
 	pci_iounmap(pdev, chip->base);
 	pci_release_regions(pdev);
 	pci_disable_device(pdev);
@@ -519,7 +512,7 @@ static int pch_gpio_resume(struct pci_dev *pdev)
 #endif
 
 #define PCI_VENDOR_ID_ROHM             0x10DB
-static DEFINE_PCI_DEVICE_TABLE(pch_gpio_pcidev_id) = {
+static const struct pci_device_id pch_gpio_pcidev_id[] = {
 	{ PCI_DEVICE(PCI_VENDOR_ID_INTEL, 0x8803) },
 	{ PCI_DEVICE(PCI_VENDOR_ID_ROHM, 0x8014) },
 	{ PCI_DEVICE(PCI_VENDOR_ID_ROHM, 0x8043) },

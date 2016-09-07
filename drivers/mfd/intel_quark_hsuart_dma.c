@@ -21,14 +21,15 @@
 #include <linux/dw_dmac.h>
 #include <uapi/linux/serial_reg.h>
 #include <uapi/linux/serial_core.h>
+#include "../tty/serial/8250/8250.h"
+
+static bool uart0_dma = true;
+module_param(uart0_dma, bool, 0);
+MODULE_PARM_DESC(uart0_dma, "Set UART0 to use DMA");
 
 static bool uart1_dma = true;
 module_param(uart1_dma, bool, 0);
-MODULE_PARM_DESC(uart1_dma, "Set UART0 to use DMA");
-
-static bool uart2_dma = true;
-module_param(uart2_dma, bool, 0);
-MODULE_PARM_DESC(uart2_dma, "Set UART1 to use DMA");
+MODULE_PARM_DESC(uart1_dma, "Set UART1 to use DMA");
 
 /* MFD */
 #define	QUARK_IORESOURCE_MEM			0
@@ -37,19 +38,19 @@ MODULE_PARM_DESC(uart2_dma, "Set UART1 to use DMA");
 #define	QUARK_MFD_UART				1
 
 /* HSUART DMA Paired ID */
-#define	INTEL_QUARK_UART1_PAIR_ID		0
-#define	INTEL_QUARK_UART2_PAIR_ID		1
+#define	INTEL_QUARK_UART0_PAIR_ID		0
+#define	INTEL_QUARK_UART1_PAIR_ID		1
 
 /* Serial */
 #define	TX					0
 #define	RX					1
 #define	INTEL_QUARK_UART_MEM_BAR		0
 
-	/* DMA for Serial */
+/* DMA for Serial */
+#define	INTEL_QUARK_UART0_RX_CH_ID		0
+#define	INTEL_QUARK_UART0_TX_CH_ID		1
 #define	INTEL_QUARK_UART1_RX_CH_ID		0
 #define	INTEL_QUARK_UART1_TX_CH_ID		1
-#define	INTEL_QUARK_UART2_RX_CH_ID		0
-#define	INTEL_QUARK_UART2_TX_CH_ID		1
 
 /* DMA */
 #define	INTEL_QUARK_DMA_MEM_BAR			1
@@ -65,7 +66,6 @@ static const struct pci_device_id intel_quark_hsuart_dma_ids[] = {
 	{ PCI_VDEVICE(INTEL, PCI_DEVICE_ID_INTEL_QUARK_X1000_UART) },
 	{ /* Sentinel */ },
 };
-
 /*
  * Multi-Functional Device Section
  */
@@ -114,8 +114,8 @@ static struct mfd_cell intel_quark_hsuart_dma_cells[] = {
  * Serial Sections
  */
 enum serial8250_pdata_index {
-	INTEL_QUARK_UART1 = 0,
-	INTEL_QUARK_UART2,
+	INTEL_QUARK_UART0 = 0,
+	INTEL_QUARK_UART1,
 };
 
 static bool intel_quark_uart_dma_filter(struct dma_chan *chan, void *param);
@@ -128,6 +128,20 @@ struct serial8250_filter_param {
 };
 
 static struct serial8250_filter_param intel_quark_filter_param[][2] = {
+	[INTEL_QUARK_UART0] = {
+		[RX] = {
+			.chan_id = INTEL_QUARK_UART0_RX_CH_ID,
+			.device_id = INTEL_QUARK_UART0_PAIR_ID,
+			.slave_config_id = INTEL_QUARK_UART0,
+			.slave_config_direction = RX,
+		},
+		[TX] = {
+			.chan_id = INTEL_QUARK_UART0_TX_CH_ID,
+			.device_id = INTEL_QUARK_UART0_PAIR_ID,
+			.slave_config_id = INTEL_QUARK_UART0,
+			.slave_config_direction = TX,
+		},
+	},
 	[INTEL_QUARK_UART1] = {
 		[RX] = {
 			.chan_id = INTEL_QUARK_UART1_RX_CH_ID,
@@ -142,23 +156,19 @@ static struct serial8250_filter_param intel_quark_filter_param[][2] = {
 			.slave_config_direction = TX,
 		},
 	},
-	[INTEL_QUARK_UART2] = {
-		[RX] = {
-			.chan_id = INTEL_QUARK_UART2_RX_CH_ID,
-			.device_id = INTEL_QUARK_UART2_PAIR_ID,
-			.slave_config_id = INTEL_QUARK_UART2,
-			.slave_config_direction = RX,
-		},
-		[TX] = {
-			.chan_id = INTEL_QUARK_UART2_TX_CH_ID,
-			.device_id = INTEL_QUARK_UART2_PAIR_ID,
-			.slave_config_id = INTEL_QUARK_UART2,
-			.slave_config_direction = TX,
-		},
-	},
 };
 
 static struct dw_dma_slave dma_dws[][2] = {
+	[INTEL_QUARK_UART0] = {
+		[RX] = {
+			.cfg_hi = DWC_CFGH_SRC_PER(INTEL_QUARK_UART0_RX_CH_ID),
+			.cfg_lo = (DWC_CFGL_HS_DST_POL | DWC_CFGL_HS_SRC_POL),
+		},
+		[TX] = {
+			.cfg_hi = DWC_CFGH_DST_PER(INTEL_QUARK_UART0_TX_CH_ID),
+			.cfg_lo = (DWC_CFGL_HS_DST_POL | DWC_CFGL_HS_SRC_POL),
+		},
+	},
 	[INTEL_QUARK_UART1] = {
 		[RX] = {
 			.cfg_hi = DWC_CFGH_SRC_PER(INTEL_QUARK_UART1_RX_CH_ID),
@@ -169,19 +179,21 @@ static struct dw_dma_slave dma_dws[][2] = {
 			.cfg_lo = (DWC_CFGL_HS_DST_POL | DWC_CFGL_HS_SRC_POL),
 		},
 	},
-	[INTEL_QUARK_UART2] = {
-		[RX] = {
-			.cfg_hi = DWC_CFGH_SRC_PER(INTEL_QUARK_UART2_RX_CH_ID),
-			.cfg_lo = (DWC_CFGL_HS_DST_POL | DWC_CFGL_HS_SRC_POL),
-		},
-		[TX] = {
-			.cfg_hi = DWC_CFGH_DST_PER(INTEL_QUARK_UART2_TX_CH_ID),
-			.cfg_lo = (DWC_CFGL_HS_DST_POL | DWC_CFGL_HS_SRC_POL),
-		},
-	},
 };
 
 static struct uart_8250_dma serial8250_dma[] = {
+	[INTEL_QUARK_UART0] = {
+		.fn = &intel_quark_uart_dma_filter,
+		.tx_chan_id = INTEL_QUARK_UART0_TX_CH_ID,
+		.rx_chan_id = INTEL_QUARK_UART0_RX_CH_ID,
+		.txconf.slave_id = INTEL_QUARK_UART0_TX_CH_ID,
+		.rxconf.slave_id = INTEL_QUARK_UART0_RX_CH_ID,
+		.txconf.dst_maxburst = 8,
+		.rxconf.src_maxburst = 8,
+		.rxconf.device_fc = false,
+		.tx_param = &intel_quark_filter_param[INTEL_QUARK_UART0][TX],
+		.rx_param = &intel_quark_filter_param[INTEL_QUARK_UART0][RX],
+	},
 	[INTEL_QUARK_UART1] = {
 		.fn = &intel_quark_uart_dma_filter,
 		.tx_chan_id = INTEL_QUARK_UART1_TX_CH_ID,
@@ -190,49 +202,39 @@ static struct uart_8250_dma serial8250_dma[] = {
 		.rxconf.slave_id = INTEL_QUARK_UART1_RX_CH_ID,
 		.txconf.dst_maxburst = 8,
 		.rxconf.src_maxburst = 8,
+		.rxconf.device_fc = false,
 		.tx_param = &intel_quark_filter_param[INTEL_QUARK_UART1][TX],
 		.rx_param = &intel_quark_filter_param[INTEL_QUARK_UART1][RX],
-	},
-	[INTEL_QUARK_UART2] = {
-		.fn = &intel_quark_uart_dma_filter,
-		.tx_chan_id = INTEL_QUARK_UART2_TX_CH_ID,
-		.rx_chan_id = INTEL_QUARK_UART2_RX_CH_ID,
-		.txconf.slave_id = INTEL_QUARK_UART2_TX_CH_ID,
-		.rxconf.slave_id = INTEL_QUARK_UART2_RX_CH_ID,
-		.txconf.dst_maxburst = 8,
-		.rxconf.src_maxburst = 8,
-		.tx_param = &intel_quark_filter_param[INTEL_QUARK_UART2][TX],
-		.rx_param = &intel_quark_filter_param[INTEL_QUARK_UART2][RX],
 	},
 };
 
 static struct uart_8250_port serial8250_port[] = {
+	[INTEL_QUARK_UART0] = {
+		.port.fifosize = 16,
+		.tx_loadsz = 8,
+		.dma = &serial8250_dma[INTEL_QUARK_UART0],
+	},
 	[INTEL_QUARK_UART1] = {
 		.port.fifosize = 16,
 		.tx_loadsz = 8,
 		.dma = &serial8250_dma[INTEL_QUARK_UART1],
 	},
-	[INTEL_QUARK_UART2] = {
-		.port.fifosize = 16,
-		.tx_loadsz = 8,
-		.dma = &serial8250_dma[INTEL_QUARK_UART2],
-	},
 };
 
 static struct plat_serial8250_port serial8250_pdata[] = {
+	[INTEL_QUARK_UART0] = {
+		.dma_mapbase = INTEL_X1000_DMA_MAPBASE,
+		.uartclk = 44236800,
+		.iotype = UPIO_MEM32,
+		.regshift = 2,
+		.private_data = &serial8250_port[INTEL_QUARK_UART0],
+	},
 	[INTEL_QUARK_UART1] = {
 		.dma_mapbase = INTEL_X1000_DMA_MAPBASE,
 		.uartclk = 44236800,
 		.iotype = UPIO_MEM32,
 		.regshift = 2,
 		.private_data = &serial8250_port[INTEL_QUARK_UART1],
-	},
-	[INTEL_QUARK_UART2] = {
-		.dma_mapbase = INTEL_X1000_DMA_MAPBASE,
-		.uartclk = 44236800,
-		.iotype = UPIO_MEM32,
-		.regshift = 2,
-		.private_data = &serial8250_port[INTEL_QUARK_UART2],
 	},
 };
 
@@ -255,15 +257,14 @@ static bool intel_quark_uart_dma_filter(struct dma_chan *chan, void *param)
 	chan->private = dws;
 
 	switch (data->device_id) {
+	case INTEL_QUARK_UART0_PAIR_ID:
+		return uart0_dma;
 	case INTEL_QUARK_UART1_PAIR_ID:
 		return uart1_dma;
-	case INTEL_QUARK_UART2_PAIR_ID:
-		return uart2_dma;
 	}
 
 	return true;
 }
-
 
 static int intel_quark_uart_device_probe(struct pci_dev *pdev,
 					const struct pci_device_id *id)
@@ -278,11 +279,11 @@ static int intel_quark_uart_device_probe(struct pci_dev *pdev,
 		cell->name = "dw-apb-uart";
 		bar = INTEL_QUARK_UART_MEM_BAR;
 		if (1 == PCI_FUNC(pdev->devfn)) {
+			cell->id = INTEL_QUARK_UART0_PAIR_ID;
+			pdata = &serial8250_pdata[INTEL_QUARK_UART0];
+		} else if (5 == PCI_FUNC(pdev->devfn)) {
 			cell->id = INTEL_QUARK_UART1_PAIR_ID;
 			pdata = &serial8250_pdata[INTEL_QUARK_UART1];
-		} else if (5 == PCI_FUNC(pdev->devfn)) {
-			cell->id = INTEL_QUARK_UART2_PAIR_ID;
-			pdata = &serial8250_pdata[INTEL_QUARK_UART2];
 		} else {
 			goto uart_error;
 		}
@@ -360,10 +361,10 @@ static int intel_quark_dma_device_probe(struct pci_dev *pdev,
 		cell->name = "dw_dmac";
 		bar = INTEL_QUARK_DMA_MEM_BAR;
 		if (1 == PCI_FUNC(pdev->devfn)) {
-			cell->id = INTEL_QUARK_UART1_PAIR_ID;
+			cell->id = INTEL_QUARK_UART0_PAIR_ID;
 			pdata = &dw_dma_pdata[INTEL_QUARK_DMA1];
 		} else if (5 == PCI_FUNC(pdev->devfn)) {
-			cell->id = INTEL_QUARK_UART2_PAIR_ID;
+			cell->id = INTEL_QUARK_UART1_PAIR_ID;
 			pdata = &dw_dma_pdata[INTEL_QUARK_DMA2];
 		} else {
 			goto dma_error;
@@ -409,7 +410,6 @@ static int intel_quark_hsuart_dma_probe(struct pci_dev *pdev,
 		dev_warn(&pdev->dev, "Failed to enable PCI Device\n");
 		goto probe_error;
 	}
-
 	/* Execute DMA device probe first. I/O can live with/without DMA */
 	ret = intel_quark_dma_device_probe(pdev, id);
 	if (ret)

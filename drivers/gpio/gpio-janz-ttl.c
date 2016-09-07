@@ -149,7 +149,7 @@ static int ttl_probe(struct platform_device *pdev)
 	struct resource *res;
 	int ret;
 
-	pdata = pdev->dev.platform_data;
+	pdata = dev_get_platdata(&pdev->dev);
 	if (!pdata) {
 		dev_err(dev, "no platform data\n");
 		ret = -ENXIO;
@@ -214,14 +214,8 @@ out_return:
 static int ttl_remove(struct platform_device *pdev)
 {
 	struct ttl_module *mod = platform_get_drvdata(pdev);
-	struct device *dev = &pdev->dev;
-	int ret;
 
-	ret = gpiochip_remove(&mod->gpio);
-	if (ret) {
-		dev_err(dev, "unable to remove GPIO chip\n");
-		return ret;
-	}
+	gpiochip_remove(&mod->gpio);
 
 	iounmap(mod->regs);
 	kfree(mod);

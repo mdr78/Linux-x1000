@@ -28,7 +28,6 @@
 
 #include <linux/platform_device.h>
 #include <linux/module.h>
-#include <linux/miscdevice.h>
 #include <linux/watchdog.h>
 #include <linux/timer.h>
 #include <linux/io.h>
@@ -173,10 +172,9 @@ static struct platform_driver ep93xx_wdt_driver = {
 
 module_platform_driver(ep93xx_wdt_driver);
 
-MODULE_AUTHOR("Ray Lehtiniemi <rayl@mail.com>,"
-		"Alessandro Zummo <a.zummo@towertech.it>,"
-		"H Hartley Sweeten <hsweeten@visionengravers.com>");
+MODULE_AUTHOR("Ray Lehtiniemi <rayl@mail.com>");
+MODULE_AUTHOR("Alessandro Zummo <a.zummo@towertech.it>");
+MODULE_AUTHOR("H Hartley Sweeten <hsweeten@visionengravers.com>");
 MODULE_DESCRIPTION("EP93xx Watchdog");
 MODULE_LICENSE("GPL");
 MODULE_VERSION(WDT_VERSION);
-MODULE_ALIAS_MISCDEV(WATCHDOG_MINOR);

@@ -1,7 +1,7 @@
 /*
  *  sata_via.c - VIA Serial ATA controllers
  *
- *  Maintained by:  Jeff Garzik <jgarzik@pobox.com>
+ *  Maintained by:  Tejun Heo <tj@kernel.org>
  * 		   Please ALWAYS copy linux-ide@vger.kernel.org
  *		   on emails.
  *
@@ -104,7 +104,7 @@ static struct pci_driver svia_pci_driver = {
 	.name			= DRV_NAME,
 	.id_table		= svia_pci_tbl,
 	.probe			= svia_init_one,
-#ifdef CONFIG_PM
+#ifdef CONFIG_PM_SLEEP
 	.suspend		= ata_pci_device_suspend,
 	.resume			= ata_pci_device_resume,
 #endif

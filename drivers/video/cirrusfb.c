@@ -53,12 +53,6 @@
 #ifdef CONFIG_AMIGA
 #include <asm/amigahw.h>
 #endif
-#ifdef CONFIG_PPC_PREP
-#include <asm/machdep.h>
-#define isPReP machine_is(prep)
-#else
-#define isPReP 0
-#endif
 
 #include <video/vga.h>
 #include <video/cirrus.h>
@@ -557,30 +551,18 @@ static int cirrusfb_check_var(struct fb_var_screeninfo *var,
 		break;
 
 	case 16:
-		if (isPReP) {
-			var->red.offset = 2;
-			var->green.offset = -3;
-			var->blue.offset = 8;
-		} else {
-			var->red.offset = 11;
-			var->green.offset = 5;
-			var->blue.offset = 0;
-		}
+		var->red.offset = 11;
+		var->green.offset = 5;
+		var->blue.offset = 0;
 		var->red.length = 5;
 		var->green.length = 6;
 		var->blue.length = 5;
 		break;
 
 	case 24:
-		if (isPReP) {
-			var->red.offset = 0;
-			var->green.offset = 8;
-			var->blue.offset = 16;
-		} else {
-			var->red.offset = 16;
-			var->green.offset = 8;
-			var->blue.offset = 0;
-		}
+		var->red.offset = 16;
+		var->green.offset = 8;
+		var->blue.offset = 0;
 		var->red.length = 8;
 		var->green.length = 8;
 		var->blue.length = 8;
@@ -612,11 +594,6 @@ static int cirrusfb_check_var(struct fb_var_screeninfo *var,
 			var->bits_per_pixel);
 		return -EINVAL;
 	}
-
-	if (var->xoffset < 0)
-		var->xoffset = 0;
-	if (var->yoffset < 0)
-		var->yoffset = 0;
 
 	/* truncate xoffset and yoffset to maximum if too high */
 	if (var->xoffset > var->xres_virtual - var->xres)
@@ -1874,17 +1851,6 @@ static void cirrusfb_imageblit(struct fb_info *info,
 	}
 }
 
-#ifdef CONFIG_PPC_PREP
-#define PREP_VIDEO_BASE ((volatile unsigned long) 0xC0000000)
-#define PREP_IO_BASE    ((volatile unsigned char *) 0x80000000)
-static void get_prep_addrs(unsigned long *display, unsigned long *registers)
-{
-	*display = PREP_VIDEO_BASE;
-	*registers = (unsigned long) PREP_IO_BASE;
-}
-
-#endif				/* CONFIG_PPC_PREP */
-
 #ifdef CONFIG_PCI
 static int release_io_ports;
 
@@ -2139,21 +2105,12 @@ static int cirrusfb_pci_register(struct pci_dev *pdev,
 	dev_dbg(info->device, " base address 1 is 0x%Lx\n",
 		(unsigned long long)pdev->resource[1].start);
 
-	if (isPReP) {
-		pci_write_config_dword(pdev, PCI_BASE_ADDRESS_0, 0x00000000);
-#ifdef CONFIG_PPC_PREP
-		get_prep_addrs(&board_addr, &info->fix.mmio_start);
-#endif
-	/* PReP dies if we ioremap the IO registers, but it works w/out... */
-		cinfo->regbase = (char __iomem *) info->fix.mmio_start;
-	} else {
-		dev_dbg(info->device,
-			"Attempt to get PCI info for Cirrus Graphics Card\n");
-		get_pci_addrs(pdev, &board_addr, &info->fix.mmio_start);
-		/* FIXME: this forces VGA.  alternatives? */
-		cinfo->regbase = NULL;
-		cinfo->laguna_mmio = ioremap(info->fix.mmio_start, 0x1000);
-	}
+	dev_dbg(info->device,
+		"Attempt to get PCI info for Cirrus Graphics Card\n");
+	get_pci_addrs(pdev, &board_addr, &info->fix.mmio_start);
+	/* FIXME: this forces VGA.  alternatives? */
+	cinfo->regbase = NULL;
+	cinfo->laguna_mmio = ioremap(info->fix.mmio_start, 0x1000);
 
 	dev_dbg(info->device, "Board address: 0x%lx, register address: 0x%lx\n",
 		board_addr, info->fix.mmio_start);
@@ -2197,7 +2154,6 @@ static int cirrusfb_pci_register(struct pci_dev *pdev,
 	if (!ret)
 		return 0;
 
-	pci_set_drvdata(pdev, NULL);
 	iounmap(info->screen_base);
 err_release_legacy:
 	if (release_io_ports)
@@ -2300,7 +2256,7 @@ static int cirrusfb_zorro_register(struct zorro_dev *z,
 
 	info->fix.mmio_start = regbase;
 	cinfo->regbase = regbase > 16 * MB_ ? ioremap(regbase, 64 * 1024)
-					    : (caddr_t)ZTWO_VADDR(regbase);
+					    : ZTWO_VADDR(regbase);
 	if (!cinfo->regbase) {
 		dev_err(info->device, "Cannot map registers\n");
 		error = -EIO;
@@ -2310,7 +2266,7 @@ static int cirrusfb_zorro_register(struct zorro_dev *z,
 	info->fix.smem_start = rambase;
 	info->screen_size = ramsize;
 	info->screen_base = rambase > 16 * MB_ ? ioremap(rambase, ramsize)
-					       : (caddr_t)ZTWO_VADDR(rambase);
+					       : ZTWO_VADDR(rambase);
 	if (!info->screen_base) {
 		dev_err(info->device, "Cannot map video RAM\n");
 		error = -EIO;

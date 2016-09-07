@@ -24,7 +24,7 @@
 static __u8 *mr_report_fixup(struct hid_device *hdev, __u8 *rdesc,
 		unsigned int *rsize)
 {
-	if (*rsize >= 30 && rdesc[29] == 0x05 && rdesc[30] == 0x09) {
+	if (*rsize >= 31 && rdesc[29] == 0x05 && rdesc[30] == 0x09) {
 		hid_info(hdev, "fixing up button/consumer in HID report descriptor\n");
 		rdesc[30] = 0x0c;
 	}
@@ -63,17 +63,6 @@ static struct hid_driver mr_driver = {
 	.report_fixup = mr_report_fixup,
 	.input_mapping = mr_input_mapping,
 };
+module_hid_driver(mr_driver);
 
-static int __init mr_init(void)
-{
-	return hid_register_driver(&mr_driver);
-}
-
-static void __exit mr_exit(void)
-{
-	hid_unregister_driver(&mr_driver);
-}
-
-module_init(mr_init);
-module_exit(mr_exit);
 MODULE_LICENSE("GPL");

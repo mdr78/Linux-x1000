@@ -1,7 +1,7 @@
 /*
  * ADC1x8S102 SPI ADC driver
  *
- * Copyright(c) 2013-2015 Intel Corporation.
+ * Copyright(c) 2013 Intel Corporation.
  *
  * This program is free software; you can redistribute it and/or modify it
  * under the terms and conditions of the GNU General Public License,
@@ -10,7 +10,7 @@
  * This program is distributed in the hope it will be useful, but WITHOUT
  * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
  * FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for
- * more details.
+ * more details
  *
  * This IIO device driver is is designed to work with the following
  * analog to digital converters from Texas Instruments:
@@ -86,8 +86,8 @@ struct adc1x8s102_state {
 		.type = IIO_VOLTAGE,					\
 		.indexed = 1,						\
 		.channel = index,					\
-		.info_mask = IIO_CHAN_INFO_RAW_SEPARATE_BIT |		\
-			IIO_CHAN_INFO_SCALE_SEPARATE_BIT,		\
+		.info_mask_separate = BIT(IIO_CHAN_INFO_RAW),           \
+               .info_mask_shared_by_type = BIT(IIO_CHAN_INFO_SCALE),   \
 		.address = index,					\
 		.scan_index = index,					\
 		.scan_type = {						\

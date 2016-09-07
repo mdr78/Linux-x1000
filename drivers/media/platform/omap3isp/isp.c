@@ -55,6 +55,7 @@
 #include <asm/cacheflush.h>
 
 #include <linux/clk.h>
+#include <linux/clkdev.h>
 #include <linux/delay.h>
 #include <linux/device.h>
 #include <linux/dma-mapping.h>
@@ -148,6 +149,211 @@ void omap3isp_flush(struct isp_device *isp)
 	isp_reg_readl(isp, OMAP3_ISP_IOMEM_MAIN, ISP_REVISION);
 }
 
+/* -----------------------------------------------------------------------------
+ * XCLK
+ */
+
+#define to_isp_xclk(_hw)	container_of(_hw, struct isp_xclk, hw)
+
+static void isp_xclk_update(struct isp_xclk *xclk, u32 divider)
+{
+	switch (xclk->id) {
+	case ISP_XCLK_A:
+		isp_reg_clr_set(xclk->isp, OMAP3_ISP_IOMEM_MAIN, ISP_TCTRL_CTRL,
+				ISPTCTRL_CTRL_DIVA_MASK,
+				divider << ISPTCTRL_CTRL_DIVA_SHIFT);
+		break;
+	case ISP_XCLK_B:
+		isp_reg_clr_set(xclk->isp, OMAP3_ISP_IOMEM_MAIN, ISP_TCTRL_CTRL,
+				ISPTCTRL_CTRL_DIVB_MASK,
+				divider << ISPTCTRL_CTRL_DIVB_SHIFT);
+		break;
+	}
+}
+
+static int isp_xclk_prepare(struct clk_hw *hw)
+{
+	struct isp_xclk *xclk = to_isp_xclk(hw);
+
+	omap3isp_get(xclk->isp);
+
+	return 0;
+}
+
+static void isp_xclk_unprepare(struct clk_hw *hw)
+{
+	struct isp_xclk *xclk = to_isp_xclk(hw);
+
+	omap3isp_put(xclk->isp);
+}
+
+static int isp_xclk_enable(struct clk_hw *hw)
+{
+	struct isp_xclk *xclk = to_isp_xclk(hw);
+	unsigned long flags;
+
+	spin_lock_irqsave(&xclk->lock, flags);
+	isp_xclk_update(xclk, xclk->divider);
+	xclk->enabled = true;
+	spin_unlock_irqrestore(&xclk->lock, flags);
+
+	return 0;
+}
+
+static void isp_xclk_disable(struct clk_hw *hw)
+{
+	struct isp_xclk *xclk = to_isp_xclk(hw);
+	unsigned long flags;
+
+	spin_lock_irqsave(&xclk->lock, flags);
+	isp_xclk_update(xclk, 0);
+	xclk->enabled = false;
+	spin_unlock_irqrestore(&xclk->lock, flags);
+}
+
+static unsigned long isp_xclk_recalc_rate(struct clk_hw *hw,
+					  unsigned long parent_rate)
+{
+	struct isp_xclk *xclk = to_isp_xclk(hw);
+
+	return parent_rate / xclk->divider;
+}
+
+static u32 isp_xclk_calc_divider(unsigned long *rate, unsigned long parent_rate)
+{
+	u32 divider;
+
+	if (*rate >= parent_rate) {
+		*rate = parent_rate;
+		return ISPTCTRL_CTRL_DIV_BYPASS;
+	}
+
+	divider = DIV_ROUND_CLOSEST(parent_rate, *rate);
+	if (divider >= ISPTCTRL_CTRL_DIV_BYPASS)
+		divider = ISPTCTRL_CTRL_DIV_BYPASS - 1;
+
+	*rate = parent_rate / divider;
+	return divider;
+}
+
+static long isp_xclk_round_rate(struct clk_hw *hw, unsigned long rate,
+				unsigned long *parent_rate)
+{
+	isp_xclk_calc_divider(&rate, *parent_rate);
+	return rate;
+}
+
+static int isp_xclk_set_rate(struct clk_hw *hw, unsigned long rate,
+			     unsigned long parent_rate)
+{
+	struct isp_xclk *xclk = to_isp_xclk(hw);
+	unsigned long flags;
+	u32 divider;
+
+	divider = isp_xclk_calc_divider(&rate, parent_rate);
+
+	spin_lock_irqsave(&xclk->lock, flags);
+
+	xclk->divider = divider;
+	if (xclk->enabled)
+		isp_xclk_update(xclk, divider);
+
+	spin_unlock_irqrestore(&xclk->lock, flags);
+
+	dev_dbg(xclk->isp->dev, "%s: cam_xclk%c set to %lu Hz (div %u)\n",
+		__func__, xclk->id == ISP_XCLK_A ? 'a' : 'b', rate, divider);
+	return 0;
+}
+
+static const struct clk_ops isp_xclk_ops = {
+	.prepare = isp_xclk_prepare,
+	.unprepare = isp_xclk_unprepare,
+	.enable = isp_xclk_enable,
+	.disable = isp_xclk_disable,
+	.recalc_rate = isp_xclk_recalc_rate,
+	.round_rate = isp_xclk_round_rate,
+	.set_rate = isp_xclk_set_rate,
+};
+
+static const char *isp_xclk_parent_name = "cam_mclk";
+
+static const struct clk_init_data isp_xclk_init_data = {
+	.name = "cam_xclk",
+	.ops = &isp_xclk_ops,
+	.parent_names = &isp_xclk_parent_name,
+	.num_parents = 1,
+};
+
+static int isp_xclk_init(struct isp_device *isp)
+{
+	struct isp_platform_data *pdata = isp->pdata;
+	struct clk_init_data init;
+	unsigned int i;
+
+	for (i = 0; i < ARRAY_SIZE(isp->xclks); ++i)
+		isp->xclks[i].clk = ERR_PTR(-EINVAL);
+
+	for (i = 0; i < ARRAY_SIZE(isp->xclks); ++i) {
+		struct isp_xclk *xclk = &isp->xclks[i];
+
+		xclk->isp = isp;
+		xclk->id = i == 0 ? ISP_XCLK_A : ISP_XCLK_B;
+		xclk->divider = 1;
+		spin_lock_init(&xclk->lock);
+
+		init.name = i == 0 ? "cam_xclka" : "cam_xclkb";
+		init.ops = &isp_xclk_ops;
+		init.parent_names = &isp_xclk_parent_name;
+		init.num_parents = 1;
+
+		xclk->hw.init = &init;
+		/*
+		 * The first argument is NULL in order to avoid circular
+		 * reference, as this driver takes reference on the
+		 * sensor subdevice modules and the sensors would take
+		 * reference on this module through clk_get().
+		 */
+		xclk->clk = clk_register(NULL, &xclk->hw);
+		if (IS_ERR(xclk->clk))
+			return PTR_ERR(xclk->clk);
+
+		if (pdata->xclks[i].con_id == NULL &&
+		    pdata->xclks[i].dev_id == NULL)
+			continue;
+
+		xclk->lookup = kzalloc(sizeof(*xclk->lookup), GFP_KERNEL);
+		if (xclk->lookup == NULL)
+			return -ENOMEM;
+
+		xclk->lookup->con_id = pdata->xclks[i].con_id;
+		xclk->lookup->dev_id = pdata->xclks[i].dev_id;
+		xclk->lookup->clk = xclk->clk;
+
+		clkdev_add(xclk->lookup);
+	}
+
+	return 0;
+}
+
+static void isp_xclk_cleanup(struct isp_device *isp)
+{
+	unsigned int i;
+
+	for (i = 0; i < ARRAY_SIZE(isp->xclks); ++i) {
+		struct isp_xclk *xclk = &isp->xclks[i];
+
+		if (!IS_ERR(xclk->clk))
+			clk_unregister(xclk->clk);
+
+		if (xclk->lookup)
+			clkdev_drop(xclk->lookup);
+	}
+}
+
+/* -----------------------------------------------------------------------------
+ * Interrupts
+ */
+
 /*
  * isp_enable_interrupts - Enable ISP interrupts.
  * @isp: OMAP3 ISP device
@@ -178,80 +384,6 @@ static void isp_enable_interrupts(struct isp_device *isp)
 static void isp_disable_interrupts(struct isp_device *isp)
 {
 	isp_reg_writel(isp, 0, OMAP3_ISP_IOMEM_MAIN, ISP_IRQ0ENABLE);
-}
-
-/**
- * isp_set_xclk - Configures the specified cam_xclk to the desired frequency.
- * @isp: OMAP3 ISP device
- * @xclk: Desired frequency of the clock in Hz. 0 = stable low, 1 is stable high
- * @xclksel: XCLK to configure (0 = A, 1 = B).
- *
- * Configures the specified MCLK divisor in the ISP timing control register
- * (TCTRL_CTRL) to generate the desired xclk clock value.
- *
- * Divisor = cam_mclk_hz / xclk
- *
- * Returns the final frequency that is actually being generated
- **/
-static u32 isp_set_xclk(struct isp_device *isp, u32 xclk, u8 xclksel)
-{
-	u32 divisor;
-	u32 currentxclk;
-	unsigned long mclk_hz;
-
-	if (!omap3isp_get(isp))
-		return 0;
-
-	mclk_hz = clk_get_rate(isp->clock[ISP_CLK_CAM_MCLK]);
-
-	if (xclk >= mclk_hz) {
-		divisor = ISPTCTRL_CTRL_DIV_BYPASS;
-		currentxclk = mclk_hz;
-	} else if (xclk >= 2) {
-		divisor = mclk_hz / xclk;
-		if (divisor >= ISPTCTRL_CTRL_DIV_BYPASS)
-			divisor = ISPTCTRL_CTRL_DIV_BYPASS - 1;
-		currentxclk = mclk_hz / divisor;
-	} else {
-		divisor = xclk;
-		currentxclk = 0;
-	}
-
-	switch (xclksel) {
-	case ISP_XCLK_A:
-		isp_reg_clr_set(isp, OMAP3_ISP_IOMEM_MAIN, ISP_TCTRL_CTRL,
-				ISPTCTRL_CTRL_DIVA_MASK,
-				divisor << ISPTCTRL_CTRL_DIVA_SHIFT);
-		dev_dbg(isp->dev, "isp_set_xclk(): cam_xclka set to %d Hz\n",
-			currentxclk);
-		break;
-	case ISP_XCLK_B:
-		isp_reg_clr_set(isp, OMAP3_ISP_IOMEM_MAIN, ISP_TCTRL_CTRL,
-				ISPTCTRL_CTRL_DIVB_MASK,
-				divisor << ISPTCTRL_CTRL_DIVB_SHIFT);
-		dev_dbg(isp->dev, "isp_set_xclk(): cam_xclkb set to %d Hz\n",
-			currentxclk);
-		break;
-	case ISP_XCLK_NONE:
-	default:
-		omap3isp_put(isp);
-		dev_dbg(isp->dev, "ISP_ERR: isp_set_xclk(): Invalid requested "
-			"xclk. Must be 0 (A) or 1 (B).\n");
-		return -EINVAL;
-	}
-
-	/* Do we go from stable whatever to clock? */
-	if (divisor >= 2 && isp->xclk_divisor[xclksel - 1] < 2)
-		omap3isp_get(isp);
-	/* Stopping the clock. */
-	else if (divisor < 2 && isp->xclk_divisor[xclksel - 1] >= 2)
-		omap3isp_put(isp);
-
-	isp->xclk_divisor[xclksel - 1] = divisor;
-
-	omap3isp_put(isp);
-
-	return currentxclk;
 }
 
 /*
@@ -670,9 +802,9 @@ int omap3isp_pipeline_pm_use(struct media_entity *entity, int use)
 
 /*
  * isp_pipeline_link_notify - Link management notification callback
- * @source: Pad at the start of the link
- * @sink: Pad at the end of the link
+ * @link: The link
  * @flags: New link flags that will be applied
+ * @notification: The link's state change notification type (MEDIA_DEV_NOTIFY_*)
  *
  * React to link management on powered pipelines by updating the use count of
  * all entities in the source and sink sides of the link. Entities are powered
@@ -682,29 +814,38 @@ int omap3isp_pipeline_pm_use(struct media_entity *entity, int use)
  * off is assumed to never fail. This function will not fail for disconnection
  * events.
  */
-static int isp_pipeline_link_notify(struct media_pad *source,
-				    struct media_pad *sink, u32 flags)
+static int isp_pipeline_link_notify(struct media_link *link, u32 flags,
+				    unsigned int notification)
 {
-	int source_use = isp_pipeline_pm_use_count(source->entity);
-	int sink_use = isp_pipeline_pm_use_count(sink->entity);
+	struct media_entity *source = link->source->entity;
+	struct media_entity *sink = link->sink->entity;
+	int source_use = isp_pipeline_pm_use_count(source);
+	int sink_use = isp_pipeline_pm_use_count(sink);
 	int ret;
 
-	if (!(flags & MEDIA_LNK_FL_ENABLED)) {
+	if (notification == MEDIA_DEV_NOTIFY_POST_LINK_CH &&
+	    !(link->flags & MEDIA_LNK_FL_ENABLED)) {
 		/* Powering off entities is assumed to never fail. */
-		isp_pipeline_pm_power(source->entity, -sink_use);
-		isp_pipeline_pm_power(sink->entity, -source_use);
+		isp_pipeline_pm_power(source, -sink_use);
+		isp_pipeline_pm_power(sink, -source_use);
 		return 0;
 	}
 
-	ret = isp_pipeline_pm_power(source->entity, sink_use);
-	if (ret < 0)
+	if (notification == MEDIA_DEV_NOTIFY_POST_LINK_CH &&
+		(flags & MEDIA_LNK_FL_ENABLED)) {
+
+		ret = isp_pipeline_pm_power(source, sink_use);
+		if (ret < 0)
+			return ret;
+
+		ret = isp_pipeline_pm_power(sink, source_use);
+		if (ret < 0)
+			isp_pipeline_pm_power(source, -sink_use);
+
 		return ret;
+	}
 
-	ret = isp_pipeline_pm_power(sink->entity, source_use);
-	if (ret < 0)
-		isp_pipeline_pm_power(source->entity, -sink_use);
-
-	return ret;
+	return 0;
 }
 
 /* -----------------------------------------------------------------------------
@@ -732,15 +873,12 @@ static int isp_pipeline_enable(struct isp_pipeline *pipe,
 	unsigned long flags;
 	int ret;
 
-	/* If the preview engine crashed it might not respond to read/write
-	 * operations on the L4 bus. This would result in a bus fault and a
-	 * kernel oops. Refuse to start streaming in that case. This check must
-	 * be performed before the loop below to avoid starting entities if the
-	 * pipeline won't start anyway (those entities would then likely fail to
-	 * stop, making the problem worse).
+	/* Refuse to start streaming if an entity included in the pipeline has
+	 * crashed. This check must be performed before the loop below to avoid
+	 * starting entities if the pipeline won't start anyway (those entities
+	 * would then likely fail to stop, making the problem worse).
 	 */
-	if ((pipe->entities & isp->crashed) &
-	    (1U << isp->isp_prev.subdev.entity.id))
+	if (pipe->entities & isp->crashed)
 		return -EIO;
 
 	spin_lock_irqsave(&pipe->lock, flags);
@@ -755,7 +893,7 @@ static int isp_pipeline_enable(struct isp_pipeline *pipe,
 		if (!(pad->flags & MEDIA_PAD_FL_SINK))
 			break;
 
-		pad = media_entity_remote_source(pad);
+		pad = media_entity_remote_pad(pad);
 		if (pad == NULL ||
 		    media_entity_type(pad->entity) != MEDIA_ENT_T_V4L2_SUBDEV)
 			break;
@@ -845,7 +983,7 @@ static int isp_pipeline_disable(struct isp_pipeline *pipe)
 		if (!(pad->flags & MEDIA_PAD_FL_SINK))
 			break;
 
-		pad = media_entity_remote_source(pad);
+		pad = media_entity_remote_pad(pad);
 		if (pad == NULL ||
 		    media_entity_type(pad->entity) != MEDIA_ENT_T_V4L2_SUBDEV)
 			break;
@@ -873,13 +1011,23 @@ static int isp_pipeline_disable(struct isp_pipeline *pipe)
 		else
 			ret = 0;
 
+		/* Handle stop failures. An entity that fails to stop can
+		 * usually just be restarted. Flag the stop failure nonetheless
+		 * to trigger an ISP reset the next time the device is released,
+		 * just in case.
+		 *
+		 * The preview engine is a special case. A failure to stop can
+		 * mean a hardware crash. When that happens the preview engine
+		 * won't respond to read/write operations on the L4 bus anymore,
+		 * resulting in a bus fault and a kernel oops next time it gets
+		 * accessed. Mark it as crashed to prevent pipelines including
+		 * it from being started.
+		 */
 		if (ret) {
 			dev_info(isp->dev, "Unable to stop %s\n", subdev->name);
-			/* If the entity failed to stopped, assume it has
-			 * crashed. Mark it as such, the ISP will be reset when
-			 * applications will release it.
-			 */
-			isp->crashed |= 1U << subdev->entity.id;
+			isp->stop_failure = true;
+			if (subdev == &isp->isp_prev.subdev)
+				isp->crashed |= 1U << subdev->entity.id;
 			failure = -ETIMEDOUT;
 		}
 	}
@@ -913,6 +1061,23 @@ int omap3isp_pipeline_set_stream(struct isp_pipeline *pipe,
 		pipe->stream_state = state;
 
 	return ret;
+}
+
+/*
+ * omap3isp_pipeline_cancel_stream - Cancel stream on a pipeline
+ * @pipe: ISP pipeline
+ *
+ * Cancelling a stream mark all buffers on all video nodes in the pipeline as
+ * erroneous and makes sure no new buffer can be queued. This function is called
+ * when a fatal error that prevents any further operation on the pipeline
+ * occurs.
+ */
+void omap3isp_pipeline_cancel_stream(struct isp_pipeline *pipe)
+{
+	if (pipe->input)
+		omap3isp_video_cancel_stream(pipe->input);
+	if (pipe->output)
+		omap3isp_video_cancel_stream(pipe->output);
 }
 
 /*
@@ -961,7 +1126,7 @@ static int isp_pipeline_is_last(struct media_entity *me)
 	pipe = to_isp_pipeline(me);
 	if (pipe->stream_state == ISP_PIPELINE_STREAM_STOPPED)
 		return 0;
-	pad = media_entity_remote_source(&pipe->output->pad);
+	pad = media_entity_remote_pad(&pipe->output->pad);
 	return pad->entity == me;
 }
 
@@ -1067,6 +1232,7 @@ static int isp_reset(struct isp_device *isp)
 		udelay(1);
 	}
 
+	isp->stop_failure = false;
 	isp->crashed = 0;
 	return 0;
 }
@@ -1338,28 +1504,15 @@ static int isp_enable_clocks(struct isp_device *isp)
 {
 	int r;
 	unsigned long rate;
-	int divisor;
-
-	/*
-	 * cam_mclk clock chain:
-	 *   dpll4 -> dpll4_m5 -> dpll4_m5x2 -> cam_mclk
-	 *
-	 * In OMAP3630 dpll4_m5x2 != 2 x dpll4_m5 but both are
-	 * set to the same value. Hence the rate set for dpll4_m5
-	 * has to be twice of what is set on OMAP3430 to get
-	 * the required value for cam_mclk
-	 */
-	divisor = isp->revision == ISP_REVISION_15_0 ? 1 : 2;
 
 	r = clk_prepare_enable(isp->clock[ISP_CLK_CAM_ICK]);
 	if (r) {
 		dev_err(isp->dev, "failed to enable cam_ick clock\n");
 		goto out_clk_enable_ick;
 	}
-	r = clk_set_rate(isp->clock[ISP_CLK_DPLL4_M5_CK],
-			 CM_CAM_MCLK_HZ/divisor);
+	r = clk_set_rate(isp->clock[ISP_CLK_CAM_MCLK], CM_CAM_MCLK_HZ);
 	if (r) {
-		dev_err(isp->dev, "clk_set_rate for dpll4_m5_ck failed\n");
+		dev_err(isp->dev, "clk_set_rate for cam_mclk failed\n");
 		goto out_clk_enable_mclk;
 	}
 	r = clk_prepare_enable(isp->clock[ISP_CLK_CAM_MCLK]);
@@ -1401,22 +1554,9 @@ static void isp_disable_clocks(struct isp_device *isp)
 static const char *isp_clocks[] = {
 	"cam_ick",
 	"cam_mclk",
-	"dpll4_m5_ck",
 	"csi2_96m_fck",
 	"l3_ick",
 };
-
-static void isp_put_clocks(struct isp_device *isp)
-{
-	unsigned int i;
-
-	for (i = 0; i < ARRAY_SIZE(isp_clocks); ++i) {
-		if (isp->clock[i]) {
-			clk_put(isp->clock[i]);
-			isp->clock[i] = NULL;
-		}
-	}
-}
 
 static int isp_get_clocks(struct isp_device *isp)
 {
@@ -1424,10 +1564,9 @@ static int isp_get_clocks(struct isp_device *isp)
 	unsigned int i;
 
 	for (i = 0; i < ARRAY_SIZE(isp_clocks); ++i) {
-		clk = clk_get(isp->dev, isp_clocks[i]);
+		clk = devm_clk_get(isp->dev, isp_clocks[i]);
 		if (IS_ERR(clk)) {
 			dev_err(isp->dev, "clk_get %s failed\n", isp_clocks[i]);
-			isp_put_clocks(isp);
 			return PTR_ERR(clk);
 		}
 
@@ -1505,7 +1644,7 @@ void omap3isp_put(struct isp_device *isp)
 		/* Reset the ISP if an entity has failed to stop. This is the
 		 * only way to recover from such conditions.
 		 */
-		if (isp->crashed)
+		if (isp->crashed || isp->stop_failure)
 			isp_reset(isp);
 		isp_disable_clocks(isp);
 	}
@@ -1569,7 +1708,7 @@ void omap3isp_print_status(struct isp_device *isp)
  * ISP clocks get disabled in suspend(). Similarly, the clocks are reenabled in
  * resume(), and the the pipelines are restarted in complete().
  *
- * TODO: PM dependencies between the ISP and sensors are not modeled explicitly
+ * TODO: PM dependencies between the ISP and sensors are not modelled explicitly
  * yet.
  */
 static int isp_pm_prepare(struct device *dev)
@@ -1993,36 +2132,16 @@ error_csiphy:
 static int isp_remove(struct platform_device *pdev)
 {
 	struct isp_device *isp = platform_get_drvdata(pdev);
-	int i;
 
 	isp_unregister_entities(isp);
 	isp_cleanup_modules(isp);
+	isp_xclk_cleanup(isp);
 
 	__omap3isp_get(isp, false);
 	iommu_detach_device(isp->domain, &pdev->dev);
 	iommu_domain_free(isp->domain);
 	isp->domain = NULL;
 	omap3isp_put(isp);
-
-	free_irq(isp->irq_num, isp);
-	isp_put_clocks(isp);
-
-	for (i = 0; i < OMAP3_ISP_IOMEM_LAST; i++) {
-		if (isp->mmio_base[i]) {
-			iounmap(isp->mmio_base[i]);
-			isp->mmio_base[i] = NULL;
-		}
-
-		if (isp->mmio_base_phys[i]) {
-			release_mem_region(isp->mmio_base_phys[i],
-					   isp->mmio_size[i]);
-			isp->mmio_base_phys[i] = 0;
-		}
-	}
-
-	regulator_put(isp->isp_csiphy1.vdd);
-	regulator_put(isp->isp_csiphy2.vdd);
-	kfree(isp);
 
 	return 0;
 }
@@ -2036,26 +2155,13 @@ static int isp_map_mem_resource(struct platform_device *pdev,
 	/* request the mem region for the camera registers */
 
 	mem = platform_get_resource(pdev, IORESOURCE_MEM, res);
-	if (!mem) {
-		dev_err(isp->dev, "no mem resource?\n");
-		return -ENODEV;
-	}
-
-	if (!request_mem_region(mem->start, resource_size(mem), pdev->name)) {
-		dev_err(isp->dev,
-			"cannot reserve camera register I/O region\n");
-		return -ENODEV;
-	}
-	isp->mmio_base_phys[res] = mem->start;
-	isp->mmio_size[res] = resource_size(mem);
 
 	/* map the region */
-	isp->mmio_base[res] = ioremap_nocache(isp->mmio_base_phys[res],
-					      isp->mmio_size[res]);
-	if (!isp->mmio_base[res]) {
-		dev_err(isp->dev, "cannot map camera register I/O region\n");
-		return -ENODEV;
-	}
+	isp->mmio_base[res] = devm_ioremap_resource(isp->dev, mem);
+	if (IS_ERR(isp->mmio_base[res]))
+		return PTR_ERR(isp->mmio_base[res]);
+
+	isp->mmio_base_phys[res] = mem->start;
 
 	return 0;
 }
@@ -2081,14 +2187,13 @@ static int isp_probe(struct platform_device *pdev)
 	if (pdata == NULL)
 		return -EINVAL;
 
-	isp = kzalloc(sizeof(*isp), GFP_KERNEL);
+	isp = devm_kzalloc(&pdev->dev, sizeof(*isp), GFP_KERNEL);
 	if (!isp) {
 		dev_err(&pdev->dev, "could not allocate memory\n");
 		return -ENOMEM;
 	}
 
 	isp->autoidle = autoidle;
-	isp->platform_cb.set_xclk = isp_set_xclk;
 
 	mutex_init(&isp->isp_mutex);
 	spin_lock_init(&isp->stat_lock);
@@ -2097,15 +2202,15 @@ static int isp_probe(struct platform_device *pdev)
 	isp->pdata = pdata;
 	isp->ref_count = 0;
 
-	isp->raw_dmamask = DMA_BIT_MASK(32);
-	isp->dev->dma_mask = &isp->raw_dmamask;
-	isp->dev->coherent_dma_mask = DMA_BIT_MASK(32);
+	ret = dma_coerce_mask_and_coherent(isp->dev, DMA_BIT_MASK(32));
+	if (ret)
+		return ret;
 
 	platform_set_drvdata(pdev, isp);
 
 	/* Regulators */
-	isp->isp_csiphy1.vdd = regulator_get(&pdev->dev, "VDD_CSIPHY1");
-	isp->isp_csiphy2.vdd = regulator_get(&pdev->dev, "VDD_CSIPHY2");
+	isp->isp_csiphy1.vdd = devm_regulator_get(&pdev->dev, "VDD_CSIPHY1");
+	isp->isp_csiphy2.vdd = devm_regulator_get(&pdev->dev, "VDD_CSIPHY2");
 
 	/* Clocks
 	 *
@@ -2139,6 +2244,10 @@ static int isp_probe(struct platform_device *pdev)
 	if (ret < 0)
 		goto error_isp;
 
+	ret = isp_xclk_init(isp);
+	if (ret < 0)
+		goto error_isp;
+
 	/* Memory resources */
 	for (m = 0; m < ARRAY_SIZE(isp_res_maps); m++)
 		if (isp->revision == isp_res_maps[m].isp_rev)
@@ -2169,6 +2278,7 @@ static int isp_probe(struct platform_device *pdev)
 	ret = iommu_attach_device(isp->domain, &pdev->dev);
 	if (ret) {
 		dev_err(&pdev->dev, "can't attach iommu device: %d\n", ret);
+		ret = -EPROBE_DEFER;
 		goto free_domain;
 	}
 
@@ -2180,7 +2290,8 @@ static int isp_probe(struct platform_device *pdev)
 		goto detach_dev;
 	}
 
-	if (request_irq(isp->irq_num, isp_isr, IRQF_SHARED, "OMAP3 ISP", isp)) {
+	if (devm_request_irq(isp->dev, isp->irq_num, isp_isr, IRQF_SHARED,
+			     "OMAP3 ISP", isp)) {
 		dev_err(isp->dev, "Unable to request IRQ\n");
 		ret = -EINVAL;
 		goto detach_dev;
@@ -2189,7 +2300,7 @@ static int isp_probe(struct platform_device *pdev)
 	/* Entities */
 	ret = isp_initialize_modules(isp);
 	if (ret < 0)
-		goto error_irq;
+		goto detach_dev;
 
 	ret = isp_register_entities(isp);
 	if (ret < 0)
@@ -2202,35 +2313,16 @@ static int isp_probe(struct platform_device *pdev)
 
 error_modules:
 	isp_cleanup_modules(isp);
-error_irq:
-	free_irq(isp->irq_num, isp);
 detach_dev:
 	iommu_detach_device(isp->domain, &pdev->dev);
 free_domain:
 	iommu_domain_free(isp->domain);
+	isp->domain = NULL;
 error_isp:
+	isp_xclk_cleanup(isp);
 	omap3isp_put(isp);
 error:
-	isp_put_clocks(isp);
-
-	for (i = 0; i < OMAP3_ISP_IOMEM_LAST; i++) {
-		if (isp->mmio_base[i]) {
-			iounmap(isp->mmio_base[i]);
-			isp->mmio_base[i] = NULL;
-		}
-
-		if (isp->mmio_base_phys[i]) {
-			release_mem_region(isp->mmio_base_phys[i],
-					   isp->mmio_size[i]);
-			isp->mmio_base_phys[i] = 0;
-		}
-	}
-	regulator_put(isp->isp_csiphy2.vdd);
-	regulator_put(isp->isp_csiphy1.vdd);
-	platform_set_drvdata(pdev, NULL);
-
 	mutex_destroy(&isp->isp_mutex);
-	kfree(isp);
 
 	return ret;
 }

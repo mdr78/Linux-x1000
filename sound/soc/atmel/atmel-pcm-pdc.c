@@ -58,7 +58,6 @@ static const struct snd_pcm_hardware atmel_pcm_hardware = {
 				  SNDRV_PCM_INFO_MMAP_VALID |
 				  SNDRV_PCM_INFO_INTERLEAVED |
 				  SNDRV_PCM_INFO_PAUSE,
-	.formats		= SNDRV_PCM_FMTBIT_S16_LE,
 	.period_bytes_min	= 32,
 	.period_bytes_max	= 8192,
 	.periods_min		= 2,
@@ -159,7 +158,7 @@ static int atmel_pcm_hw_params(struct snd_pcm_substream *substream,
 
 	pr_debug("atmel-pcm: "
 		"hw_params: DMA for %s initialized "
-		"(dma_bytes=%u, period_size=%u)\n",
+		"(dma_bytes=%zu, period_size=%zu)\n",
 		prtd->params->name,
 		runtime->dma_bytes,
 		prtd->period_size);
@@ -201,7 +200,7 @@ static int atmel_pcm_trigger(struct snd_pcm_substream *substream,
 	int ret = 0;
 
 	pr_debug("atmel-pcm:buffer_size = %ld,"
-		"dma_area = %p, dma_bytes = %u\n",
+		"dma_area = %p, dma_bytes = %zu\n",
 		rtd->buffer_size, rtd->dma_area, rtd->dma_bytes);
 
 	switch (cmd) {

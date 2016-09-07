@@ -2,7 +2,6 @@
   This contains the functions to handle the pci driver.
 
   Copyright (C) 2011-2012  Vayavya Labs Pvt Ltd
-  Copyright (C) 2013-2014  Intel Corporation
 
   This program is free software; you can redistribute it and/or modify it
   under the terms and conditions of the GNU General Public License,
@@ -24,165 +23,187 @@
   Author: Giuseppe Cavallaro <peppe.cavallaro@st.com>
 *******************************************************************************/
 
-#include <linux/dmi.h>
 #include <linux/pci.h>
-#include <linux/platform_data/quark.h>
+#include <linux/dmi.h>
+
 #include "stmmac.h"
 
-/* List of supported PCI device IDs */
-#define STMMAC_VENDOR_ID 0x700
-#define STMMAC_DEVICE_ID 0x1108
-#define STMMAC_QUARK_ID 0x0937
-#define MAX_INTERFACES	 0x02
-
-#if defined(CONFIG_INTEL_QUARK_X1000_SOC)
 static int enable_msi = 1;
-#else
-static int enable_msi; /* by default initialized to 0 */
-#endif
 module_param(enable_msi, int, S_IRUGO | S_IWUSR);
 MODULE_PARM_DESC(enable_msi, "Enable PCI MSI mode");
 
-
-struct stmmac_qrk_mac_data {
-	int phy_addr;
-	int bus_id;
+/*
+ * This struct is used to associate PCI Function of MAC controller on a board,
+ * discovered via DMI, with the address of PHY connected to the MAC. The
+ * negative value of the address means that MAC controller is not connected
+ * with PHY.
+ */
+struct stmmac_pci_dmi_data {
 	const char *name;
+	unsigned int func;
+	int phy_addr;
 };
 
-static struct stmmac_qrk_mac_data phy_data[] = {
-	{
-		.phy_addr	= -1,			/* not connected */
-		.bus_id		= 1,
-		.name		= "QuarkEmulation",
-	},
-	{
-		.phy_addr	= 1,
-		.bus_id		= 2,
-		.name		= "QuarkEmulation",
-	},
-	{
-		.phy_addr	= 3,
-		.bus_id		= 1,
-		.name		= "ClantonPeakSVP",
-	},
-	{
-		.phy_addr	= 1,
-		.bus_id		= 2,
-		.name		= "ClantonPeakSVP",
-	},
-	{
-		.phy_addr	= 1,
-		.bus_id		= 1,
-		.name		= "KipsBay",
-	},
-	{
-		.phy_addr	= -1,			/* not connected */
-		.bus_id		= 2,
-		.name 		= "KipsBay",
-	},
-	{
-		.phy_addr	= 1,
-		.bus_id		= 1,
-		.name		= "CrossHill",
-	},
-	{
-		.phy_addr	= 1,
-		.bus_id		= 2,
-		.name		= "CrossHill",
-	},
-	{
-		.phy_addr	= 1,
-		.bus_id		= 1,
-		.name		= "ClantonHill",
-	},
-	{
-		.phy_addr	= 1,
-		.bus_id		= 2,
-		.name		= "ClantonHill",
-	},
-	{
-		.phy_addr	= 1,
-		.bus_id		= 1,
-		.name		= "Galileo",
-	},
-	{
-		.phy_addr	= -1,			/* not connected */
-		.bus_id		= 2,
-		.name		= "Galileo",
-	},
-	{
-		.phy_addr	= 1,
-		.bus_id		= 1,
-		.name		= "GalileoGen2",
-	},
-	{
-		.phy_addr	= -1,			/* not connected */
-		.bus_id		= 2,
-		.name		= "GalileoGen2",
-	},
+struct stmmac_pci_info {
+	struct pci_dev *pdev;
+	int (*setup)(struct plat_stmmacenet_data *plat,
+		     struct stmmac_pci_info *info);
+	struct stmmac_pci_dmi_data *dmi;
 };
 
-
-static int stmmac_find_phy_addr(int mdio_bus_id)
+static int stmmac_pci_find_phy_addr(struct stmmac_pci_info *info)
 {
-	int i = 0;
-	const char *board_name = dmi_get_system_info(DMI_BOARD_NAME);
-	if (board_name == NULL)
-		return -1;
+	const char *name = dmi_get_system_info(DMI_BOARD_NAME);
+	unsigned int func = PCI_FUNC(info->pdev->devfn);
+	struct stmmac_pci_dmi_data *dmi;
 
-	for (; i < sizeof(phy_data)/sizeof(struct stmmac_qrk_mac_data); i++) {
-		if ((!strcmp(phy_data[i].name, board_name)) &&
-			phy_data[i].bus_id == mdio_bus_id)
-			return phy_data[i].phy_addr;
+	/*
+	 * Galileo boards with old firmware don't support DMI. We always return
+	 * 1 here, so at least first found MAC controller would be probed.
+	 */
+	if (!name)
+		return 1;
+
+	for (dmi = info->dmi; dmi->name && *dmi->name; dmi++) {
+		if (!strcmp(dmi->name, name) && dmi->func == func)
+			return dmi->phy_addr;
 	}
 
-	return -1;
+	return -ENODEV;
 }
 
-static int stmmac_default_data(struct plat_stmmacenet_data *plat_dat,
-			       int mdio_bus_id, const struct pci_device_id *id)
+static void stmmac_default_data(struct plat_stmmacenet_data *plat)
 {
-	int phy_addr = 0;
-	memset(plat_dat, 0, sizeof(struct plat_stmmacenet_data));
+	plat->bus_id = 1;
+	plat->phy_addr = 0;
+	plat->interface = PHY_INTERFACE_MODE_GMII;
+	plat->clk_csr = 2;	/* clk_csr_i = 20-35MHz & MDC = clk_csr_i/16 */
+	plat->has_gmac = 1;
+	plat->force_sf_dma_mode = 1;
 
-	plat_dat->mdio_bus_data = kzalloc(sizeof(struct stmmac_mdio_bus_data),
-					GFP_KERNEL);
-	if (plat_dat->mdio_bus_data == NULL)
-		return -ENOMEM;
+	plat->mdio_bus_data->phy_reset = NULL;
+	plat->mdio_bus_data->phy_mask = 0;
 
-	plat_dat->dma_cfg = kzalloc(sizeof(struct stmmac_dma_cfg), GFP_KERNEL);
-	if (plat_dat->dma_cfg == NULL)
-		return -ENOMEM;
+	plat->dma_cfg->pbl = 32;
+	plat->dma_cfg->burst_len = DMA_AXI_BLEN_256;
 
-	if (id->device ==  STMMAC_QUARK_ID) {
-		phy_addr = stmmac_find_phy_addr(mdio_bus_id);
-		if (phy_addr == -1)
-			return -ENODEV;
+	/* Set default value for multicast hash bins */
+	plat->multicast_filter_bins = HASH_TABLE_SIZE;
 
-		plat_dat->interface = PHY_INTERFACE_MODE_RMII;
-		/* clk_csr_i = 20-35MHz & MDC = clk_csr_i/16 */
+	/* Set default value for unicast filter entries */
+	plat->unicast_filter_entries = 1;
+}
 
-		plat_dat->dma_cfg->pbl = 16;
-		plat_dat->dma_cfg->fixed_burst = 1;
-	} else {
-		plat_dat->interface = PHY_INTERFACE_MODE_GMII;
-		/* clk_csr_i = 20-35MHz & MDC = clk_csr_i/16 */
+static int quark_default_data(struct plat_stmmacenet_data *plat,
+			      struct stmmac_pci_info *info)
+{
+	struct pci_dev *pdev = info->pdev;
+	int ret;
 
-		plat_dat->dma_cfg->pbl = 32;
-	}
+	/*
+	 * Refuse to load the driver and register net device if MAC controller
+	 * does not connect to any PHY interface.
+	 */
+	ret = stmmac_pci_find_phy_addr(info);
+	if (ret < 0)
+		return ret;
 
-	plat_dat->bus_id = mdio_bus_id;
-	plat_dat->phy_addr = phy_addr;
-	plat_dat->clk_csr = 2;
-	plat_dat->has_gmac = 1;
-	plat_dat->force_sf_dma_mode = 1;
-	plat_dat->mdio_bus_data->phy_reset = NULL;
-	plat_dat->mdio_bus_data->phy_mask = 0;
-	plat_dat->dma_cfg->burst_len = DMA_AXI_BLEN_256;
+	plat->bus_id = PCI_DEVID(pdev->bus->number, pdev->devfn);
+	plat->phy_addr = ret;
+	plat->interface = PHY_INTERFACE_MODE_RMII;
+	plat->clk_csr = 2;
+	plat->has_gmac = 1;
+	plat->force_sf_dma_mode = 1;
+
+	plat->mdio_bus_data->phy_reset = NULL;
+	plat->mdio_bus_data->phy_mask = 0;
+
+	plat->dma_cfg->pbl = 16;
+	plat->dma_cfg->burst_len = DMA_AXI_BLEN_256;
+	plat->dma_cfg->fixed_burst = 1;
+
+	/* Set default value for multicast hash bins */
+	plat->multicast_filter_bins = HASH_TABLE_SIZE;
+
+	/* Set default value for unicast filter entries */
+	plat->unicast_filter_entries = 1;
 
 	return 0;
 }
+
+static struct stmmac_pci_dmi_data quark_pci_dmi_data[] = {
+	{
+		.name = "Galileo",
+		.func = 6,
+		.phy_addr = 1,
+	},
+	{
+		.name = "GalileoGen2",
+		.func = 6,
+		.phy_addr = 1,
+	},
+	{
+		.name = "ClantonHill",
+		.func = 6,
+		.phy_addr = 1,
+	},
+	{
+		.name = "ClantonHill",
+		.func = 7,
+		.phy_addr = 1,
+	},
+	{
+		.name = "ClantonPeakSVP",
+		.func = 6,
+		.phy_addr = 3,
+	},
+	{
+		.name = "ClantonPeakSVP",
+		.func = 7,
+		.phy_addr = 1,
+	},
+	{
+		.name = "CrossHill",
+		.func = 6,
+		.phy_addr = 1,
+	},
+	{
+		.name = "CrossHill",
+		.func = 7,
+		.phy_addr = 1,
+	},
+	{
+		.name = "RelianceCreek",
+		.func = 6,
+		.phy_addr = 1,
+	},
+	{
+		.name = "RelianceCreek",
+		.func = 7,
+		.phy_addr = 1,
+	},
+	{
+		.name = "RelianceCreekSPU",
+		.func = 6,
+		.phy_addr = 1,
+	},
+	{
+		.name = "RelianceCreekSPU",
+		.func = 7,
+		.phy_addr = 1,
+	},
+	{
+		.name = "KipsBay",
+		.func = 6,
+		.phy_addr = 1,
+	},
+	{}
+};
+
+static struct stmmac_pci_info quark_pci_info = {
+	.setup = quark_default_data,
+	.dmi = quark_pci_dmi_data,
+};
 
 /**
  * stmmac_pci_probe
@@ -199,107 +220,86 @@ static int stmmac_default_data(struct plat_stmmacenet_data *plat_dat,
 static int stmmac_pci_probe(struct pci_dev *pdev,
 			    const struct pci_device_id *id)
 {
-	int ret = 0;
-	void __iomem *addr = NULL;
-	struct stmmac_priv *priv = NULL;
-	struct plat_stmmacenet_data *plat_dat = NULL;
+	struct stmmac_pci_info *info = (struct stmmac_pci_info *)id->driver_data;
+	struct plat_stmmacenet_data *plat;
+	struct stmmac_priv *priv;
+	void __iomem *stmmac_ioaddr = NULL;
+
 	int i;
-	static int bus_id = 1;
+	int ret;
 
-	plat_dat = kmalloc(sizeof(struct plat_stmmacenet_data), GFP_KERNEL);
-	if (plat_dat == NULL) {
-		ret = -ENOMEM;
-		goto err_out_map_failed;
-	}
+	plat = devm_kzalloc(&pdev->dev, sizeof(*plat), GFP_KERNEL);
+	if (!plat)
+		return -ENOMEM;
 
-	/* return -ENODEV for non existing PHY, stop probing here  */
-	ret = stmmac_default_data(plat_dat, bus_id, id);
-	if (ret != 0)
-		goto err_platdata;
+	plat->mdio_bus_data = devm_kzalloc(&pdev->dev,
+					   sizeof(*plat->mdio_bus_data),
+					   GFP_KERNEL);
+	if (!plat->mdio_bus_data)
+		return -ENOMEM;
 
+	plat->dma_cfg = devm_kzalloc(&pdev->dev, sizeof(*plat->dma_cfg),
+				     GFP_KERNEL);
+	if (!plat->dma_cfg)
+		return -ENOMEM;
 
 	/* Enable pci device */
-	ret = pci_enable_device(pdev);
+	ret = pcim_enable_device(pdev);
 	if (ret) {
-		pr_err("%s : ERROR: failed to enable %s device\n", __func__,
-		       pci_name(pdev));
-		goto err_platdata;
-	}
-	if (pci_request_regions(pdev, STMMAC_RESOURCE_NAME)) {
-		pr_err("%s: ERROR: failed to get PCI region\n", __func__);
-		ret = -ENODEV;
-		goto err_out_req_reg_failed;
+		dev_err(&pdev->dev, "%s: ERROR: failed to enable device\n",
+			__func__);
+		return ret;
 	}
 
 	/* Get the base address of device */
-	for (i = 0; i <= 5; i++) {
+	for (i = 0; i <= PCI_STD_RESOURCE_END; i++) {
 		if (pci_resource_len(pdev, i) == 0)
 			continue;
-		addr = pci_iomap(pdev, i, 0);
-		if (addr == NULL) {
-			pr_err("%s: ERROR: cannot map register memory, aborting",
-			       __func__);
-			ret = -EIO;
-			goto err_iomap_failed;
-		}
+		ret = pcim_iomap_regions(pdev, BIT(i), pci_name(pdev));
+		if (ret)
+			return ret;
 		break;
-	}
-	if (NULL == addr) {
-		pr_err("%s: couldn't find register memory\n", __func__);
-		ret = -EIO;
-		goto err_iomap_failed;
 	}
 
 	pci_set_master(pdev);
+
+	if (info) {
+		info->pdev = pdev;
+		if (info->setup) {
+			ret = info->setup(plat, info);
+			if (ret)
+				return ret;
+		}
+	} else
+		stmmac_default_data(plat);
+
 	if (enable_msi == 1) {
 		ret = pci_enable_msi(pdev);
-		if(ret)
-			pr_info("stmmac MSI mode NOT enabled\n");
+		if (ret)
+			dev_info(&pdev->dev, "stmmac MSI mode NOT enabled\n");
 		else
-			pr_info("stmmac MSI mode enabled\n");
+			dev_info(&pdev->dev, "stmmac MSI mode enabled\n");
 	}
 
-	pr_info("Vendor 0x%04x Device 0x%04x\n",
-		id->vendor, id->device);
-
-	priv = stmmac_dvr_probe(&(pdev->dev), plat_dat, addr);
-	if (!priv) {
-		pr_err("%s: main driver probe failed", __func__);
-		goto err_out;
+	stmmac_ioaddr = pcim_iomap_table(pdev)[i];
+	if (!stmmac_ioaddr) {
+		dev_err(&pdev->dev, "%s: main driver iomap failed\n", __func__);
+		return -ENOMEM;
 	}
 
+	priv = stmmac_dvr_probe(&pdev->dev, plat, stmmac_ioaddr);
+	if (IS_ERR(priv)) {
+		dev_err(&pdev->dev, "%s: main driver probe failed\n", __func__);
+		return PTR_ERR(priv);
+	}
 	priv->dev->irq = pdev->irq;
 	priv->wol_irq = pdev->irq;
-	priv->irqmode_msi = enable_msi;
-	priv->pdev = pdev;
-	#ifdef CONFIG_INTEL_QUARK_X1000_SOC
-	priv->lpi_irq = -ENXIO;
-	#endif
+
 	pci_set_drvdata(pdev, priv->dev);
 
-	pr_debug("STMMAC platform driver registration completed");
-	bus_id++;
+	dev_dbg(&pdev->dev, "STMMAC PCI driver registration completed\n");
 
 	return 0;
-
-err_out:
-	pci_clear_master(pdev);
-	iounmap(addr);
-err_iomap_failed:
-	pci_release_regions(pdev);
-err_out_req_reg_failed:
-	pci_disable_device(pdev);
-err_platdata:
-	if (plat_dat != NULL) {
-		if (plat_dat->dma_cfg != NULL)
-			kfree(plat_dat->dma_cfg);
-		if (plat_dat->mdio_bus_data != NULL)
-			kfree(plat_dat->mdio_bus_data);
-		kfree(plat_dat);
-	}
-err_out_map_failed:
-	bus_id++;
-	return ret;
 }
 
 /**
@@ -312,76 +312,54 @@ err_out_map_failed:
 static void stmmac_pci_remove(struct pci_dev *pdev)
 {
 	struct net_device *ndev = pci_get_drvdata(pdev);
-	struct stmmac_priv *priv = netdev_priv(ndev);
 
 	stmmac_dvr_remove(ndev);
-
-	pci_set_drvdata(pdev, NULL);
-
-	if (enable_msi == 1)
-		if (pci_dev_msi_enabled(pdev))
-			pci_disable_msi(pdev);
-
-	if (priv->plat != NULL) {
-		if (priv->plat->dma_cfg != NULL)
-			kfree(priv->plat->dma_cfg);
-		if (priv->plat->mdio_bus_data != NULL)
-			kfree(priv->plat->mdio_bus_data);
-		kfree(priv->plat);
-	}
-
-	pci_iounmap(pdev, priv->ioaddr);
-	pci_release_regions(pdev);
-	pci_disable_device(pdev);
 }
 
-#ifdef CONFIG_PM
-static int stmmac_pci_suspend(struct pci_dev *pdev, pm_message_t state)
+#ifdef CONFIG_PM_SLEEP
+static int stmmac_pci_suspend(struct device *dev)
 {
-	struct net_device *ndev = pci_get_drvdata(pdev);
-	int ret;
-
-#ifdef CONFIG_INTEL_QUARK_X1000_SOC
-	ret = stmmac_freeze(ndev);
-#else
-	ret = stmmac_suspend(ndev);
-#endif
-	pci_save_state(pdev);
-	pci_set_power_state(pdev, pci_choose_state(pdev, state));
-
-	return ret;
-}
-
-static int stmmac_pci_resume(struct pci_dev *pdev)
-{
+	struct pci_dev *pdev = to_pci_dev(dev);
 	struct net_device *ndev = pci_get_drvdata(pdev);
 
-	pci_set_power_state(pdev, PCI_D0);
-	pci_restore_state(pdev);
+	return stmmac_suspend(ndev);
+}
 
-	return stmmac_restore(ndev);
+static int stmmac_pci_resume(struct device *dev)
+{
+	struct pci_dev *pdev = to_pci_dev(dev);
+	struct net_device *ndev = pci_get_drvdata(pdev);
+
+	return stmmac_resume(ndev);
 }
 #endif
+
+static SIMPLE_DEV_PM_OPS(stmmac_pm_ops, stmmac_pci_suspend, stmmac_pci_resume);
+
+#define STMMAC_VENDOR_ID 0x700
+#define STMMAC_QUARK_ID  0x0937
+#define STMMAC_DEVICE_ID 0x1108
 
 static DEFINE_PCI_DEVICE_TABLE(stmmac_id_table) = {
 	{PCI_DEVICE(STMMAC_VENDOR_ID, STMMAC_DEVICE_ID)},
 	{PCI_DEVICE(PCI_VENDOR_ID_STMICRO, PCI_DEVICE_ID_STMICRO_MAC)},
-	{PCI_DEVICE(PCI_VENDOR_ID_INTEL, STMMAC_QUARK_ID)},
+	{PCI_VDEVICE(INTEL, STMMAC_QUARK_ID), (kernel_ulong_t)&quark_pci_info},
 	{}
 };
 
 MODULE_DEVICE_TABLE(pci, stmmac_id_table);
 
-struct pci_driver stmmac_pci_driver = {
+static struct pci_driver stmmac_pci_driver = {
 	.name = STMMAC_RESOURCE_NAME,
 	.id_table = stmmac_id_table,
 	.probe = stmmac_pci_probe,
 	.remove = stmmac_pci_remove,
-#ifdef CONFIG_PM
-	.suspend = stmmac_pci_suspend,
-	.resume = stmmac_pci_resume,
-#endif
+	.driver         = {
+		.pm     = &stmmac_pm_ops,
+	},
 };
+
+module_pci_driver(stmmac_pci_driver);
 
 MODULE_DESCRIPTION("STMMAC 10/100/1000 Ethernet PCI driver");
 MODULE_AUTHOR("Rayagond Kokatanur <rayagond.kokatanur@vayavyalabs.com>");

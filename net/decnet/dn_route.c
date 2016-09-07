@@ -1282,14 +1282,12 @@ static int dn_route_output_key(struct dst_entry **pprt, struct flowidn *flp, int
 	return err;
 }
 
-int dn_route_output_sock(struct dst_entry **pprt, struct flowidn *fl, struct sock *sk, int flags)
+int dn_route_output_sock(struct dst_entry __rcu **pprt, struct flowidn *fl, struct sock *sk, int flags)
 {
 	int err;
 
 	err = __dn_route_output_key(pprt, fl, flags & MSG_TRYHARD);
 	if (err == 0 && fl->flowidn_proto) {
-		if (!(flags & MSG_DONTWAIT))
-			fl->flowidn_flags |= FLOWI_FLAG_CAN_SLEEP;
 		*pprt = xfrm_lookup(&init_net, *pprt,
 				    flowidn_to_flowi(fl), sk, 0);
 		if (IS_ERR(*pprt)) {
@@ -1613,22 +1611,40 @@ errout:
 	return -EMSGSIZE;
 }
 
+const struct nla_policy rtm_dn_policy[RTA_MAX + 1] = {
+	[RTA_DST]		= { .type = NLA_U16 },
+	[RTA_SRC]		= { .type = NLA_U16 },
+	[RTA_IIF]		= { .type = NLA_U32 },
+	[RTA_OIF]		= { .type = NLA_U32 },
+	[RTA_GATEWAY]		= { .type = NLA_U16 },
+	[RTA_PRIORITY]		= { .type = NLA_U32 },
+	[RTA_PREFSRC]		= { .type = NLA_U16 },
+	[RTA_METRICS]		= { .type = NLA_NESTED },
+	[RTA_MULTIPATH]		= { .type = NLA_NESTED },
+	[RTA_TABLE]		= { .type = NLA_U32 },
+	[RTA_MARK]		= { .type = NLA_U32 },
+};
+
 /*
  * This is called by both endnodes and routers now.
  */
-static int dn_cache_getroute(struct sk_buff *in_skb, struct nlmsghdr *nlh, void *arg)
+static int dn_cache_getroute(struct sk_buff *in_skb, struct nlmsghdr *nlh)
 {
 	struct net *net = sock_net(in_skb->sk);
-	struct rtattr **rta = arg;
 	struct rtmsg *rtm = nlmsg_data(nlh);
 	struct dn_route *rt = NULL;
 	struct dn_skb_cb *cb;
 	int err;
 	struct sk_buff *skb;
 	struct flowidn fld;
+	struct nlattr *tb[RTA_MAX+1];
 
 	if (!net_eq(net, &init_net))
 		return -EINVAL;
+
+	err = nlmsg_parse(nlh, sizeof(*rtm), tb, RTA_MAX, rtm_dn_policy);
+	if (err < 0)
+		return err;
 
 	memset(&fld, 0, sizeof(fld));
 	fld.flowidn_proto = DNPROTO_NSP;
@@ -1639,21 +1655,19 @@ static int dn_cache_getroute(struct sk_buff *in_skb, struct nlmsghdr *nlh, void 
 	skb_reset_mac_header(skb);
 	cb = DN_SKB_CB(skb);
 
-	if (rta[RTA_SRC-1])
-		memcpy(&fld.saddr, RTA_DATA(rta[RTA_SRC-1]), 2);
-	if (rta[RTA_DST-1])
-		memcpy(&fld.daddr, RTA_DATA(rta[RTA_DST-1]), 2);
-	if (rta[RTA_IIF-1])
-		memcpy(&fld.flowidn_iif, RTA_DATA(rta[RTA_IIF-1]), sizeof(int));
+	if (tb[RTA_SRC])
+		fld.saddr = nla_get_le16(tb[RTA_SRC]);
+
+	if (tb[RTA_DST])
+		fld.daddr = nla_get_le16(tb[RTA_DST]);
+
+	if (tb[RTA_IIF])
+		fld.flowidn_iif = nla_get_u32(tb[RTA_IIF]);
 
 	if (fld.flowidn_iif) {
 		struct net_device *dev;
-		if ((dev = dev_get_by_index(&init_net, fld.flowidn_iif)) == NULL) {
-			kfree_skb(skb);
-			return -ENODEV;
-		}
-		if (!dev->dn_ptr) {
-			dev_put(dev);
+		dev = __dev_get_by_index(&init_net, fld.flowidn_iif);
+		if (!dev || !dev->dn_ptr) {
 			kfree_skb(skb);
 			return -ENODEV;
 		}
@@ -1669,15 +1683,12 @@ static int dn_cache_getroute(struct sk_buff *in_skb, struct nlmsghdr *nlh, void 
 		if (!err && -rt->dst.error)
 			err = rt->dst.error;
 	} else {
-		int oif = 0;
-		if (rta[RTA_OIF - 1])
-			memcpy(&oif, RTA_DATA(rta[RTA_OIF - 1]), sizeof(int));
-		fld.flowidn_oif = oif;
+		if (tb[RTA_OIF])
+			fld.flowidn_oif = nla_get_u32(tb[RTA_OIF]);
+
 		err = dn_route_output_key((struct dst_entry **)&rt, &fld, 0);
 	}
 
-	if (skb->dev)
-		dev_put(skb->dev);
 	skb->dev = NULL;
 	if (err)
 		goto out_free;
@@ -1901,7 +1912,8 @@ void __init dn_route_init(void)
 
 	dn_dst_ops.gc_thresh = (dn_rt_hash_mask + 1);
 
-	proc_net_fops_create(&init_net, "decnet_cache", S_IRUGO, &dn_rt_cache_seq_fops);
+	proc_create("decnet_cache", S_IRUGO, init_net.proc_net,
+		    &dn_rt_cache_seq_fops);
 
 #ifdef CONFIG_DECNET_ROUTER
 	rtnl_register(PF_DECnet, RTM_GETROUTE, dn_cache_getroute,
@@ -1917,7 +1929,7 @@ void __exit dn_route_cleanup(void)
 	del_timer(&dn_route_timer);
 	dn_run_flush(0);
 
-	proc_net_remove(&init_net, "decnet_cache");
+	remove_proc_entry("decnet_cache", init_net.proc_net);
 	dst_entries_destroy(&dn_dst_ops);
 }
 

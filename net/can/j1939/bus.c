@@ -166,7 +166,7 @@ static enum hrtimer_restart j1939_ecu_timer_handler(struct hrtimer *hrtimer)
 
 static void cb_put_j1939_ecu(struct kref *kref)
 {
-	struct j1939_ecu *ecu =container_of(kref, struct j1939_ecu, kref);
+	struct j1939_ecu *ecu = container_of(kref, struct j1939_ecu, kref);
 
 	kfree(ecu);
 }

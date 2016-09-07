@@ -37,14 +37,21 @@
  * Clock management
  */
 
-static void shmob_drm_clk_on(struct shmob_drm_device *sdev)
+static int shmob_drm_clk_on(struct shmob_drm_device *sdev)
 {
-	if (sdev->clock)
-		clk_enable(sdev->clock);
+	int ret;
+
+	if (sdev->clock) {
+		ret = clk_prepare_enable(sdev->clock);
+		if (ret < 0)
+			return ret;
+	}
 #if 0
 	if (sdev->meram_dev && sdev->meram_dev->pdev)
 		pm_runtime_get_sync(&sdev->meram_dev->pdev->dev);
 #endif
+
+	return 0;
 }
 
 static void shmob_drm_clk_off(struct shmob_drm_device *sdev)
@@ -54,7 +61,7 @@ static void shmob_drm_clk_off(struct shmob_drm_device *sdev)
 		pm_runtime_put_sync(&sdev->meram_dev->pdev->dev);
 #endif
 	if (sdev->clock)
-		clk_disable(sdev->clock);
+		clk_disable_unprepare(sdev->clock);
 }
 
 /* -----------------------------------------------------------------------------
@@ -161,6 +168,7 @@ static void shmob_drm_crtc_start(struct shmob_drm_crtc *scrtc)
 	struct drm_device *dev = sdev->ddev;
 	struct drm_plane *plane;
 	u32 value;
+	int ret;
 
 	if (scrtc->started)
 		return;
@@ -170,7 +178,9 @@ static void shmob_drm_crtc_start(struct shmob_drm_crtc *scrtc)
 		return;
 
 	/* Enable clocks before accessing the hardware. */
-	shmob_drm_clk_on(sdev);
+	ret = shmob_drm_clk_on(sdev);
+	if (ret < 0)
+		return;
 
 	/* Reset and enable the LCDC. */
 	lcdc_write(sdev, LDCNT2R, lcdc_read(sdev, LDCNT2R) | LDCNT2R_BR);
@@ -451,32 +461,22 @@ void shmob_drm_crtc_finish_page_flip(struct shmob_drm_crtc *scrtc)
 {
 	struct drm_pending_vblank_event *event;
 	struct drm_device *dev = scrtc->crtc.dev;
-	struct timeval vblanktime;
 	unsigned long flags;
 
 	spin_lock_irqsave(&dev->event_lock, flags);
 	event = scrtc->event;
 	scrtc->event = NULL;
+	if (event) {
+		drm_send_vblank_event(dev, 0, event);
+		drm_vblank_put(dev, 0);
+	}
 	spin_unlock_irqrestore(&dev->event_lock, flags);
-
-	if (event == NULL)
-		return;
-
-	event->event.sequence = drm_vblank_count_and_time(dev, 0, &vblanktime);
-	event->event.tv_sec = vblanktime.tv_sec;
-	event->event.tv_usec = vblanktime.tv_usec;
-
-	spin_lock_irqsave(&dev->event_lock, flags);
-	list_add_tail(&event->base.link, &event->base.file_priv->event_list);
-	wake_up_interruptible(&event->base.file_priv->event_wait);
-	spin_unlock_irqrestore(&dev->event_lock, flags);
-
-	drm_vblank_put(dev, 0);
 }
 
 static int shmob_drm_crtc_page_flip(struct drm_crtc *crtc,
 				    struct drm_framebuffer *fb,
-				    struct drm_pending_vblank_event *event)
+				    struct drm_pending_vblank_event *event,
+				    uint32_t page_flip_flags)
 {
 	struct shmob_drm_crtc *scrtc = to_shmob_crtc(crtc);
 	struct drm_device *dev = scrtc->crtc.dev;
@@ -494,10 +494,10 @@ static int shmob_drm_crtc_page_flip(struct drm_crtc *crtc,
 
 	if (event) {
 		event->pipe = 0;
+		drm_vblank_get(dev, 0);
 		spin_lock_irqsave(&dev->event_lock, flags);
 		scrtc->event = event;
 		spin_unlock_irqrestore(&dev->event_lock, flags);
-		drm_vblank_get(dev, 0);
 	}
 
 	return 0;

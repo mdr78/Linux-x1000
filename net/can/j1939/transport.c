@@ -14,6 +14,7 @@
 #include <linux/version.h>
 #include <linux/if_arp.h>
 #include <linux/wait.h>
+#include <linux/can/skb.h>
 #include "j1939-priv.h"
 
 #define REGULAR		0
@@ -350,8 +351,8 @@ static int j1939tp_tx_dat(struct session *related,
 	skb->protocol = related->skb->protocol;
 	skb->pkt_type = related->skb->pkt_type;
 	skb->ip_summed = related->skb->ip_summed;
-	skb->sk	= related->skb->sk;
 
+	skb->sk = related->skb->sk;
 	skb_cb = (void *)skb->cb;
 	*skb_cb = *(related->cb);
 	fix_cb(skb_cb);
@@ -386,7 +387,8 @@ static int j1939xtp_do_tx_ctl(struct sk_buff *related, int extd,
 	skb->protocol = related->protocol;
 	skb->pkt_type = related->pkt_type;
 	skb->ip_summed = related->ip_summed;
-	skb->sk	= related->sk;
+	skb->sk = related->sk;
+	can_skb_set_owner(skb, related->sk);
 
 	skb_cb = (void *)skb->cb;
 	*skb_cb = *rel_cb;

@@ -12,6 +12,36 @@
  */
 
 #include <linux/serial_8250.h>
+#include <linux/dmaengine.h>
+
+struct uart_8250_dma {
+	dma_filter_fn		fn;
+	void			*rx_param;
+	void			*tx_param;
+
+	int			rx_chan_id;
+	int			tx_chan_id;
+
+	struct dma_slave_config	rxconf;
+	struct dma_slave_config	txconf;
+
+	struct dma_chan		*rxchan;
+	struct dma_chan		*txchan;
+
+	dma_addr_t		rx_addr;
+	dma_addr_t		tx_addr;
+
+	dma_cookie_t		rx_cookie;
+	dma_cookie_t		tx_cookie;
+
+	void			*rx_buf;
+
+	size_t			rx_size;
+	size_t			tx_size;
+
+	unsigned char		tx_running:1;
+	resource_size_t	mapbase;	/* resource base */
+};
 
 struct old_serial_port {
 	unsigned int uart;
@@ -50,19 +80,12 @@ struct serial8250_config {
 
 #define PROBE_RSA	(1 << 0)
 #define PROBE_ANY	(~0)
-
 #define HIGH_BITS_OFFSET ((sizeof(long)-sizeof(int))*8)
-
 #ifdef CONFIG_SERIAL_8250_SHARE_IRQ
 #define SERIAL8250_SHARE_IRQS 1
 #else
 #define SERIAL8250_SHARE_IRQS 0
 #endif
-
-#define PCI_DEVICE_ID_INTEL_BYT_UART1	0x0f0a
-#define PCI_DEVICE_ID_INTEL_BYT_UART2	0x0f0c
-#define LPSS_UART_BYTE_CNT		0x818
-#define LPSS_UART_OVRFLW_INTR_STAT	0x820
 
 static inline int serial_in(struct uart_8250_port *up, int offset)
 {
@@ -93,13 +116,6 @@ static inline void serial_dl_write(struct uart_8250_port *up, int value)
  * is cleared, the machine locks up with endless interrupts.
  */
 #define ALPHA_KLUDGE_MCR  (UART_MCR_OUT2 | UART_MCR_OUT1)
-#elif defined(CONFIG_SBC8560)
-/*
- * WindRiver did something similarly broken on their SBC8560 board. The
- * UART tristates its IRQ output while OUT2 is clear, but they pulled
- * the interrupt line _up_ instead of down, so if we register the IRQ
- * while the UART is in that state, we die in an IRQ storm. */
-#define ALPHA_KLUDGE_MCR (UART_MCR_OUT2)
 #else
 #define ALPHA_KLUDGE_MCR 0
 #endif

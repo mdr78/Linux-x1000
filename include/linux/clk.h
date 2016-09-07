@@ -28,16 +28,16 @@ struct clk;
  * PRE_RATE_CHANGE - called immediately before the clk rate is changed,
  *     to indicate that the rate change will proceed.  Drivers must
  *     immediately terminate any operations that will be affected by the
- *     rate change.  Callbacks may either return NOTIFY_DONE or
- *     NOTIFY_STOP.
+ *     rate change.  Callbacks may either return NOTIFY_DONE, NOTIFY_OK,
+ *     NOTIFY_STOP or NOTIFY_BAD.
  *
  * ABORT_RATE_CHANGE: called if the rate change failed for some reason
  *     after PRE_RATE_CHANGE.  In this case, all registered notifiers on
  *     the clk will be called with ABORT_RATE_CHANGE. Callbacks must
- *     always return NOTIFY_DONE.
+ *     always return NOTIFY_DONE or NOTIFY_OK.
  *
  * POST_RATE_CHANGE - called after the clk rate change has successfully
- *     completed.  Callbacks must always return NOTIFY_DONE.
+ *     completed.  Callbacks must always return NOTIFY_DONE or NOTIFY_OK.
  *
  */
 #define PRE_RATE_CHANGE			BIT(0)
@@ -81,6 +81,23 @@ struct clk_notifier_data {
 int clk_notifier_register(struct clk *clk, struct notifier_block *nb);
 
 int clk_notifier_unregister(struct clk *clk, struct notifier_block *nb);
+
+/**
+ * clk_get_accuracy - obtain the clock accuracy in ppb (parts per billion)
+ *		      for a clock source.
+ * @clk: clock source
+ *
+ * This gets the clock source accuracy expressed in ppb.
+ * A perfect clock returns 0.
+ */
+long clk_get_accuracy(struct clk *clk);
+
+#else
+
+static inline long clk_get_accuracy(struct clk *clk)
+{
+	return -ENOTSUPP;
+}
 
 #endif
 

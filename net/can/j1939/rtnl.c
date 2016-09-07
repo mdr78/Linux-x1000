@@ -26,7 +26,7 @@ static const struct nla_policy j1939_ifa_policy[IFA_J1939_MAX] = {
 	[IFA_J1939_NAME] = { .type = NLA_U64, },
 };
 
-int j1939rtnl_del_addr(struct sk_buff *skb, struct nlmsghdr *nlh, void *arg)
+int j1939rtnl_del_addr(struct sk_buff *skb, struct nlmsghdr *nlh)
 {
 	int ret;
 	struct ifaddrmsg *ifm;
@@ -86,7 +86,7 @@ int j1939rtnl_del_addr(struct sk_buff *skb, struct nlmsghdr *nlh, void *arg)
 	return ret;
 }
 
-int j1939rtnl_new_addr(struct sk_buff *skb, struct nlmsghdr *nlh, void *arg)
+int j1939rtnl_new_addr(struct sk_buff *skb, struct nlmsghdr *nlh)
 {
 	struct ifaddrmsg *ifm;
 	struct j1939_segment *jseg;

@@ -21,6 +21,8 @@
 
 #include <linux/list.h>
 #include <linux/io.h>
+#include <linux/of.h>
+
 
 /*
  * SSP Serial Port Registers
@@ -104,29 +106,26 @@
 #define SSCR1_TxTresh(x) (((x) - 1) << 6) /* level [1..4] */
 #define SSCR1_RFT	(0x00000c00)	/* Receive FIFO Threshold (mask) */
 #define SSCR1_RxTresh(x) (((x) - 1) << 10) /* level [1..4] */
-
-/* CE5X00 SSCR0 bit definition */
-#define CE5X00_SSCR0_DSS	((1<<5)-1)	/* Data Size Select (mask) */
-#define CE5X00_SSCR0_DataSize(x)  ((x) - 1)	/* Data Size Select [4..32] */
-#define CE5X00_SSCR0_FRF	(((1<<2)-1) << 5)	/* FRame Format (mask) */
-#define CE5X00_SSCR0_Motorola	(0x0 << 5)	/* Motorola's Serial Peripheral Interface (SPI) */
-#define CE5X00_SSCR0_TI	(0x1 << 5)	/* Texas Instruments' Synchronous Serial Protocol (SSP) */
-#define CE5X00_SSCR0_National	(0x2 << 5)	/* National Microwire */
-
-#define RX_THRESH_CE5X00_DFLT	16
-#define TX_THRESH_CE5X00_DFLT	16
-
-#define CE5X00_SSSR_TFL_MASK	(0x1F << 8)	/* Transmit FIFO Level mask */
-#define CE5X00_SSSR_RFL_MASK	(0x1F << 13)	/* Receive FIFO Level mask */
-
-#define CE5X00_SSCR1_TFT	(((1<<5)-1) << 6)	/* Transmit FIFO Threshold (mask) */
-#define CE5X00_SSCR1_TxTresh(x) (((x) - 1) << 6) /* level [1..32] */
-#define CE5X00_SSCR1_RFT	(((1<<5)-1) << 11)	/* Receive FIFO Threshold (mask) */
-#define CE5X00_SSCR1_RxTresh(x) (((x) - 1) << 11) /* level [1..32] */
-#define CE5X00_SSCR1_STRF       (1 << 17)	/* Select FIFO or EFWR */
-#define CE5X00_SSCR1_EFWR	(1 << 16)	/* Enable FIFO Write/Read */
-
 #endif
+
+/* QUARK_X1000 SSCR0 bit definition */
+#define QUARK_X1000_SSCR0_DSS	(0x1F)		/* Data Size Select (mask) */
+#define QUARK_X1000_SSCR0_DataSize(x)  ((x) - 1)	/* Data Size Select [4..32] */
+#define QUARK_X1000_SSCR0_FRF	(0x3 << 5)	/* FRame Format (mask) */
+#define QUARK_X1000_SSCR0_Motorola	(0x0 << 5)	/* Motorola's Serial Peripheral Interface (SPI) */
+
+#define RX_THRESH_QUARK_X1000_DFLT	1
+#define TX_THRESH_QUARK_X1000_DFLT	16
+
+#define QUARK_X1000_SSSR_TFL_MASK	(0x1F << 8)	/* Transmit FIFO Level mask */
+#define QUARK_X1000_SSSR_RFL_MASK	(0x1F << 13)	/* Receive FIFO Level mask */
+
+#define QUARK_X1000_SSCR1_TFT	(0x1F << 6)	/* Transmit FIFO Threshold (mask) */
+#define QUARK_X1000_SSCR1_TxTresh(x) (((x) - 1) << 6)	/* level [1..32] */
+#define QUARK_X1000_SSCR1_RFT	(0x1F << 11)	/* Receive FIFO Threshold (mask) */
+#define QUARK_X1000_SSCR1_RxTresh(x) (((x) - 1) << 11)	/* level [1..32] */
+#define QUARK_X1000_SSCR1_STRF       (1 << 17)		/* Select FIFO or EFWR */
+#define QUARK_X1000_SSCR1_EFWR	(1 << 16)		/* Enable FIFO Write/Read */
 
 /* extra bits in PXA255, PXA26x and PXA27x SSP ports */
 #define SSCR0_TISSP		(1 << 4)	/* TI Sync Serial Protocol */
@@ -177,6 +176,14 @@
 #define SSACD_ACDS(x)		((x) << 0)	/* Audio clock divider select */
 #define SSACD_SCDX8		(1 << 7)	/* SYSCLK division ratio select */
 
+/* LPSS SSP */
+#define SSITF			0x44		/* TX FIFO trigger level */
+#define SSITF_TxLoThresh(x)	(((x) - 1) << 8)
+#define SSITF_TxHiThresh(x)	((x) - 1)
+
+#define SSIRF			0x48		/* RX FIFO trigger level */
+#define SSIRF_RxThresh(x)	((x) - 1)
+
 enum pxa_ssp_type {
 	SSP_UNDEFINED = 0,
 	PXA25x_SSP,  /* pxa 210, 250, 255, 26x */
@@ -186,7 +193,8 @@ enum pxa_ssp_type {
 	PXA168_SSP,
 	PXA910_SSP,
 	CE4100_SSP,
-	CE5X00_SSP,
+	LPSS_SSP,
+	QUARK_X1000_SSP,
 };
 
 struct ssp_device {
@@ -204,7 +212,8 @@ struct ssp_device {
 	int		irq;
 	int		drcmr_rx;
 	int		drcmr_tx;
-	struct pci_dev  *pcidev;
+
+	struct device_node	*of_node;
 };
 
 /**
@@ -230,7 +239,22 @@ static inline u32 pxa_ssp_read_reg(struct ssp_device *dev, u32 reg)
 	return __raw_readl(dev->mmio_base + reg);
 }
 
+#ifdef CONFIG_ARCH_PXA
 struct ssp_device *pxa_ssp_request(int port, const char *label);
 void pxa_ssp_free(struct ssp_device *);
-int pxa_msi_enabled(void);
+struct ssp_device *pxa_ssp_request_of(const struct device_node *of_node,
+				      const char *label);
+#else
+static inline struct ssp_device *pxa_ssp_request(int port, const char *label)
+{
+	return NULL;
+}
+static inline struct ssp_device *pxa_ssp_request_of(const struct device_node *n,
+						    const char *name)
+{
+	return NULL;
+}
+static inline void pxa_ssp_free(struct ssp_device *ssp) {}
+#endif
+
 #endif

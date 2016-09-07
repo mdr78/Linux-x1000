@@ -19,7 +19,7 @@
  */
 void __mips_set_bit(unsigned long nr, volatile unsigned long *addr)
 {
-	volatile unsigned long *a = addr;
+	unsigned long *a = (unsigned long *)addr;
 	unsigned bit = nr & SZLONG_MASK;
 	unsigned long mask;
 	unsigned long flags;
@@ -41,7 +41,7 @@ EXPORT_SYMBOL(__mips_set_bit);
  */
 void __mips_clear_bit(unsigned long nr, volatile unsigned long *addr)
 {
-	volatile unsigned long *a = addr;
+	unsigned long *a = (unsigned long *)addr;
 	unsigned bit = nr & SZLONG_MASK;
 	unsigned long mask;
 	unsigned long flags;
@@ -56,14 +56,14 @@ EXPORT_SYMBOL(__mips_clear_bit);
 
 
 /**
- * __mips_change_bit - Toggle a bit in memory.  This is called by change_bit()
+ * __mips_change_bit - Toggle a bit in memory.	This is called by change_bit()
  * if it cannot find a faster solution.
  * @nr: Bit to change
  * @addr: Address to start counting from
  */
 void __mips_change_bit(unsigned long nr, volatile unsigned long *addr)
 {
-	volatile unsigned long *a = addr;
+	unsigned long *a = (unsigned long *)addr;
 	unsigned bit = nr & SZLONG_MASK;
 	unsigned long mask;
 	unsigned long flags;
@@ -86,7 +86,7 @@ EXPORT_SYMBOL(__mips_change_bit);
 int __mips_test_and_set_bit(unsigned long nr,
 			    volatile unsigned long *addr)
 {
-	volatile unsigned long *a = addr;
+	unsigned long *a = (unsigned long *)addr;
 	unsigned bit = nr & SZLONG_MASK;
 	unsigned long mask;
 	unsigned long flags;
@@ -112,7 +112,7 @@ EXPORT_SYMBOL(__mips_test_and_set_bit);
 int __mips_test_and_set_bit_lock(unsigned long nr,
 				 volatile unsigned long *addr)
 {
-	volatile unsigned long *a = addr;
+	unsigned long *a = (unsigned long *)addr;
 	unsigned bit = nr & SZLONG_MASK;
 	unsigned long mask;
 	unsigned long flags;
@@ -137,7 +137,7 @@ EXPORT_SYMBOL(__mips_test_and_set_bit_lock);
  */
 int __mips_test_and_clear_bit(unsigned long nr, volatile unsigned long *addr)
 {
-	volatile unsigned long *a = addr;
+	unsigned long *a = (unsigned long *)addr;
 	unsigned bit = nr & SZLONG_MASK;
 	unsigned long mask;
 	unsigned long flags;
@@ -155,14 +155,14 @@ EXPORT_SYMBOL(__mips_test_and_clear_bit);
 
 
 /**
- * __mips_test_and_change_bit - Change a bit and return its old value.  This is
+ * __mips_test_and_change_bit - Change a bit and return its old value.	This is
  * called by test_and_change_bit() if it cannot find a faster solution.
  * @nr: Bit to change
  * @addr: Address to count from
  */
 int __mips_test_and_change_bit(unsigned long nr, volatile unsigned long *addr)
 {
-	volatile unsigned long *a = addr;
+	unsigned long *a = (unsigned long *)addr;
 	unsigned bit = nr & SZLONG_MASK;
 	unsigned long mask;
 	unsigned long flags;

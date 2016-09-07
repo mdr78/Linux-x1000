@@ -267,6 +267,15 @@ again:
 }
 EXPORT_SYMBOL(dst_destroy);
 
+static void dst_destroy_rcu(struct rcu_head *head)
+{
+	struct dst_entry *dst = container_of(head, struct dst_entry, rcu_head);
+
+	dst = dst_destroy(dst);
+	if (dst)
+		__dst_free(dst);
+}
+
 void dst_release(struct dst_entry *dst)
 {
 	if (dst) {
@@ -274,11 +283,8 @@ void dst_release(struct dst_entry *dst)
 
 		newrefcnt = atomic_dec_return(&dst->__refcnt);
 		WARN_ON(newrefcnt < 0);
-		if (unlikely(dst->flags & DST_NOCACHE) && !newrefcnt) {
-			dst = dst_destroy(dst);
-			if (dst)
-				__dst_free(dst);
-		}
+		if (unlikely(dst->flags & DST_NOCACHE) && !newrefcnt)
+			call_rcu(&dst->rcu_head, dst_destroy_rcu);
 	}
 }
 EXPORT_SYMBOL(dst_release);
@@ -320,27 +326,28 @@ void __dst_destroy_metrics_generic(struct dst_entry *dst, unsigned long old)
 EXPORT_SYMBOL(__dst_destroy_metrics_generic);
 
 /**
- * skb_dst_set_noref - sets skb dst, without a reference
+ * __skb_dst_set_noref - sets skb dst, without a reference
  * @skb: buffer
  * @dst: dst entry
+ * @force: if force is set, use noref version even for DST_NOCACHE entries
  *
  * Sets skb dst, assuming a reference was not taken on dst
  * skb_dst_drop() should not dst_release() this dst
  */
-void skb_dst_set_noref(struct sk_buff *skb, struct dst_entry *dst)
+void __skb_dst_set_noref(struct sk_buff *skb, struct dst_entry *dst, bool force)
 {
 	WARN_ON(!rcu_read_lock_held() && !rcu_read_lock_bh_held());
 	/* If dst not in cache, we must take a reference, because
 	 * dst_release() will destroy dst as soon as its refcount becomes zero
 	 */
-	if (unlikely(dst->flags & DST_NOCACHE)) {
+	if (unlikely((dst->flags & DST_NOCACHE) && !force)) {
 		dst_hold(dst);
 		skb_dst_set(skb, dst);
 	} else {
 		skb->_skb_refdst = (unsigned long)dst | SKB_DST_NOREF;
 	}
 }
-EXPORT_SYMBOL(skb_dst_set_noref);
+EXPORT_SYMBOL(__skb_dst_set_noref);
 
 /* Dirty hack. We did it in 2.2 (in __dst_free),
  * we have _very_ good reasons not to repeat
@@ -371,7 +378,7 @@ static void dst_ifdown(struct dst_entry *dst, struct net_device *dev,
 static int dst_dev_event(struct notifier_block *this, unsigned long event,
 			 void *ptr)
 {
-	struct net_device *dev = ptr;
+	struct net_device *dev = netdev_notifier_info_to_dev(ptr);
 	struct dst_entry *dst, *last = NULL;
 
 	switch (event) {

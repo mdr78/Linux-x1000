@@ -395,9 +395,6 @@ static int wm8804_set_pll(struct snd_soc_dai *dai, int pll_id,
 		/* power down the PLL before reprogramming it */
 		snd_soc_update_bits(codec, WM8804_PWRDN, 0x1, 0x1);
 
-		if (!freq_in || !freq_out)
-			return 0;
-
 		/* set PLLN and PRESCALE */
 		snd_soc_update_bits(codec, WM8804_PLL4, 0xf | 0x10,
 				    pll_div.n | (pll_div.prescale << 4));
@@ -742,7 +739,7 @@ static struct spi_driver wm8804_spi_driver = {
 };
 #endif
 
-#if defined(CONFIG_I2C) || defined(CONFIG_I2C_MODULE)
+#if IS_ENABLED(CONFIG_I2C)
 static int wm8804_i2c_probe(struct i2c_client *i2c,
 			    const struct i2c_device_id *id)
 {
@@ -794,7 +791,7 @@ static int __init wm8804_modinit(void)
 {
 	int ret = 0;
 
-#if defined(CONFIG_I2C) || defined(CONFIG_I2C_MODULE)
+#if IS_ENABLED(CONFIG_I2C)
 	ret = i2c_add_driver(&wm8804_i2c_driver);
 	if (ret) {
 		printk(KERN_ERR "Failed to register wm8804 I2C driver: %d\n",
@@ -814,7 +811,7 @@ module_init(wm8804_modinit);
 
 static void __exit wm8804_exit(void)
 {
-#if defined(CONFIG_I2C) || defined(CONFIG_I2C_MODULE)
+#if IS_ENABLED(CONFIG_I2C)
 	i2c_del_driver(&wm8804_i2c_driver);
 #endif
 #if defined(CONFIG_SPI_MASTER)

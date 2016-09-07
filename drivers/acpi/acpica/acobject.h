@@ -5,7 +5,7 @@
  *****************************************************************************/
 
 /*
- * Copyright (C) 2000 - 2012, Intel Corp.
+ * Copyright (C) 2000 - 2013, Intel Corp.
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -263,6 +263,7 @@ struct acpi_object_region_field {
 	ACPI_OBJECT_COMMON_HEADER ACPI_COMMON_FIELD_INFO u16 resource_length;
 	union acpi_operand_object *region_obj;	/* Containing op_region object */
 	u8 *resource_buffer;	/* resource_template for serial regions/fields */
+	u16 pin_number_index;	/* Index relative to previous Connection/Template */
 };
 
 struct acpi_object_bank_field {
@@ -307,7 +308,7 @@ struct acpi_object_addr_handler {
 	struct acpi_namespace_node *node;	/* Parent device */
 	void *context;
 	acpi_adr_space_setup setup;
-	union acpi_operand_object *region_list;	/* regions using this handler */
+	union acpi_operand_object *region_list;	/* Regions using this handler */
 	union acpi_operand_object *next;
 };
 

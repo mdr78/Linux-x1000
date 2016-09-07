@@ -17,7 +17,7 @@
 #include <linux/list.h>
 #include <linux/if_arp.h>
 #include <net/tcp_states.h>
-
+#include <linux/can/skb.h>
 #include <linux/can/core.h>
 #include <linux/can/j1939.h>
 #include "j1939-priv.h"
@@ -186,7 +186,7 @@ static void j1939sk_recv_skb(struct sk_buff *oskb, void *data)
 	if (oskb->sk == &jsk->sk)
 		cb->msg_flags |= MSG_CONFIRM;
 
-	skb->sk = &jsk->sk;
+	can_skb_set_owner(skb, &jsk->sk);
 	if (sock_queue_rcv_skb(&jsk->sk, skb) < 0)
 		kfree_skb(skb);
 }
@@ -795,8 +795,7 @@ static int j1939sk_sendmsg(struct kiocb *iocb, struct socket *sock,
 	if (ret < 0)
 		goto free_skb;
 	skb->dev = dev;
-	skb->sk  = sk;
-
+	skb->sk = sk;
 	BUILD_BUG_ON(sizeof(skb->cb) < sizeof(*skb_cb));
 
 	skb_cb = (void *) skb->cb;
@@ -817,7 +816,7 @@ static int j1939sk_sendmsg(struct kiocb *iocb, struct socket *sock,
 					ifindex);
 			if (!ecu) {
 				ret = -EADDRNOTAVAIL;
-				goto put_dev;
+				goto free_skb;
 			}
 			skb_cb->dst.name = ecu->name;
 			skb_cb->dst.addr = ecu->sa;

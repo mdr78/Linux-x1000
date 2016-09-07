@@ -19,6 +19,11 @@
  * permissions. All the event text files are stored there.
  */
 
+/*
+ * Powerpc needs __SANE_USERSPACE_TYPES__ before <linux/types.h> to select
+ * 'int-ll64.h' and avoid compile warnings when printing __u64 with %llu.
+ */
+#define __SANE_USERSPACE_TYPES__
 #include <stdlib.h>
 #include <stdio.h>
 #include <inttypes.h>
@@ -32,8 +37,6 @@
 #define ENV "PERF_TEST_ATTR"
 
 extern int verbose;
-
-bool test_attr__enabled;
 
 static char *dir;
 
@@ -68,7 +71,7 @@ static int store_event(struct perf_event_attr *attr, pid_t pid, int cpu,
 	char path[PATH_MAX];
 
 	snprintf(path, PATH_MAX, "%s/event-%d-%llu-%d", dir,
-		 attr->type, attr->config, fd);
+		 attr->type, (unsigned long long)attr->config, fd);
 
 	file = fopen(path, "w+");
 	if (!file) {
@@ -77,7 +80,7 @@ static int store_event(struct perf_event_attr *attr, pid_t pid, int cpu,
 	}
 
 	if (fprintf(file, "[event-%d-%llu-%d]\n",
-		    attr->type, attr->config, fd) < 0) {
+		    attr->type, (unsigned long long)attr->config, fd) < 0) {
 		perror("test attr - failed to write event file");
 		fclose(file);
 		return -1;
@@ -93,10 +96,10 @@ static int store_event(struct perf_event_attr *attr, pid_t pid, int cpu,
 	/* struct perf_event_attr */
 	WRITE_ASS(type,   PRIu32);
 	WRITE_ASS(size,   PRIu32);
-	WRITE_ASS(config,  "llu");
-	WRITE_ASS(sample_period, "llu");
-	WRITE_ASS(sample_type,   "llu");
-	WRITE_ASS(read_format,   "llu");
+	__WRITE_ASS(config,        "llu", (unsigned long long)attr->config);
+	__WRITE_ASS(sample_period, "llu", (unsigned long long)attr->sample_period);
+	__WRITE_ASS(sample_type,   "llu", (unsigned long long)attr->sample_type);
+	__WRITE_ASS(read_format,   "llu", (unsigned long long)attr->read_format);
 	WRITE_ASS(disabled,       "d");
 	WRITE_ASS(inherit,        "d");
 	WRITE_ASS(pinned,         "d");
@@ -121,10 +124,10 @@ static int store_event(struct perf_event_attr *attr, pid_t pid, int cpu,
 	WRITE_ASS(exclude_callchain_user, "d");
 	WRITE_ASS(wakeup_events, PRIu32);
 	WRITE_ASS(bp_type, PRIu32);
-	WRITE_ASS(config1, "llu");
-	WRITE_ASS(config2, "llu");
-	WRITE_ASS(branch_sample_type, "llu");
-	WRITE_ASS(sample_regs_user,   "llu");
+	__WRITE_ASS(config1,            "llu", (unsigned long long)attr->config1);
+	__WRITE_ASS(config2,            "llu", (unsigned long long)attr->config2);
+	__WRITE_ASS(branch_sample_type, "llu", (unsigned long long)attr->branch_sample_type);
+	__WRITE_ASS(sample_regs_user,   "llu", (unsigned long long)attr->sample_regs_user);
 	WRITE_ASS(sample_stack_user,  PRIu32);
 
 	fclose(file);
@@ -144,10 +147,15 @@ void test_attr__open(struct perf_event_attr *attr, pid_t pid, int cpu,
 
 static int run_dir(const char *d, const char *perf)
 {
+	char v[] = "-vvvvv";
+	int vcnt = min(verbose, (int) sizeof(v) - 1);
 	char cmd[3*PATH_MAX];
 
-	snprintf(cmd, 3*PATH_MAX, "python %s/attr.py -d %s/attr/ -p %s %s",
-		 d, d, perf, verbose ? "-v" : "");
+	if (verbose)
+		vcnt++;
+
+	snprintf(cmd, 3*PATH_MAX, PYTHON " %s/attr.py -d %s/attr/ -p %s %.*s",
+		 d, d, perf, vcnt, v);
 
 	return system(cmd);
 }
@@ -170,6 +178,6 @@ int test__attr(void)
 	    !lstat(path_perf, &st))
 		return run_dir(path_dir, path_perf);
 
-	fprintf(stderr, " (ommitted)");
+	fprintf(stderr, " (omitted)");
 	return 0;
 }

@@ -179,7 +179,7 @@ extern void j1939_get_promisc_receiver(int ifindex);
 
 extern int j1939_proc_add(const char *file,
 		int (*seq_show)(struct seq_file *sqf, void *v),
-		write_proc_t write);
+		void *write);
 extern void j1939_proc_remove(const char *file);
 
 extern const char j1939_procname[];
@@ -308,8 +308,8 @@ extern void j1939tp_module_exit(void);
 
 /* rtnetlink */
 extern const struct rtnl_af_ops j1939_rtnl_af_ops;
-extern int j1939rtnl_new_addr(struct sk_buff *, struct nlmsghdr *, void *arg);
-extern int j1939rtnl_del_addr(struct sk_buff *, struct nlmsghdr *, void *arg);
+extern int j1939rtnl_new_addr(struct sk_buff *, struct nlmsghdr *);
+extern int j1939rtnl_del_addr(struct sk_buff *, struct nlmsghdr *);
 extern int j1939rtnl_dump_addr(struct sk_buff *, struct netlink_callback *);
 
 #endif /* _J1939_PRIV_H_ */

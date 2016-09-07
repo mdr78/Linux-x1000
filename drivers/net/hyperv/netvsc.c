@@ -11,8 +11,7 @@
  * more details.
  *
  * You should have received a copy of the GNU General Public License along with
- * this program; if not, write to the Free Software Foundation, Inc., 59 Temple
- * Place - Suite 330, Boston, MA 02111-1307 USA.
+ * this program; if not, see <http://www.gnu.org/licenses/>.
  *
  * Authors:
  *   Haiyang Zhang <haiyangz@microsoft.com>
@@ -137,8 +136,7 @@ static int netvsc_destroy_recv_buf(struct netvsc_device *net_device)
 
 	if (net_device->recv_buf) {
 		/* Free up the receive buffer */
-		free_pages((unsigned long)net_device->recv_buf,
-			get_order(net_device->recv_buf_size));
+		vfree(net_device->recv_buf);
 		net_device->recv_buf = NULL;
 	}
 
@@ -164,9 +162,7 @@ static int netvsc_init_recv_buf(struct hv_device *device)
 		return -ENODEV;
 	ndev = net_device->ndev;
 
-	net_device->recv_buf =
-		(void *)__get_free_pages(GFP_KERNEL|__GFP_ZERO,
-				get_order(net_device->recv_buf_size));
+	net_device->recv_buf = vzalloc(net_device->recv_buf_size);
 	if (!net_device->recv_buf) {
 		netdev_err(ndev, "unable to allocate receive "
 			"buffer of size %d\n", net_device->recv_buf_size);
@@ -470,8 +466,10 @@ static void netvsc_send_completion(struct hv_device *device,
 			packet->trans_id;
 
 		/* Notify the layer above us */
-		nvsc_packet->completion.send.send_completion(
-			nvsc_packet->completion.send.send_completion_ctx);
+		if (nvsc_packet)
+			nvsc_packet->completion.send.send_completion(
+				nvsc_packet->completion.send.
+				send_completion_ctx);
 
 		num_outstanding_sends =
 			atomic_dec_return(&net_device->num_outstanding_sends);
@@ -498,6 +496,7 @@ int netvsc_send(struct hv_device *device,
 	int ret = 0;
 	struct nvsp_message sendMessage;
 	struct net_device *ndev;
+	u64 req_id;
 
 	net_device = get_outbound_net_device(device);
 	if (!net_device)
@@ -518,20 +517,24 @@ int netvsc_send(struct hv_device *device,
 		0xFFFFFFFF;
 	sendMessage.msg.v1_msg.send_rndis_pkt.send_buf_section_size = 0;
 
+	if (packet->completion.send.send_completion)
+		req_id = (ulong)packet;
+	else
+		req_id = 0;
+
 	if (packet->page_buf_cnt) {
 		ret = vmbus_sendpacket_pagebuffer(device->channel,
 						  packet->page_buf,
 						  packet->page_buf_cnt,
 						  &sendMessage,
 						  sizeof(struct nvsp_message),
-						  (unsigned long)packet);
+						  req_id);
 	} else {
 		ret = vmbus_sendpacket(device->channel, &sendMessage,
 				sizeof(struct nvsp_message),
-				(unsigned long)packet,
+				req_id,
 				VM_PKT_DATA_INBAND,
 				VMBUS_DATA_PACKET_FLAG_COMPLETION_REQUESTED);
-
 	}
 
 	if (ret == 0) {

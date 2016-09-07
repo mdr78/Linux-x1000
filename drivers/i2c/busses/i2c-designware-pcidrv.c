@@ -56,6 +56,14 @@ enum dw_pci_ctl_id_t {
 	medfield_5,
 };
 
+struct dw_pci_controller {
+	u32 bus_num;
+	u32 bus_cfg;
+	u32 tx_fifo_depth;
+	u32 rx_fifo_depth;
+	u32 clk_khz;
+};
+
 #define INTEL_MID_STD_CFG  (DW_IC_CON_MASTER |			\
 				DW_IC_CON_SLAVE_DISABLE |	\
 				DW_IC_CON_RESTART_EN)
@@ -67,7 +75,6 @@ static struct  dw_pci_controller  dw_pci_controllers[] = {
 		.tx_fifo_depth = 32,
 		.rx_fifo_depth = 32,
 		.clk_khz      = 25000,
-		.explicit_stop = 0,
 	},
 	[moorestown_1] = {
 		.bus_num     = 1,
@@ -75,7 +82,6 @@ static struct  dw_pci_controller  dw_pci_controllers[] = {
 		.tx_fifo_depth = 32,
 		.rx_fifo_depth = 32,
 		.clk_khz      = 25000,
-		.explicit_stop = 0,
 	},
 	[moorestown_2] = {
 		.bus_num     = 2,
@@ -83,7 +89,6 @@ static struct  dw_pci_controller  dw_pci_controllers[] = {
 		.tx_fifo_depth = 32,
 		.rx_fifo_depth = 32,
 		.clk_khz      = 25000,
-		.explicit_stop = 0,
 	},
 	[medfield_0] = {
 		.bus_num     = 0,
@@ -91,7 +96,6 @@ static struct  dw_pci_controller  dw_pci_controllers[] = {
 		.tx_fifo_depth = 32,
 		.rx_fifo_depth = 32,
 		.clk_khz      = 25000,
-		.explicit_stop = 0,
 	},
 	[medfield_1] = {
 		.bus_num     = 1,
@@ -99,7 +103,6 @@ static struct  dw_pci_controller  dw_pci_controllers[] = {
 		.tx_fifo_depth = 32,
 		.rx_fifo_depth = 32,
 		.clk_khz      = 25000,
-		.explicit_stop = 0,
 	},
 	[medfield_2] = {
 		.bus_num     = 2,
@@ -107,7 +110,6 @@ static struct  dw_pci_controller  dw_pci_controllers[] = {
 		.tx_fifo_depth = 32,
 		.rx_fifo_depth = 32,
 		.clk_khz      = 25000,
-		.explicit_stop = 0,
 	},
 	[medfield_3] = {
 		.bus_num     = 3,
@@ -115,7 +117,6 @@ static struct  dw_pci_controller  dw_pci_controllers[] = {
 		.tx_fifo_depth = 32,
 		.rx_fifo_depth = 32,
 		.clk_khz      = 25000,
-		.explicit_stop = 0,
 	},
 	[medfield_4] = {
 		.bus_num     = 4,
@@ -123,7 +124,6 @@ static struct  dw_pci_controller  dw_pci_controllers[] = {
 		.tx_fifo_depth = 32,
 		.rx_fifo_depth = 32,
 		.clk_khz      = 25000,
-		.explicit_stop = 0,
 	},
 	[medfield_5] = {
 		.bus_num     = 5,
@@ -131,7 +131,6 @@ static struct  dw_pci_controller  dw_pci_controllers[] = {
 		.tx_fifo_depth = 32,
 		.rx_fifo_depth = 32,
 		.clk_khz      = 25000,
-		.explicit_stop = 0,
 	},
 };
 static struct i2c_algorithm i2c_dw_algo = {
@@ -209,68 +208,45 @@ static u32 i2c_dw_get_clk_rate_khz(struct dw_i2c_dev *dev)
 }
 
 static int i2c_dw_pci_probe(struct pci_dev *pdev,
-const struct pci_device_id *id)
+			    const struct pci_device_id *id)
 {
 	struct dw_i2c_dev *dev;
 	struct i2c_adapter *adap;
-	unsigned long start, len;
-	void __iomem *base;
 	int r;
 	struct  dw_pci_controller *controller;
 
 	if (id->driver_data >= ARRAY_SIZE(dw_pci_controllers)) {
-		printk(KERN_ERR "dw_i2c_pci_probe: invalid driver data %ld\n",
+		dev_err(&pdev->dev, "%s: invalid driver data %ld\n", __func__,
 			id->driver_data);
 		return -EINVAL;
 	}
 
 	controller = &dw_pci_controllers[id->driver_data];
 
-	r = pci_enable_device(pdev);
+	r = pcim_enable_device(pdev);
 	if (r) {
 		dev_err(&pdev->dev, "Failed to enable I2C PCI device (%d)\n",
 			r);
-		goto exit;
+		return r;
 	}
 
-	/* Determine the address of the I2C area */
-	start = pci_resource_start(pdev, 0);
-	len = pci_resource_len(pdev, 0);
-	if (!start || len == 0) {
-		dev_err(&pdev->dev, "base address not set\n");
-		r = -ENODEV;
-		goto exit;
-	}
-
-	r = pci_request_region(pdev, 0, DRIVER_NAME);
+	r = pcim_iomap_regions(pdev, 1 << 0, pci_name(pdev));
 	if (r) {
-		dev_err(&pdev->dev, "failed to request I2C region "
-			"0x%lx-0x%lx\n", start,
-			(unsigned long)pci_resource_end(pdev, 0));
-		goto exit;
-	}
-
-	base = ioremap_nocache(start, len);
-	if (!base) {
 		dev_err(&pdev->dev, "I/O memory remapping failed\n");
-		r = -ENOMEM;
-		goto err_release_region;
+		return r;
 	}
 
-
-	dev = kzalloc(sizeof(struct dw_i2c_dev), GFP_KERNEL);
-	if (!dev) {
-		r = -ENOMEM;
-		goto err_release_region;
-	}
+	dev = devm_kzalloc(&pdev->dev, sizeof(struct dw_i2c_dev), GFP_KERNEL);
+	if (!dev)
+		return -ENOMEM;
 
 	init_completion(&dev->cmd_complete);
 	mutex_init(&dev->lock);
 	dev->clk = NULL;
 	dev->controller = controller;
 	dev->get_clk_rate_khz = i2c_dw_get_clk_rate_khz;
-	dev->base = base;
-	dev->dev = get_device(&pdev->dev);
+	dev->base = pcim_iomap_table(pdev)[0];
+	dev->dev = &pdev->dev;
 	dev->functionality =
 		I2C_FUNC_I2C |
 		I2C_FUNC_SMBUS_BYTE |
@@ -283,10 +259,9 @@ const struct pci_device_id *id)
 
 	dev->tx_fifo_depth = controller->tx_fifo_depth;
 	dev->rx_fifo_depth = controller->rx_fifo_depth;
-	dev->explicit_stop = controller->explicit_stop;
 	r = i2c_dw_init(dev);
 	if (r)
-		goto err_iounmap;
+		return r;
 
 	adap = &dev->adapter;
 	i2c_set_adapdata(adap, dev);
@@ -298,10 +273,11 @@ const struct pci_device_id *id)
 	snprintf(adap->name, sizeof(adap->name), "i2c-designware-pci-%d",
 		adap->nr);
 
-	r = request_irq(pdev->irq, i2c_dw_isr, IRQF_SHARED, adap->name, dev);
+	r = devm_request_irq(&pdev->dev, pdev->irq, i2c_dw_isr, IRQF_SHARED,
+			adap->name, dev);
 	if (r) {
 		dev_err(&pdev->dev, "failure requesting irq %i\n", dev->irq);
-		goto err_iounmap;
+		return r;
 	}
 
 	i2c_dw_disable_int(dev);
@@ -309,25 +285,14 @@ const struct pci_device_id *id)
 	r = i2c_add_numbered_adapter(adap);
 	if (r) {
 		dev_err(&pdev->dev, "failure adding adapter\n");
-		goto err_free_irq;
+		return r;
 	}
 
-	pm_runtime_put_noidle(&pdev->dev);
+	pm_runtime_set_autosuspend_delay(&pdev->dev, 1000);
+	pm_runtime_use_autosuspend(&pdev->dev);
 	pm_runtime_allow(&pdev->dev);
 
 	return 0;
-
-err_free_irq:
-	free_irq(pdev->irq, dev);
-err_iounmap:
-	iounmap(dev->base);
-	pci_set_drvdata(pdev, NULL);
-	put_device(&pdev->dev);
-	kfree(dev);
-err_release_region:
-	pci_release_region(pdev, 0);
-exit:
-	return r;
 }
 
 static void i2c_dw_pci_remove(struct pci_dev *pdev)
@@ -338,19 +303,13 @@ static void i2c_dw_pci_remove(struct pci_dev *pdev)
 	pm_runtime_forbid(&pdev->dev);
 	pm_runtime_get_noresume(&pdev->dev);
 
-	pci_set_drvdata(pdev, NULL);
 	i2c_del_adapter(&dev->adapter);
-	put_device(&pdev->dev);
-
-	free_irq(dev->irq, dev);
-	kfree(dev);
-	pci_release_region(pdev, 0);
 }
 
 /* work with hotplug and coldplug */
 MODULE_ALIAS("i2c_designware-pci");
 
-static DEFINE_PCI_DEVICE_TABLE(i2_designware_pci_ids) = {
+static const struct pci_device_id i2_designware_pci_ids[] = {
 	/* Moorestown */
 	{ PCI_VDEVICE(INTEL, 0x0802), moorestown_0 },
 	{ PCI_VDEVICE(INTEL, 0x0803), moorestown_1 },

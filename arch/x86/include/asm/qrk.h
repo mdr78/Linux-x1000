@@ -1,5 +1,5 @@
 /*
- * Copyright(c) 2013-2015 Intel Corporation.
+ * Copyright(c) 2013,2014 Intel Corporation.
  *
  * This program is free software; you can redistribute it and/or modify it
  * under the terms and conditions of the GNU General Public License,
@@ -61,7 +61,7 @@ static inline void qrk_pci_pvm_unmask(struct pci_dev * dev)
 }
 
 /* Convienence macros */
-#if defined(CONFIG_INTEL_QUARK_X1000_SOC)
+#if defined(CONFIG_X86_INTEL_QUARK)
        #define mask_pvm(x) qrk_pci_pvm_mask(x)
        #define unmask_pvm(x) qrk_pci_pvm_unmask(x) 
 #else
@@ -70,7 +70,7 @@ static inline void qrk_pci_pvm_unmask(struct pci_dev * dev)
 #endif
 
 /* Serial */
-#if defined(CONFIG_INTEL_QUARK_X1000_SOC)
+#if defined(CONFIG_X86_INTEL_QUARK)
 	#define SERIAL_PORT_DFNS
 	#define BASE_BAUD 2764800
 #endif

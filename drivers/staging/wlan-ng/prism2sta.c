@@ -55,7 +55,6 @@
 #include <linux/kernel.h>
 #include <linux/sched.h>
 #include <linux/types.h>
-#include <linux/init.h>
 #include <linux/slab.h>
 #include <linux/wireless.h>
 #include <linux/netdevice.h>
@@ -1122,8 +1121,7 @@ static void prism2sta_inf_hostscanresults(wlandevice_t *wlandev,
 
 	kfree(hw->scanresults);
 
-	hw->scanresults = kmalloc(sizeof(hfa384x_InfFrame_t), GFP_ATOMIC);
-	memcpy(hw->scanresults, inf, sizeof(hfa384x_InfFrame_t));
+	hw->scanresults = kmemdup(inf, sizeof(hfa384x_InfFrame_t), GFP_ATOMIC);
 
 	if (nbss == 0)
 		nbss = -1;
@@ -1160,30 +1158,33 @@ static void prism2sta_inf_chinforesults(wlandevice_t *wlandev,
 	    le16_to_cpu(inf->info.chinforesult.scanchannels);
 
 	for (i = 0, n = 0; i < HFA384x_CHINFORESULT_MAX; i++) {
-		if (hw->channel_info.results.scanchannels & (1 << i)) {
-			int channel =
-			    le16_to_cpu(inf->info.chinforesult.result[n].chid) -
-			    1;
-			hfa384x_ChInfoResultSub_t *chinforesult =
-			    &hw->channel_info.results.result[channel];
-			chinforesult->chid = channel;
-			chinforesult->anl =
-			    le16_to_cpu(inf->info.chinforesult.result[n].anl);
-			chinforesult->pnl =
-			    le16_to_cpu(inf->info.chinforesult.result[n].pnl);
-			chinforesult->active =
-			    le16_to_cpu(inf->info.chinforesult.result[n].
-					active);
-	pr_debug
-		("chinfo: channel %d, %s level (avg/peak)=%d/%d dB, pcf %d\n",
-			     channel + 1,
-			     chinforesult->
-			     active & HFA384x_CHINFORESULT_BSSACTIVE ? "signal"
-			     : "noise", chinforesult->anl, chinforesult->pnl,
-			     chinforesult->
-			     active & HFA384x_CHINFORESULT_PCFACTIVE ? 1 : 0);
-			n++;
-		}
+		hfa384x_ChInfoResultSub_t *result;
+		hfa384x_ChInfoResultSub_t *chinforesult;
+		int chan;
+
+		if (!(hw->channel_info.results.scanchannels & (1 << i)))
+			continue;
+
+		result = &inf->info.chinforesult.result[n];
+		chan = le16_to_cpu(result->chid) - 1;
+
+		if (chan < 0 || chan >= HFA384x_CHINFORESULT_MAX)
+			continue;
+
+		chinforesult = &hw->channel_info.results.result[chan];
+		chinforesult->chid = chan;
+		chinforesult->anl = le16_to_cpu(result->anl);
+		chinforesult->pnl = le16_to_cpu(result->pnl);
+		chinforesult->active = le16_to_cpu(result->active);
+
+		pr_debug("chinfo: channel %d, %s level (avg/peak)=%d/%d dB, pcf %d\n",
+			 chan + 1,
+			 (chinforesult->active & HFA384x_CHINFORESULT_BSSACTIVE)
+				? "signal" : "noise",
+			 chinforesult->anl, chinforesult->pnl,
+			 (chinforesult->active & HFA384x_CHINFORESULT_PCFACTIVE)
+				? 1 : 0);
+		n++;
 	}
 	atomic_set(&hw->channel_info.done, 2);
 
@@ -1277,7 +1278,7 @@ void prism2sta_processing_defer(struct work_struct *data)
 				     HFA384x_RID_CURRENTSSID, result);
 				return;
 			}
-			prism2mgmt_bytestr2pstr((hfa384x_bytestr_t *) &ssid,
+			prism2mgmt_bytestr2pstr((struct hfa384x_bytestr *) &ssid,
 						(p80211pstrd_t *) &
 						wlandev->ssid);
 
@@ -1359,7 +1360,7 @@ void prism2sta_processing_defer(struct work_struct *data)
 				 HFA384x_RID_CURRENTSSID, result);
 			return;
 		}
-		prism2mgmt_bytestr2pstr((hfa384x_bytestr_t *) &ssid,
+		prism2mgmt_bytestr2pstr((struct hfa384x_bytestr *) &ssid,
 					(p80211pstrd_t *) &wlandev->ssid);
 
 		hw->link_status = HFA384x_LINK_CONNECTED;
@@ -2035,7 +2036,7 @@ void prism2sta_commsqual_defer(struct work_struct *data)
 			 HFA384x_RID_CURRENTSSID, result);
 		return;
 	}
-	prism2mgmt_bytestr2pstr((hfa384x_bytestr_t *) &ssid,
+	prism2mgmt_bytestr2pstr((struct hfa384x_bytestr *) &ssid,
 				(p80211pstrd_t *) &wlandev->ssid);
 
 	/* Reschedule timer */

@@ -14,6 +14,7 @@
 #include <linux/seq_file.h>
 #include <linux/proc_fs.h>
 #include <linux/uaccess.h>
+#include <../../../fs/proc/internal.h>
 
 #include "j1939-priv.h"
 
@@ -38,12 +39,17 @@ proc_file_write(struct file *file, const char __user *buffer,
 	struct proc_dir_entry *dp;
 
 	dp = PDE(inode);
-
+/* FixMe: In 3.14 kernel write_proc support is removed
+*  from the proc_dir_entry structure.
+*/
+#if 0
 	if (!dp->write_proc)
 		return -EIO;
 
 	/* FIXME: does this routine need ppos?  probably... */
 	return dp->write_proc(file, buffer, count, dp->data);
+#endif
+	return 0;
 }
 
 static const struct file_operations j1939_proc_ops = {
@@ -57,7 +63,7 @@ static const struct file_operations j1939_proc_ops = {
 
 int j1939_proc_add(const char *file,
 		int (*seq_show)(struct seq_file *sqf, void *v),
-		write_proc_t write)
+		void *write)
 {
 	struct proc_dir_entry *pde;
 	int mode = 0;
@@ -73,7 +79,12 @@ int j1939_proc_add(const char *file,
 	if (!pde)
 		goto fail_create;
 	pde->data = seq_show;
+/* FixMe: In 3.14 kernel write_proc support is removed
+*  from the proc_dir_entry structure.
+*/
+#if 0
 	pde->write_proc = write;
+#endif
 	return 0;
 
 fail_create:
@@ -99,6 +110,6 @@ __init int j1939_proc_module_init(void)
 void j1939_proc_module_exit(void)
 {
 	if (rootdir)
-		proc_net_remove(&init_net, j1939_procname);
+		remove_proc_entry(j1939_procname, init_net.proc_net);
 }
 

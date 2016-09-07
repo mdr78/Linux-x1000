@@ -31,12 +31,18 @@
 #include <linux/regulator/driver.h>
 #include <linux/regulator/of_regulator.h>
 
+#define LDO_RAMP_UP_UNIT_IN_CYCLES      64 /* 64 cycles per step */
+#define LDO_RAMP_UP_FREQ_IN_MHZ         24 /* cycle based on 24M OSC */
+
 struct anatop_regulator {
 	const char *name;
 	u32 control_reg;
 	struct regmap *anatop;
 	int vol_bit_shift;
 	int vol_bit_width;
+	u32 delay_reg;
+	int delay_bit_shift;
+	int delay_bit_width;
 	int min_bit_val;
 	int min_voltage;
 	int max_voltage;
@@ -55,6 +61,32 @@ static int anatop_regmap_set_voltage_sel(struct regulator_dev *reg,
 	return regulator_set_voltage_sel_regmap(reg, selector);
 }
 
+static int anatop_regmap_set_voltage_time_sel(struct regulator_dev *reg,
+	unsigned int old_sel,
+	unsigned int new_sel)
+{
+	struct anatop_regulator *anatop_reg = rdev_get_drvdata(reg);
+	u32 val;
+	int ret = 0;
+
+	/* check whether need to care about LDO ramp up speed */
+	if (anatop_reg->delay_bit_width && new_sel > old_sel) {
+		/*
+		 * the delay for LDO ramp up time is
+		 * based on the register setting, we need
+		 * to calculate how many steps LDO need to
+		 * ramp up, and how much delay needed. (us)
+		 */
+		regmap_read(anatop_reg->anatop, anatop_reg->delay_reg, &val);
+		val = (val >> anatop_reg->delay_bit_shift) &
+			((1 << anatop_reg->delay_bit_width) - 1);
+		ret = (new_sel - old_sel) * (LDO_RAMP_UP_UNIT_IN_CYCLES <<
+			val) / LDO_RAMP_UP_FREQ_IN_MHZ + 1;
+	}
+
+	return ret;
+}
+
 static int anatop_regmap_get_voltage_sel(struct regulator_dev *reg)
 {
 	struct anatop_regulator *anatop_reg = rdev_get_drvdata(reg);
@@ -67,6 +99,7 @@ static int anatop_regmap_get_voltage_sel(struct regulator_dev *reg)
 
 static struct regulator_ops anatop_rops = {
 	.set_voltage_sel = anatop_regmap_set_voltage_sel,
+	.set_voltage_time_sel = anatop_regmap_set_voltage_time_sel,
 	.get_voltage_sel = anatop_regmap_get_voltage_sel,
 	.list_voltage = regulator_list_voltage_linear,
 	.map_voltage = regulator_map_voltage_linear,
@@ -89,10 +122,8 @@ static int anatop_regulator_probe(struct platform_device *pdev)
 	if (!sreg)
 		return -ENOMEM;
 	sreg->initdata = initdata;
-	sreg->name = kstrdup(of_get_property(np, "regulator-name", NULL),
-			     GFP_KERNEL);
+	sreg->name = of_get_property(np, "regulator-name", NULL);
 	rdesc = &sreg->rdesc;
-	memset(rdesc, 0, sizeof(*rdesc));
 	rdesc->name = sreg->name;
 	rdesc->ops = &anatop_rops;
 	rdesc->type = REGULATOR_VOLTAGE;
@@ -110,38 +141,46 @@ static int anatop_regulator_probe(struct platform_device *pdev)
 				   &sreg->control_reg);
 	if (ret) {
 		dev_err(dev, "no anatop-reg-offset property set\n");
-		goto anatop_probe_end;
+		return ret;
 	}
 	ret = of_property_read_u32(np, "anatop-vol-bit-width",
 				   &sreg->vol_bit_width);
 	if (ret) {
 		dev_err(dev, "no anatop-vol-bit-width property set\n");
-		goto anatop_probe_end;
+		return ret;
 	}
 	ret = of_property_read_u32(np, "anatop-vol-bit-shift",
 				   &sreg->vol_bit_shift);
 	if (ret) {
 		dev_err(dev, "no anatop-vol-bit-shift property set\n");
-		goto anatop_probe_end;
+		return ret;
 	}
 	ret = of_property_read_u32(np, "anatop-min-bit-val",
 				   &sreg->min_bit_val);
 	if (ret) {
 		dev_err(dev, "no anatop-min-bit-val property set\n");
-		goto anatop_probe_end;
+		return ret;
 	}
 	ret = of_property_read_u32(np, "anatop-min-voltage",
 				   &sreg->min_voltage);
 	if (ret) {
 		dev_err(dev, "no anatop-min-voltage property set\n");
-		goto anatop_probe_end;
+		return ret;
 	}
 	ret = of_property_read_u32(np, "anatop-max-voltage",
 				   &sreg->max_voltage);
 	if (ret) {
 		dev_err(dev, "no anatop-max-voltage property set\n");
-		goto anatop_probe_end;
+		return ret;
 	}
+
+	/* read LDO ramp up setting, only for core reg */
+	of_property_read_u32(np, "anatop-delay-reg-offset",
+			     &sreg->delay_reg);
+	of_property_read_u32(np, "anatop-delay-bit-width",
+			     &sreg->delay_bit_width);
+	of_property_read_u32(np, "anatop-delay-bit-shift",
+			     &sreg->delay_bit_shift);
 
 	rdesc->n_voltages = (sreg->max_voltage - sreg->min_voltage) / 25000 + 1
 			    + sreg->min_bit_val;
@@ -159,31 +198,14 @@ static int anatop_regulator_probe(struct platform_device *pdev)
 	config.regmap = sreg->anatop;
 
 	/* register regulator */
-	rdev = regulator_register(rdesc, &config);
+	rdev = devm_regulator_register(dev, rdesc, &config);
 	if (IS_ERR(rdev)) {
 		dev_err(dev, "failed to register %s\n",
 			rdesc->name);
-		ret = PTR_ERR(rdev);
-		goto anatop_probe_end;
+		return PTR_ERR(rdev);
 	}
 
 	platform_set_drvdata(pdev, rdev);
-
-anatop_probe_end:
-	if (ret)
-		kfree(sreg->name);
-
-	return ret;
-}
-
-static int anatop_regulator_remove(struct platform_device *pdev)
-{
-	struct regulator_dev *rdev = platform_get_drvdata(pdev);
-	struct anatop_regulator *sreg = rdev_get_drvdata(rdev);
-	const char *name = sreg->name;
-
-	regulator_unregister(rdev);
-	kfree(name);
 
 	return 0;
 }
@@ -200,7 +222,6 @@ static struct platform_driver anatop_regulator_driver = {
 		.of_match_table = of_anatop_regulator_match_tbl,
 	},
 	.probe	= anatop_regulator_probe,
-	.remove	= anatop_regulator_remove,
 };
 
 static int __init anatop_regulator_init(void)
@@ -215,7 +236,8 @@ static void __exit anatop_regulator_exit(void)
 }
 module_exit(anatop_regulator_exit);
 
-MODULE_AUTHOR("Nancy Chen <Nancy.Chen@freescale.com>, "
-	      "Ying-Chun Liu (PaulLiu) <paul.liu@linaro.org>");
+MODULE_AUTHOR("Nancy Chen <Nancy.Chen@freescale.com>");
+MODULE_AUTHOR("Ying-Chun Liu (PaulLiu) <paul.liu@linaro.org>");
 MODULE_DESCRIPTION("ANATOP Regulator driver");
 MODULE_LICENSE("GPL v2");
+MODULE_ALIAS("platform:anatop_regulator");

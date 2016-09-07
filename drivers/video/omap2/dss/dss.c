@@ -67,7 +67,7 @@ static void dss_runtime_put(void);
 struct dss_features {
 	u8 fck_div_max;
 	u8 dss_fck_multiplier;
-	const char *clk_name;
+	const char *parent_clk_name;
 	int (*dpi_select_source)(enum omap_channel channel);
 };
 
@@ -75,13 +75,12 @@ static struct {
 	struct platform_device *pdev;
 	void __iomem    *base;
 
-	struct clk	*dpll4_m4_ck;
+	struct clk	*parent_clk;
 	struct clk	*dss_clk;
 	unsigned long	dss_clk_rate;
 
 	unsigned long	cache_req_pck;
 	unsigned long	cache_prate;
-	struct dss_clock_info cache_dss_cinfo;
 	struct dispc_clock_info cache_dispc_cinfo;
 
 	enum omap_dss_clk_source dsi_clk_source[MAX_NUM_DSI];
@@ -157,7 +156,8 @@ static void dss_restore_context(void)
 
 int dss_get_ctx_loss_count(void)
 {
-	struct omap_dss_board_info *board_data = dss.pdev->dev.platform_data;
+	struct platform_device *core_pdev = dss_get_core_pdev();
+	struct omap_dss_board_info *board_data = core_pdev->dev.platform_data;
 	int cnt;
 
 	if (!board_data->get_context_loss_count)
@@ -264,8 +264,6 @@ const char *dss_get_generic_clk_source_name(enum omap_dss_clk_source clk_src)
 
 void dss_dump_clocks(struct seq_file *s)
 {
-	unsigned long dpll4_ck_rate;
-	unsigned long dpll4_m4_ck_rate;
 	const char *fclk_name, *fclk_real_name;
 	unsigned long fclk_rate;
 
@@ -278,21 +276,9 @@ void dss_dump_clocks(struct seq_file *s)
 	fclk_real_name = dss_feat_get_clk_source_name(OMAP_DSS_CLK_SRC_FCK);
 	fclk_rate = clk_get_rate(dss.dss_clk);
 
-	if (dss.dpll4_m4_ck) {
-		dpll4_ck_rate = clk_get_rate(clk_get_parent(dss.dpll4_m4_ck));
-		dpll4_m4_ck_rate = clk_get_rate(dss.dpll4_m4_ck);
-
-		seq_printf(s, "dpll4_ck %lu\n", dpll4_ck_rate);
-
-		seq_printf(s, "%s (%s) = %lu / %lu * %d  = %lu\n",
-				fclk_name, fclk_real_name, dpll4_ck_rate,
-				dpll4_ck_rate / dpll4_m4_ck_rate,
-				dss.feat->dss_fck_multiplier, fclk_rate);
-	} else {
-		seq_printf(s, "%s (%s) = %lu\n",
-				fclk_name, fclk_real_name,
-				fclk_rate);
-	}
+	seq_printf(s, "%s (%s) = %lu\n",
+			fclk_name, fclk_real_name,
+			fclk_rate);
 
 	dss_runtime_put();
 }
@@ -450,61 +436,67 @@ enum omap_dss_clk_source dss_get_lcd_clk_source(enum omap_channel channel)
 	}
 }
 
-/* calculate clock rates using dividers in cinfo */
-int dss_calc_clock_rates(struct dss_clock_info *cinfo)
+bool dss_div_calc(unsigned long pck, unsigned long fck_min,
+		dss_div_calc_func func, void *data)
 {
-	if (dss.dpll4_m4_ck) {
-		unsigned long prate;
+	int fckd, fckd_start, fckd_stop;
+	unsigned long fck;
+	unsigned long fck_hw_max;
+	unsigned long fckd_hw_max;
+	unsigned long prate;
+	unsigned m;
 
-		if (cinfo->fck_div > dss.feat->fck_div_max ||
-				cinfo->fck_div == 0)
-			return -EINVAL;
+	fck_hw_max = dss_feat_get_param_max(FEAT_PARAM_DSS_FCK);
 
-		prate = clk_get_rate(clk_get_parent(dss.dpll4_m4_ck));
+	if (dss.parent_clk == NULL) {
+		unsigned pckd;
 
-		cinfo->fck = prate / cinfo->fck_div *
-			dss.feat->dss_fck_multiplier;
-	} else {
-		if (cinfo->fck_div != 0)
-			return -EINVAL;
-		cinfo->fck = clk_get_rate(dss.dss_clk);
+		pckd = fck_hw_max / pck;
+
+		fck = pck * pckd;
+
+		fck = clk_round_rate(dss.dss_clk, fck);
+
+		return func(fck, data);
 	}
 
-	return 0;
+	fckd_hw_max = dss.feat->fck_div_max;
+
+	m = dss.feat->dss_fck_multiplier;
+	prate = clk_get_rate(dss.parent_clk);
+
+	fck_min = fck_min ? fck_min : 1;
+
+	fckd_start = min(prate * m / fck_min, fckd_hw_max);
+	fckd_stop = max(DIV_ROUND_UP(prate * m, fck_hw_max), 1ul);
+
+	for (fckd = fckd_start; fckd >= fckd_stop; --fckd) {
+		fck = prate / fckd * m;
+
+		if (func(fck, data))
+			return true;
+	}
+
+	return false;
 }
 
-int dss_set_clock_div(struct dss_clock_info *cinfo)
+int dss_set_fck_rate(unsigned long rate)
 {
-	if (dss.dpll4_m4_ck) {
-		unsigned long prate;
-		int r;
+	int r;
 
-		prate = clk_get_rate(clk_get_parent(dss.dpll4_m4_ck));
-		DSSDBG("dpll4_m4 = %ld\n", prate);
+	DSSDBG("set fck to %lu\n", rate);
 
-		r = clk_set_rate(dss.dpll4_m4_ck, prate / cinfo->fck_div);
-		if (r)
-			return r;
-	} else {
-		if (cinfo->fck_div != 0)
-			return -EINVAL;
-	}
+	r = clk_set_rate(dss.dss_clk, rate);
+	if (r)
+		return r;
 
 	dss.dss_clk_rate = clk_get_rate(dss.dss_clk);
 
-	WARN_ONCE(dss.dss_clk_rate != cinfo->fck, "clk rate mismatch");
-
-	DSSDBG("fck = %ld (%d)\n", cinfo->fck, cinfo->fck_div);
+	WARN_ONCE(dss.dss_clk_rate != rate,
+			"clk rate mismatch: %lu != %lu", dss.dss_clk_rate,
+			rate);
 
 	return 0;
-}
-
-unsigned long dss_get_dpll4_rate(void)
-{
-	if (dss.dpll4_m4_ck)
-		return clk_get_rate(clk_get_parent(dss.dpll4_m4_ck));
-	else
-		return 0;
 }
 
 unsigned long dss_get_dispc_clk_rate(void)
@@ -515,144 +507,25 @@ unsigned long dss_get_dispc_clk_rate(void)
 static int dss_setup_default_clock(void)
 {
 	unsigned long max_dss_fck, prate;
+	unsigned long fck;
 	unsigned fck_div;
-	struct dss_clock_info dss_cinfo = { 0 };
 	int r;
 
-	if (dss.dpll4_m4_ck == NULL)
-		return 0;
-
 	max_dss_fck = dss_feat_get_param_max(FEAT_PARAM_DSS_FCK);
 
-	prate = dss_get_dpll4_rate();
-
-	fck_div = DIV_ROUND_UP(prate * dss.feat->dss_fck_multiplier,
-			max_dss_fck);
-
-	dss_cinfo.fck_div = fck_div;
-
-	r = dss_calc_clock_rates(&dss_cinfo);
-	if (r)
-		return r;
-
-	r = dss_set_clock_div(&dss_cinfo);
-	if (r)
-		return r;
-
-	return 0;
-}
-
-int dss_calc_clock_div(unsigned long req_pck, struct dss_clock_info *dss_cinfo,
-		struct dispc_clock_info *dispc_cinfo)
-{
-	unsigned long prate;
-	struct dss_clock_info best_dss;
-	struct dispc_clock_info best_dispc;
-
-	unsigned long fck, max_dss_fck;
-
-	u16 fck_div;
-
-	int match = 0;
-	int min_fck_per_pck;
-
-	prate = dss_get_dpll4_rate();
-
-	max_dss_fck = dss_feat_get_param_max(FEAT_PARAM_DSS_FCK);
-
-	fck = clk_get_rate(dss.dss_clk);
-	if (req_pck == dss.cache_req_pck && prate == dss.cache_prate &&
-		dss.cache_dss_cinfo.fck == fck) {
-		DSSDBG("dispc clock info found from cache.\n");
-		*dss_cinfo = dss.cache_dss_cinfo;
-		*dispc_cinfo = dss.cache_dispc_cinfo;
-		return 0;
-	}
-
-	min_fck_per_pck = CONFIG_OMAP2_DSS_MIN_FCK_PER_PCK;
-
-	if (min_fck_per_pck &&
-		req_pck * min_fck_per_pck > max_dss_fck) {
-		DSSERR("Requested pixel clock not possible with the current "
-				"OMAP2_DSS_MIN_FCK_PER_PCK setting. Turning "
-				"the constraint off.\n");
-		min_fck_per_pck = 0;
-	}
-
-retry:
-	memset(&best_dss, 0, sizeof(best_dss));
-	memset(&best_dispc, 0, sizeof(best_dispc));
-
-	if (dss.dpll4_m4_ck == NULL) {
-		struct dispc_clock_info cur_dispc;
-		/* XXX can we change the clock on omap2? */
-		fck = clk_get_rate(dss.dss_clk);
-		fck_div = 1;
-
-		dispc_find_clk_divs(req_pck, fck, &cur_dispc);
-		match = 1;
-
-		best_dss.fck = fck;
-		best_dss.fck_div = fck_div;
-
-		best_dispc = cur_dispc;
-
-		goto found;
+	if (dss.parent_clk == NULL) {
+		fck = clk_round_rate(dss.dss_clk, max_dss_fck);
 	} else {
-		for (fck_div = dss.feat->fck_div_max; fck_div > 0; --fck_div) {
-			struct dispc_clock_info cur_dispc;
+		prate = clk_get_rate(dss.parent_clk);
 
-			fck = prate / fck_div * dss.feat->dss_fck_multiplier;
-
-			if (fck > max_dss_fck)
-				continue;
-
-			if (min_fck_per_pck &&
-					fck < req_pck * min_fck_per_pck)
-				continue;
-
-			match = 1;
-
-			dispc_find_clk_divs(req_pck, fck, &cur_dispc);
-
-			if (abs(cur_dispc.pck - req_pck) <
-					abs(best_dispc.pck - req_pck)) {
-
-				best_dss.fck = fck;
-				best_dss.fck_div = fck_div;
-
-				best_dispc = cur_dispc;
-
-				if (cur_dispc.pck == req_pck)
-					goto found;
-			}
-		}
+		fck_div = DIV_ROUND_UP(prate * dss.feat->dss_fck_multiplier,
+				max_dss_fck);
+		fck = prate / fck_div * dss.feat->dss_fck_multiplier;
 	}
 
-found:
-	if (!match) {
-		if (min_fck_per_pck) {
-			DSSERR("Could not find suitable clock settings.\n"
-					"Turning FCK/PCK constraint off and"
-					"trying again.\n");
-			min_fck_per_pck = 0;
-			goto retry;
-		}
-
-		DSSERR("Could not find suitable clock settings.\n");
-
-		return -EINVAL;
-	}
-
-	if (dss_cinfo)
-		*dss_cinfo = best_dss;
-	if (dispc_cinfo)
-		*dispc_cinfo = best_dispc;
-
-	dss.cache_req_pck = req_pck;
-	dss.cache_prate = prate;
-	dss.cache_dss_cinfo = best_dss;
-	dss.cache_dispc_cinfo = best_dispc;
+	r = dss_set_fck_rate(fck);
+	if (r)
+		return r;
 
 	return 0;
 }
@@ -767,46 +640,34 @@ int dss_dpi_select_source(enum omap_channel channel)
 static int dss_get_clocks(void)
 {
 	struct clk *clk;
-	int r;
 
-	clk = clk_get(&dss.pdev->dev, "fck");
+	clk = devm_clk_get(&dss.pdev->dev, "fck");
 	if (IS_ERR(clk)) {
 		DSSERR("can't get clock fck\n");
-		r = PTR_ERR(clk);
-		goto err;
+		return PTR_ERR(clk);
 	}
 
 	dss.dss_clk = clk;
 
-	if (dss.feat->clk_name) {
-		clk = clk_get(NULL, dss.feat->clk_name);
+	if (dss.feat->parent_clk_name) {
+		clk = clk_get(NULL, dss.feat->parent_clk_name);
 		if (IS_ERR(clk)) {
-			DSSERR("Failed to get %s\n", dss.feat->clk_name);
-			r = PTR_ERR(clk);
-			goto err;
+			DSSERR("Failed to get %s\n", dss.feat->parent_clk_name);
+			return PTR_ERR(clk);
 		}
 	} else {
 		clk = NULL;
 	}
 
-	dss.dpll4_m4_ck = clk;
+	dss.parent_clk = clk;
 
 	return 0;
-
-err:
-	if (dss.dss_clk)
-		clk_put(dss.dss_clk);
-	if (dss.dpll4_m4_ck)
-		clk_put(dss.dpll4_m4_ck);
-
-	return r;
 }
 
 static void dss_put_clocks(void)
 {
-	if (dss.dpll4_m4_ck)
-		clk_put(dss.dpll4_m4_ck);
-	clk_put(dss.dss_clk);
+	if (dss.parent_clk)
+		clk_put(dss.parent_clk);
 }
 
 static int dss_runtime_get(void)
@@ -843,37 +704,41 @@ void dss_debug_dump_clocks(struct seq_file *s)
 #endif
 
 static const struct dss_features omap24xx_dss_feats __initconst = {
-	.fck_div_max		=	16,
+	/*
+	 * fck div max is really 16, but the divider range has gaps. The range
+	 * from 1 to 6 has no gaps, so let's use that as a max.
+	 */
+	.fck_div_max		=	6,
 	.dss_fck_multiplier	=	2,
-	.clk_name		=	NULL,
+	.parent_clk_name	=	"core_ck",
 	.dpi_select_source	=	&dss_dpi_select_source_omap2_omap3,
 };
 
 static const struct dss_features omap34xx_dss_feats __initconst = {
 	.fck_div_max		=	16,
 	.dss_fck_multiplier	=	2,
-	.clk_name		=	"dpll4_m4_ck",
+	.parent_clk_name	=	"dpll4_ck",
 	.dpi_select_source	=	&dss_dpi_select_source_omap2_omap3,
 };
 
 static const struct dss_features omap3630_dss_feats __initconst = {
 	.fck_div_max		=	32,
 	.dss_fck_multiplier	=	1,
-	.clk_name		=	"dpll4_m4_ck",
+	.parent_clk_name	=	"dpll4_ck",
 	.dpi_select_source	=	&dss_dpi_select_source_omap2_omap3,
 };
 
 static const struct dss_features omap44xx_dss_feats __initconst = {
 	.fck_div_max		=	32,
 	.dss_fck_multiplier	=	1,
-	.clk_name		=	"dpll_per_m5x2_ck",
+	.parent_clk_name	=	"dpll_per_x2_ck",
 	.dpi_select_source	=	&dss_dpi_select_source_omap4,
 };
 
 static const struct dss_features omap54xx_dss_feats __initconst = {
 	.fck_div_max		=	64,
 	.dss_fck_multiplier	=	1,
-	.clk_name		=	"dpll_per_h12x2_ck",
+	.parent_clk_name	=	"dpll_per_x2_ck",
 	.dpi_select_source	=	&dss_dpi_select_source_omap5,
 };
 

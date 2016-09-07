@@ -9,8 +9,7 @@
 #ifndef __LINUX_PLATFORM_DATA_AD7298_H__
 #define __LINUX_PLATFORM_DATA_AD7298_H__
 
-#define AD7298_MAX_CHAN		8
-
+#define AD7298_MAX_CHAN			8
 /**
  * struct ad7298_platform_data - Platform data for the ad7298 ADC driver
  * @ext_ref: Whether to use an external reference voltage.
@@ -19,7 +18,7 @@
  **/
 struct ad7298_platform_data {
 	bool ext_ref;
-	u16  ext_vin_max[AD7298_MAX_CHAN];
+	u16 ext_vin_max[AD7298_MAX_CHAN];
 };
 
 #endif /* IIO_ADC_AD7298_H_ */

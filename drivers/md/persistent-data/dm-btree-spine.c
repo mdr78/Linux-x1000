@@ -92,7 +92,7 @@ struct dm_block_validator btree_node_validator = {
 
 /*----------------------------------------------------------------*/
 
-static int bn_read_lock(struct dm_btree_info *info, dm_block_t b,
+int bn_read_lock(struct dm_btree_info *info, dm_block_t b,
 		 struct dm_block **result)
 {
 	return dm_tm_read_lock(info->tm, b, &btree_node_validator, result);
@@ -162,6 +162,13 @@ int ro_step(struct ro_spine *s, dm_block_t new_child)
 		s->count++;
 
 	return r;
+}
+
+void ro_pop(struct ro_spine *s)
+{
+	BUG_ON(!s->count);
+	--s->count;
+	unlock_block(s->info, s->nodes[s->count]);
 }
 
 struct btree_node *ro_node(struct ro_spine *s)

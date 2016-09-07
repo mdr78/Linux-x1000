@@ -1,4 +1,4 @@
-/*
+ /*
  * GPIO interface for Intel Poulsbo SCH
  *
  *  Copyright (c) 2010 CompuLab Ltd
@@ -27,49 +27,30 @@
 #include <linux/acpi.h>
 #include <linux/platform_device.h>
 #include <linux/pci_ids.h>
-#include <linux/uio_driver.h>
-
-#include <linux/gpio.h>
 #include <linux/interrupt.h>
 #include <linux/irq.h>
-#include <linux/bitmap.h>
-#include <linux/types.h>
 
-static DEFINE_SPINLOCK(gpio_lock);
+#include <linux/gpio.h>
+#ifdef CONFIG_INTEL_QRK_GPIO_UIO
+#include <linux/uio_driver.h>
+#endif
 
-#define CGEN	(0x00)
-#define CGIO	(0x04)
-#define CGLV	(0x08)
+#define GEN	0x00
+#define GIO	0x04
+#define GLV	0x08
+#define GTPE	0x0C
+#define GTNE	0x10
+#define GGPE	0x14
+#define GSMI	0x18
+#define GTS	0x1C
+#define RGTS	0x3C
+#define CGNMIEN	0x40
+#define RGNMIEN	0x44
 
-#define CGTPE	(0x0C)
-#define CGTNE	(0x10)
-#define CGGPE	(0x14)
-#define CGSMI	(0x18)
-#define CGTS	(0x1C)
+#define RESUME_WELL_OFFSET	0x20
 
-#define RGEN	(0x20)
-#define RGIO	(0x24)
-#define RGLV	(0x28)
-
-#define RGTPE   (0x2C)
-#define RGTNE   (0x30)
-#define RGGPE   (0x34)
-#define RGSMI   (0x38)
-#define RGTS    (0x3C)
-
-#define CGNMIEN (0x40)
-#define RGNMIEN (0x44)
-
-#define RESOURCE_IRQ	9
-
-/* Maximum number of resume GPIOS supported by this driver */
-#define MAX_GPIO_IRQS	9
-
-static unsigned long gpio_ba;
-
-static struct uio_info *info;
-
-static int irq_num;
+/* Maximum number of GPIOs supported by this driver */
+#define MAX_GPIO	64
 
 /* Cache register context */
 struct sch_gpio_context {
@@ -79,532 +60,355 @@ struct sch_gpio_context {
 	u32 cglvl;
 	u32 cgsmi;
 	u32 cgnmien;
-	/* Core well interrupt trigger enable */
-	u32 cgtpe;
-	u32 cgtne;
-	/* Resume well interrupt trigger enable */
-	u32 rgtpe;
-	u32 rgtne;
+	/* cache irq trigger setup */
+	DECLARE_BITMAP(gtpe_irqs, MAX_GPIO);
+	DECLARE_BITMAP(gtne_irqs, MAX_GPIO);
+};
+
+static void gpio_restrict_release(struct device *dev) {}
+static struct platform_device gpio_restrict_pdev = {
+	.name	= "gpio-restrict-nc",
+	.dev.release = gpio_restrict_release,
 };
 
 struct sch_gpio {
-	int irq_base_core;
+	struct gpio_chip chip;
 	struct sch_gpio_context context;
-	int irq_base_resume;
-	DECLARE_BITMAP(wake_irqs, MAX_GPIO_IRQS);
+	spinlock_t lock;
+	unsigned short iobase;
+	unsigned short core_base;
+	unsigned short resume_base;
+	int irq;
+	int irq_base;
+	bool irq_support;
+	DECLARE_BITMAP(wake_irqs, MAX_GPIO);
+#ifdef CONFIG_INTEL_QRK_GPIO_UIO
+	struct uio_info info;
+#endif
 };
 
-static struct sch_gpio *chip_ptr;
+#define to_sch_gpio(gc)		container_of(gc, struct sch_gpio, chip)
+#define irq_to_gpio_number()	(d->irq - sch->irq_base)
 
-static void qrk_gpio_restrict_release(struct device *dev) {}
-static struct platform_device qrk_gpio_restrict_pdev = {
-	.name	= "qrk-gpio-restrict-nc",
-	.dev.release = qrk_gpio_restrict_release,
-};
-
-static void sch_gpio_reg_clear_if_set(unsigned short reg,
-					unsigned short gpio_num)
+static unsigned sch_gpio_offset(struct sch_gpio *sch, unsigned gpio,
+				unsigned reg)
 {
-	u8 curr_dirs;
-	unsigned short offset, bit;
+	unsigned base = 0;
 
-	offset = reg + gpio_num / 8;
-	bit = gpio_num % 8;
+	if (gpio >= sch->resume_base) {
+		gpio -= sch->resume_base;
+		base += RESUME_WELL_OFFSET;
+	}
 
-	curr_dirs = inb(gpio_ba + offset);
-
-	if (curr_dirs & (1 << bit))
-		outb(curr_dirs & ~(1 << bit), gpio_ba + offset);
+	return base + reg + gpio / 8;
 }
 
-static void sch_gpio_reg_set_if_clear(unsigned short reg,
-					unsigned short gpio_num)
+static unsigned sch_gpio_bit(struct sch_gpio *sch, unsigned gpio)
 {
-	u8 curr_dirs;
-	unsigned short offset, bit;
+	if (gpio >= sch->resume_base)
+		gpio -= sch->resume_base;
 
-	offset = reg + gpio_num / 8;
-	bit = gpio_num % 8;
-
-	curr_dirs = inb(gpio_ba + offset);
-
-	if (!(curr_dirs & (1 << bit)))
-		outb(curr_dirs | (1 << bit), gpio_ba + offset);
+	return gpio % 8;
 }
 
-static void sch_gpio_reg_set(unsigned short reg, unsigned short gpio_num,
-				int val)
+static int sch_gpio_reg_get(struct gpio_chip *gc, unsigned gpio, unsigned reg)
 {
-	u8 curr_dirs;
+	struct sch_gpio *sch = to_sch_gpio(gc);
 	unsigned short offset, bit;
+	u8 reg_val;
 
-	offset = reg + gpio_num / 8;
-	bit = gpio_num % 8;
+	offset = sch_gpio_offset(sch, gpio, reg);
+	bit = sch_gpio_bit(sch, gpio);
 
-	curr_dirs = inb(gpio_ba + offset);
+	reg_val = !!(inb(sch->iobase + offset) & BIT(bit));
+
+	return reg_val;
+}
+
+static void sch_gpio_reg_set(struct gpio_chip *gc, unsigned gpio, unsigned reg,
+			     int val)
+{
+	struct sch_gpio *sch = to_sch_gpio(gc);
+	unsigned short offset, bit;
+	u8 reg_val;
+
+	offset = sch_gpio_offset(sch, gpio, reg);
+	bit = sch_gpio_bit(sch, gpio);
+
+	reg_val = inb(sch->iobase + offset);
 
 	if (val)
-		outb(curr_dirs | (1 << bit), gpio_ba + offset);
+		outb(reg_val | BIT(bit), sch->iobase + offset);
 	else
-		outb(curr_dirs & ~(1 << bit), gpio_ba + offset);
+		outb((reg_val & ~BIT(bit)), sch->iobase + offset);
 }
 
-static unsigned short sch_gpio_reg_get(unsigned short reg,
-					unsigned short gpio_num)
+static int sch_gpio_direction_in(struct gpio_chip *gc, unsigned gpio_num)
 {
-	u8 curr_dirs;
-	unsigned short offset, bit;
+	struct sch_gpio *sch = to_sch_gpio(gc);
+	unsigned long flags;
 
-	offset = reg + gpio_num / 8;
-	bit = gpio_num % 8;
-
-	curr_dirs = !!(inb(gpio_ba + offset) & (1 << bit));
-
-	return curr_dirs;
-}
-
-static int sch_gpio_core_direction_in(struct gpio_chip *gc, unsigned  gpio_num)
-{
-	unsigned long flags = 0;
-	spin_lock_irqsave(&gpio_lock, flags);
-	sch_gpio_reg_set_if_clear(CGIO, gpio_num);
-	spin_unlock_irqrestore(&gpio_lock, flags);
+	spin_lock_irqsave(&sch->lock, flags);
+	sch_gpio_reg_set(gc, gpio_num, GIO, 1);
+	spin_unlock_irqrestore(&sch->lock, flags);
 
 	return 0;
 }
 
-static int sch_gpio_core_get(struct gpio_chip *gc, unsigned gpio_num)
+static int sch_gpio_get(struct gpio_chip *gc, unsigned gpio_num)
 {
-	int res;
-	res = sch_gpio_reg_get(CGLV, gpio_num);
-
-	return res;
+	return sch_gpio_reg_get(gc, gpio_num, GLV);
 }
 
-static void sch_gpio_core_set(struct gpio_chip *gc, unsigned gpio_num, int val)
+static void sch_gpio_set(struct gpio_chip *gc, unsigned gpio_num, int val)
 {
-	unsigned long flags = 0;
-	spin_lock_irqsave(&gpio_lock, flags);
-	sch_gpio_reg_set(CGLV, gpio_num, val);
-	spin_unlock_irqrestore(&gpio_lock, flags);
+	struct sch_gpio *sch = to_sch_gpio(gc);
+	unsigned long flags;
 
+	spin_lock_irqsave(&sch->lock, flags);
+	sch_gpio_reg_set(gc, gpio_num, GLV, val);
+	spin_unlock_irqrestore(&sch->lock, flags);
 }
 
-static int sch_gpio_core_direction_out(struct gpio_chip *gc,
-					unsigned gpio_num, int val)
+static int sch_gpio_direction_out(struct gpio_chip *gc, unsigned gpio_num,
+				  int val)
 {
-	unsigned long flags = 0;
-	spin_lock_irqsave(&gpio_lock, flags);
-	sch_gpio_reg_clear_if_set(CGIO, gpio_num);
-	spin_unlock_irqrestore(&gpio_lock, flags);
+	struct sch_gpio *sch = to_sch_gpio(gc);
+	unsigned long flags;
+
+	spin_lock_irqsave(&sch->lock, flags);
+	sch_gpio_reg_set(gc, gpio_num, GIO, 0);
+	spin_unlock_irqrestore(&sch->lock, flags);
+
+	/*
+	 * according to the datasheet, writing to the level register has no
+	 * effect when GPIO is programmed as input.
+	 * Actually the the level register is read-only when configured as an
+	 * input.
+	 * Thus presetting the output level before switching to output is _NOT_
+	 * possible.
+	 * Hence we set the level after configuring the GPIO as output.
+	 * But we cannot prevent a short low pulse if direction is set to high
+	 * and an external pull-up is connected.
+	 */
+	sch_gpio_set(gc, gpio_num, val);
 
 	return 0;
 }
 
-static int sch_gpio_core_to_irq(struct gpio_chip *gc, unsigned offset)
+static int sch_gpio_to_irq(struct gpio_chip *gc, unsigned offset)
 {
-	return chip_ptr->irq_base_core + offset;
+	struct sch_gpio *sch = to_sch_gpio(gc);
+
+	return sch->irq_base + offset;
 }
 
-static struct gpio_chip sch_gpio_core = {
-	.label			= "sch_gpio_core",
+static struct gpio_chip sch_gpio_chip = {
+	.label			= "sch_gpio",
 	.owner			= THIS_MODULE,
-	.direction_input	= sch_gpio_core_direction_in,
-	.get			= sch_gpio_core_get,
-	.direction_output	= sch_gpio_core_direction_out,
-	.set			= sch_gpio_core_set,
-	.to_irq			= sch_gpio_core_to_irq,
+	.direction_input	= sch_gpio_direction_in,
+	.get			= sch_gpio_get,
+	.direction_output	= sch_gpio_direction_out,
+	.set			= sch_gpio_set,
+	.to_irq			= sch_gpio_to_irq,
 };
 
-static void sch_gpio_core_irq_enable(struct irq_data *d)
+static void sch_gpio_irq_enable(struct irq_data *d)
 {
-	unsigned long flags = 0;
-	u32 gpio_num = d->irq - chip_ptr->irq_base_core;
-	struct sch_gpio_context *regs = &chip_ptr->context;
+	struct sch_gpio *sch = irq_data_get_irq_chip_data(d);
+	struct sch_gpio_context *regs = &sch->context;
+	u32 gpio_num;
+	unsigned long flags;
 
-	spin_lock_irqsave(&gpio_lock, flags);
+	gpio_num = irq_to_gpio_number();
 
-	if (regs->cgtpe & BIT(gpio_num))
-		sch_gpio_reg_set_if_clear(CGTPE, gpio_num);
-	if (regs->cgtne & BIT(gpio_num))
-		sch_gpio_reg_set_if_clear(CGTNE, gpio_num);
-	sch_gpio_reg_set_if_clear(CGGPE, gpio_num);
+	spin_lock_irqsave(&sch->lock, flags);
 
-	spin_unlock_irqrestore(&gpio_lock, flags);
+	if (test_bit(gpio_num, regs->gtpe_irqs))
+		sch_gpio_reg_set(&sch->chip, gpio_num, GTPE, 1);
+	if (test_bit(gpio_num, regs->gtne_irqs))
+		sch_gpio_reg_set(&sch->chip, gpio_num, GTNE, 1);
+	sch_gpio_reg_set(&sch->chip, gpio_num, GGPE, 1);
+
+	spin_unlock_irqrestore(&sch->lock, flags);
 }
 
-static void sch_gpio_core_irq_disable(struct irq_data *d)
+static void sch_gpio_irq_disable(struct irq_data *d)
 {
-	unsigned long flags = 0;
-	u32 gpio_num = 0;
+	struct sch_gpio *sch = irq_data_get_irq_chip_data(d);
+	u32 gpio_num;
+	unsigned long flags;
 
-	gpio_num = d->irq - chip_ptr->irq_base_core;
+	gpio_num = irq_to_gpio_number();
 
-	spin_lock_irqsave(&gpio_lock, flags);
-	sch_gpio_reg_clear_if_set(CGGPE, gpio_num);
-	sch_gpio_reg_clear_if_set(CGTPE, gpio_num);
-	sch_gpio_reg_clear_if_set(CGTNE, gpio_num);
-	outb(BIT(gpio_num), gpio_ba + CGTS);
-	spin_unlock_irqrestore(&gpio_lock, flags);
-}
-
-static void sch_gpio_core_irq_ack(struct irq_data *d)
-{
-	u32 gpio_num = 0;
-
-	gpio_num = d->irq - chip_ptr->irq_base_core;
-	outb(BIT(gpio_num), gpio_ba + CGTS);
-}
-
-static int sch_gpio_core_irq_type(struct irq_data *d, unsigned type)
-{
-	int ret = 0;
-	unsigned long flags = 0;
-	u32 gpio_num = 0;
-	struct sch_gpio_context *regs = &chip_ptr->context;
-
-	if (NULL == d) {
-		pr_err("%s(): null irq_data\n",  __func__);
-		return -EFAULT;
+	if (!test_bit(gpio_num, sch->wake_irqs)) {
+		spin_lock_irqsave(&sch->lock, flags);
+		sch_gpio_reg_set(&sch->chip, gpio_num, GGPE, 0);
+		sch_gpio_reg_set(&sch->chip, gpio_num, GTPE, 0);
+		sch_gpio_reg_set(&sch->chip, gpio_num, GTNE, 0);
+		sch_gpio_reg_set(&sch->chip, gpio_num, GTS, 1);
+		spin_unlock_irqrestore(&sch->lock, flags);
 	}
+}
 
-	gpio_num = d->irq - chip_ptr->irq_base_core;
+static void sch_gpio_irq_ack(struct irq_data *d)
+{
+	struct sch_gpio *sch = irq_data_get_irq_chip_data(d);
+	u32 gpio_num;
 
-	spin_lock_irqsave(&gpio_lock, flags);
+	gpio_num = irq_to_gpio_number();
+	sch_gpio_reg_set(&(sch->chip), gpio_num, GTS, 1);
+}
+
+static int sch_gpio_irq_type(struct irq_data *d, unsigned type)
+{
+	struct sch_gpio *sch = irq_data_get_irq_chip_data(d);
+	struct sch_gpio_context *regs = &sch->context;
+	unsigned long flags;
+	u32 gpio_num;
+
+	gpio_num = irq_to_gpio_number();
+
+	spin_lock_irqsave(&sch->lock, flags);
 
 	switch (type) {
 	case IRQ_TYPE_EDGE_RISING:
-		sch_gpio_reg_clear_if_set(CGTNE, gpio_num);
-		sch_gpio_reg_set_if_clear(CGTPE, gpio_num);
-		break;
-	case IRQ_TYPE_EDGE_FALLING:
-		sch_gpio_reg_clear_if_set(CGTPE, gpio_num);
-		sch_gpio_reg_set_if_clear(CGTNE, gpio_num);
-		break;
-	case IRQ_TYPE_EDGE_BOTH:
-		sch_gpio_reg_set_if_clear(CGTPE, gpio_num);
-		sch_gpio_reg_set_if_clear(CGTNE, gpio_num);
-		break;
-	case IRQ_TYPE_NONE:
-		sch_gpio_reg_clear_if_set(CGTPE, gpio_num);
-		sch_gpio_reg_clear_if_set(CGTNE, gpio_num);
-		break;
-	default:
-		ret = -EINVAL;
-	break;
-	}
-
-	if (0 == ret) {
+		sch_gpio_reg_set(&sch->chip, gpio_num, GTPE, 1);
+		sch_gpio_reg_set(&sch->chip, gpio_num, GTNE, 0);
 		/* cache trigger setup */
-		regs->cgtpe &= ~BIT(gpio_num);
-		regs->cgtne &= ~BIT(gpio_num);
-		regs->cgtpe |= inl(gpio_ba + CGTPE) & BIT(gpio_num);
-		regs->cgtne |= inl(gpio_ba + CGTNE) & BIT(gpio_num);
-	}
-
-	spin_unlock_irqrestore(&gpio_lock, flags);
-
-	return ret;
-}
-
-static struct irq_chip sch_irq_core = {
-	.irq_ack		= sch_gpio_core_irq_ack,
-	.irq_set_type		= sch_gpio_core_irq_type,
-	.irq_enable		= sch_gpio_core_irq_enable,
-	.irq_disable		= sch_gpio_core_irq_disable,
-};
-
-static void sch_gpio_core_irqs_init(struct sch_gpio *chip, unsigned int num)
-{
-	int i;
-
-	for (i = 0; i < num; i++) {
-		irq_set_chip_data(i + chip->irq_base_core, chip);
-		irq_set_chip_and_handler_name(i + chip->irq_base_core,
-						&sch_irq_core,
-						handle_edge_irq,
-						"sch_gpio_irq_core");
-	}
-}
-
-static void sch_gpio_core_irqs_deinit(struct sch_gpio *chip, unsigned int num)
-{
-	int i;
-
-	for (i = 0; i < num; i++) {
-		irq_set_chip_data(i + chip->irq_base_core, 0);
-		irq_set_chip_and_handler_name(i + chip->irq_base_core,
-						0, 0, 0);
-	}
-}
-
-static void sch_gpio_core_irq_disable_all(struct sch_gpio *chip,
-						unsigned int num)
-{
-	unsigned long flags = 0;
-	u32 gpio_num = 0;
-
-	spin_lock_irqsave(&gpio_lock, flags);
-
-	for (gpio_num = 0; gpio_num < num; gpio_num++) {
-		sch_gpio_reg_clear_if_set(CGTPE, gpio_num);
-		sch_gpio_reg_clear_if_set(CGTNE, gpio_num);
-		sch_gpio_reg_clear_if_set(CGGPE, gpio_num);
-		sch_gpio_reg_clear_if_set(CGSMI, gpio_num);
-		sch_gpio_reg_clear_if_set(CGNMIEN, gpio_num);
-		/* clear any pending interrupt */
-		sch_gpio_reg_set(CGTS, gpio_num, 1);
-	}
-
-	spin_unlock_irqrestore(&gpio_lock, flags);
-
-}
-
-static int sch_gpio_resume_direction_in(struct gpio_chip *gc,
-					unsigned gpio_num)
-{
-	unsigned long flags = 0;
-	spin_lock_irqsave(&gpio_lock, flags);
-	sch_gpio_reg_set_if_clear(RGIO, gpio_num);
-	spin_unlock_irqrestore(&gpio_lock, flags);
-	return 0;
-}
-
-static int sch_gpio_resume_get(struct gpio_chip *gc, unsigned gpio_num)
-{
-	int res;
-	res = sch_gpio_reg_get(RGLV, gpio_num);
-	return res;
-}
-
-static void sch_gpio_resume_set(struct gpio_chip *gc, unsigned gpio_num,
-					int val)
-{
-	unsigned long flags = 0;
-	spin_lock_irqsave(&gpio_lock, flags);
-	sch_gpio_reg_set(RGLV, gpio_num, val);
-	spin_unlock_irqrestore(&gpio_lock, flags);
-
-}
-
-static int sch_gpio_resume_direction_out(struct gpio_chip *gc,
-					unsigned gpio_num, int val)
-{
-	unsigned long flags = 0;
-	spin_lock_irqsave(&gpio_lock, flags);
-	sch_gpio_reg_clear_if_set(RGIO, gpio_num);
-	spin_unlock_irqrestore(&gpio_lock, flags);
-	return 0;
-}
-
-static int sch_gpio_resume_to_irq(struct gpio_chip *gc, unsigned offset)
-{
-	return chip_ptr->irq_base_resume + offset;
-}
-
-static struct gpio_chip sch_gpio_resume = {
-	.label			= "sch_gpio_resume",
-	.owner			= THIS_MODULE,
-	.direction_input	= sch_gpio_resume_direction_in,
-	.get			= sch_gpio_resume_get,
-	.direction_output	= sch_gpio_resume_direction_out,
-	.set			= sch_gpio_resume_set,
-	.to_irq			= sch_gpio_resume_to_irq,
-};
-
-static void sch_gpio_resume_irq_enable(struct irq_data *d)
-{
-	unsigned long flags = 0;
-	u32 gpio_num = d->irq - chip_ptr->irq_base_resume;
-	struct sch_gpio_context *regs = &chip_ptr->context;
-
-	spin_lock_irqsave(&gpio_lock, flags);
-
-	if (regs->rgtpe & BIT(gpio_num))
-		sch_gpio_reg_set_if_clear(RGTPE, gpio_num);
-	if (regs->rgtne & BIT(gpio_num))
-		sch_gpio_reg_set_if_clear(RGTNE, gpio_num);
-	sch_gpio_reg_set_if_clear(RGGPE, gpio_num);
-
-	spin_unlock_irqrestore(&gpio_lock, flags);
-}
-
-static void sch_gpio_resume_irq_disable(struct irq_data *d)
-{
-	unsigned long flags = 0;
-	u32 gpio_num = 0;
-
-	gpio_num = d->irq - chip_ptr->irq_base_resume;
-
-	if (!test_bit(gpio_num, chip_ptr->wake_irqs)){
-		spin_lock_irqsave(&gpio_lock, flags);
-		sch_gpio_reg_clear_if_set(RGGPE, gpio_num);
-		sch_gpio_reg_clear_if_set(RGTPE, gpio_num);
-		sch_gpio_reg_clear_if_set(RGTNE, gpio_num);
-		outb(BIT(gpio_num), gpio_ba + RGTS);
-		spin_unlock_irqrestore(&gpio_lock, flags);
-	}
-}
-
-static void sch_gpio_resume_irq_ack(struct irq_data *d)
-{
-	u32 gpio_num = 0;
-
-	gpio_num = d->irq - chip_ptr->irq_base_resume;
-	outb(BIT(gpio_num), gpio_ba + RGTS);
-}
-
-static int sch_gpio_resume_irq_type(struct irq_data *d, unsigned type)
-{
-	int ret = 0;
-	unsigned long flags = 0;
-	u32 gpio_num = 0;
-	struct sch_gpio_context *regs = &chip_ptr->context;
-
-	if (NULL == d) {
-		pr_err("%s(): null irq_data\n",  __func__);
-		return -EFAULT;
-	}
-
-	gpio_num = d->irq - chip_ptr->irq_base_resume;
-
-	spin_lock_irqsave(&gpio_lock, flags);
-
-	switch (type) {
-	case IRQ_TYPE_EDGE_RISING:
-		sch_gpio_reg_clear_if_set(RGTNE, gpio_num);
-		sch_gpio_reg_set_if_clear(RGTPE, gpio_num);
+		set_bit(gpio_num, regs->gtpe_irqs);
+		clear_bit(gpio_num, regs->gtne_irqs);
 		break;
+
 	case IRQ_TYPE_EDGE_FALLING:
-		sch_gpio_reg_clear_if_set(RGTPE, gpio_num);
-		sch_gpio_reg_set_if_clear(RGTNE, gpio_num);
-		break;
-	case IRQ_TYPE_EDGE_BOTH:
-		sch_gpio_reg_set_if_clear(RGTPE, gpio_num);
-		sch_gpio_reg_set_if_clear(RGTNE, gpio_num);
-		break;
-	case IRQ_TYPE_NONE:
-		sch_gpio_reg_clear_if_set(RGTPE, gpio_num);
-		sch_gpio_reg_clear_if_set(RGTNE, gpio_num);
-		break;
-	default:
-		ret = -EINVAL;
-		break;
-	}
-
-	if (0 == ret) {
+		sch_gpio_reg_set(&sch->chip, gpio_num, GTNE, 1);
+		sch_gpio_reg_set(&sch->chip, gpio_num, GTPE, 0);
 		/* cache trigger setup */
-		regs->rgtpe &= ~BIT(gpio_num);
-		regs->rgtne &= ~BIT(gpio_num);
-		regs->rgtpe |= inl(gpio_ba + RGTPE) & BIT(gpio_num);
-		regs->rgtne |= inl(gpio_ba + RGTNE) & BIT(gpio_num);
+		set_bit(gpio_num, regs->gtne_irqs);
+		clear_bit(gpio_num, regs->gtpe_irqs);
+		break;
+
+	case IRQ_TYPE_EDGE_BOTH:
+		sch_gpio_reg_set(&sch->chip, gpio_num, GTPE, 1);
+		sch_gpio_reg_set(&sch->chip, gpio_num, GTNE, 1);
+		/* cache trigger setup */
+		set_bit(gpio_num, regs->gtpe_irqs);
+		set_bit(gpio_num, regs->gtne_irqs);
+		break;
+
+	case IRQ_TYPE_NONE:
+		sch_gpio_reg_set(&sch->chip, gpio_num, GTPE, 0);
+		sch_gpio_reg_set(&sch->chip, gpio_num, GTNE, 0);
+		/* cache trigger setup */
+		clear_bit(gpio_num, regs->gtpe_irqs);
+		clear_bit(gpio_num, regs->gtne_irqs);
+		break;
+
+	default:
+		spin_unlock_irqrestore(&sch->lock, flags);
+		return -EINVAL;
 	}
 
-	spin_unlock_irqrestore(&gpio_lock, flags);
+	spin_unlock_irqrestore(&sch->lock, flags);
 
-	return ret;
+	return 0;
 }
 
 /*
  * Enables/Disables power-management wake-on of an IRQ.
  * Inhibits disabling of the specified IRQ if on != 0.
- * Make sure you call it via irq_set_irq_wake() with on = 1 during suspend and
- * with on = 0 during resume.
+ * Make sure you call it via irq_set_irq_wake() with on = 1 during suspend
+ * and with on = 0 during resume.
  * Returns 0 if success, negative error code otherwhise
  */
 int sch_gpio_resume_irq_set_wake(struct irq_data *d, unsigned int on)
 {
+	struct sch_gpio *sch = NULL;
 	u32 gpio_num = 0;
 	int ret = 0;
 
 	if (NULL == d) {
-		pr_err("%s(): Null irq_data\n", __func__);
+		pr_err("%s: null irq_data\n", __func__);
 		ret = -EFAULT;
 		goto end;
 	}
-	gpio_num = d->irq - chip_ptr->irq_base_resume;
-	if (gpio_num >= MAX_GPIO_IRQS) {
-		pr_err("%s(): gpio_num bigger(%d) than MAX_GPIO_IRQS(%d)-1\n",
-				__func__, gpio_num, MAX_GPIO_IRQS);
+
+	sch = irq_data_get_irq_chip_data(d);
+	gpio_num = irq_to_gpio_number();
+	/* This function is only relavent on resume well GPIO */
+	if (gpio_num < sch->resume_base) {
+		dev_err(sch->chip.dev,
+				"unable to change wakeup on core well GPIO%d\n",
+				gpio_num);
 		ret = -EINVAL;
 		goto end;
 	}
+
 	if (on)
-		set_bit(gpio_num, chip_ptr->wake_irqs);
+		set_bit(gpio_num, sch->wake_irqs);
 	else
-		clear_bit(gpio_num, chip_ptr->wake_irqs);
+		clear_bit(gpio_num, sch->wake_irqs);
 
 end:
 	return ret;
 }
 
-static struct irq_chip sch_irq_resume = {
-	.irq_ack		= sch_gpio_resume_irq_ack,
-	.irq_set_type		= sch_gpio_resume_irq_type,
-	.irq_enable		= sch_gpio_resume_irq_enable,
-	.irq_disable		= sch_gpio_resume_irq_disable,
-	.irq_set_wake		= sch_gpio_resume_irq_set_wake,
+static struct irq_chip sch_irq_chip = {
+	.irq_enable	= sch_gpio_irq_enable,
+	.irq_disable	= sch_gpio_irq_disable,
+	.irq_ack	= sch_gpio_irq_ack,
+	.irq_set_type	= sch_gpio_irq_type,
+	.irq_set_wake	= sch_gpio_resume_irq_set_wake,
 };
 
-static void sch_gpio_resume_irqs_init(struct sch_gpio *chip, unsigned int num)
+static void sch_gpio_irqs_init(struct sch_gpio *sch)
 {
-	int i;
+	unsigned int i;
 
-	for (i = 0; i < num; i++) {
-		irq_set_chip_data(i + chip->irq_base_resume, chip);
-		irq_set_chip_and_handler_name(i + chip->irq_base_resume,
-						&sch_irq_resume,
-						handle_edge_irq,
-						"sch_gpio_irq_resume");
+	for (i = 0; i < sch->chip.ngpio; i++) {
+		irq_set_chip_data(i + sch->irq_base, sch);
+		irq_set_chip_and_handler_name(i + sch->irq_base, &sch_irq_chip,
+					handle_edge_irq, "sch_gpio_irq_chip");
 	}
 }
 
-static void sch_gpio_resume_irqs_deinit(struct sch_gpio *chip, unsigned int num)
+static void sch_gpio_irq_disable_all(struct sch_gpio *sch)
 {
-	int i;
+	/* Disable core well interrupts */
+	outl(0x00, sch->iobase + GTPE);
+	outl(0x00, sch->iobase + GTNE);
+	outl(0x00, sch->iobase + GGPE);
+	outl(0x00, sch->iobase + GSMI);
+	outl(0x00, sch->iobase + CGNMIEN);
 
-	for (i = 0; i < num; i++) {
-		irq_set_chip_data(i + chip->irq_base_core, 0);
-		irq_set_chip_and_handler_name(i + chip->irq_base_core,
-						0, 0, 0);
-	}
-}
+	/* Disable resume well interrupts */
+	outl(0x00, sch->iobase + GTPE + RESUME_WELL_OFFSET);
+	outl(0x00, sch->iobase + GTNE + RESUME_WELL_OFFSET);
+	outl(0x00, sch->iobase + GGPE + RESUME_WELL_OFFSET);
+	outl(0x00, sch->iobase + GSMI + RESUME_WELL_OFFSET);
+	outl(0x00, sch->iobase + RGNMIEN);
 
-static void sch_gpio_resume_irq_disable_all(struct sch_gpio *chip,
-						unsigned int num)
-{
-	unsigned long flags = 0;
-	u32 gpio_num = 0;
-
-	spin_lock_irqsave(&gpio_lock, flags);
-
-	for (gpio_num = 0; gpio_num < num; gpio_num++) {
-		sch_gpio_reg_clear_if_set(RGTPE, gpio_num);
-		sch_gpio_reg_clear_if_set(RGTNE, gpio_num);
-		sch_gpio_reg_clear_if_set(RGGPE, gpio_num);
-		sch_gpio_reg_clear_if_set(RGSMI, gpio_num);
-		sch_gpio_reg_clear_if_set(RGNMIEN, gpio_num);
-		/* clear any pending interrupt */
-		sch_gpio_reg_set(RGTS, gpio_num, 1);
-	}
-
-	spin_unlock_irqrestore(&gpio_lock, flags);
+	/* Clear any pending interrupts */
+	outl(0xFFFFFFFF, sch->iobase + GTS);
+	outl(0xFFFFFFFF, sch->iobase + GTS + RESUME_WELL_OFFSET);
 }
 
 static inline irqreturn_t do_serve_irq(int reg_status, unsigned int irq_base)
 {
 	int ret = IRQ_NONE;
 	u32 pending = 0, gpio = 0;
+	/* Which pins (if any) triggered the interrupt */
+	pending = inl(reg_status);
 
-	/* Which pin (if any) triggered the interrupt */
-	while ((pending = inb(reg_status))) {
-		/* Serve each asserted interrupt */
-		do {
-			gpio = __ffs(pending);
-			generic_handle_irq(irq_base + gpio);
-			pending &= ~BIT(gpio);
-			ret = IRQ_HANDLED;
-		} while (pending);
+	/* Serve each asserted interrupt */
+	/* Note that the interrupt is cleared as part of the irq_ack of
+	 * the handle_edge_irq callback
+	 */
+	while (pending) {
+		gpio = __ffs(pending);
+		generic_handle_irq(irq_base + gpio);
+		pending &= ~BIT(gpio);
+		ret = IRQ_HANDLED;
 	}
 
 	return ret;
@@ -612,259 +416,196 @@ static inline irqreturn_t do_serve_irq(int reg_status, unsigned int irq_base)
 
 static irqreturn_t sch_gpio_irq_handler(int irq, void *dev_id)
 {
+	struct sch_gpio *sch = dev_id;
 	int ret = IRQ_NONE;
+	/* Both the core and resume banks are consolidated,
+	 * but the physical registers are still separated. In order
+	 * to access the status of resume bank irq status, we need
+	 * recalculate the irq base for resume bank
+	 */
+	int resume_irq_base = sch->irq_base + sch->resume_base;
 
-	ret |= do_serve_irq(gpio_ba + CGTS, chip_ptr->irq_base_core);
-	ret |= do_serve_irq(gpio_ba + RGTS, chip_ptr->irq_base_resume);
+	ret |= do_serve_irq(sch->iobase + GTS, sch->irq_base);
+	ret |= do_serve_irq(sch->iobase + RGTS, resume_irq_base);
 
 	return ret;
 }
 
 static int sch_gpio_probe(struct platform_device *pdev)
 {
-	struct resource *res;
-	struct sch_gpio *chip;
-	int err, id;
+	struct sch_gpio *sch;
+	struct resource *res, *res_irq;
+	int err = 0;
+	int ret;
 
-	chip = kzalloc(sizeof(*chip), GFP_KERNEL);
-	if (chip == NULL)
-		return -ENOMEM;
-
-	chip_ptr = chip;
-
-	id = pdev->id;
-	if (!id)
-		return -ENODEV;
-
-	/* Get UIO memory */
-	info = kzalloc(sizeof(struct uio_info), GFP_KERNEL);
-	if (!info)
+	sch = devm_kzalloc(&pdev->dev, sizeof(*sch), GFP_KERNEL);
+	if (!sch)
 		return -ENOMEM;
 
 	res = platform_get_resource(pdev, IORESOURCE_IO, 0);
 	if (!res)
 		return -EBUSY;
 
-	if (!request_region(res->start, resource_size(res), pdev->name))
+	if (!devm_request_region(&pdev->dev, res->start, resource_size(res),
+				 pdev->name))
 		return -EBUSY;
 
-	gpio_ba = res->start;
+	res_irq = platform_get_resource(pdev, IORESOURCE_IRQ, 0);
+	if (res_irq) {
+		sch->irq = res_irq->start;
+		sch->irq_support = true;
+	} else {
+		dev_warn(&pdev->dev,
+			 "failed to obtain irq number for device\n");
+		sch->irq_support = false;
+	}
 
-	irq_num = RESOURCE_IRQ;
+	spin_lock_init(&sch->lock);
+	sch->iobase = res->start;
+	sch->chip = sch_gpio_chip;
+	sch->chip.label = dev_name(&pdev->dev);
+	sch->chip.dev = &pdev->dev;
 
-	switch (id) {
+	switch (pdev->id) {
 	case PCI_DEVICE_ID_INTEL_SCH_LPC:
-		sch_gpio_core.base = 0;
-		sch_gpio_core.ngpio = 10;
-
-		sch_gpio_resume.base = 10;
-		sch_gpio_resume.ngpio = 4;
+		sch->core_base = 0;
+		sch->resume_base = 10;
+		sch->chip.ngpio = 14;
 
 		/*
 		 * GPIO[6:0] enabled by default
 		 * GPIO7 is configured by the CMC as SLPIOVR
 		 * Enable GPIO[9:8] core powered gpios explicitly
 		 */
-		outb(0x3, gpio_ba + CGEN + 1);
+		sch_gpio_reg_set(&sch->chip, 8, GEN, 1);
+		sch_gpio_reg_set(&sch->chip, 9, GEN, 1);
 		/*
 		 * SUS_GPIO[2:0] enabled by default
 		 * Enable SUS_GPIO3 resume powered gpio explicitly
 		 */
-		outb(0x8, gpio_ba + RGEN);
+		sch_gpio_reg_set(&sch->chip, 13, GEN, 1);
 		break;
 
 	case PCI_DEVICE_ID_INTEL_ITC_LPC:
-		sch_gpio_core.base = 0;
-		sch_gpio_core.ngpio = 5;
-
-		sch_gpio_resume.base = 5;
-		sch_gpio_resume.ngpio = 9;
+		sch->core_base = 0;
+		sch->resume_base = 5;
+		sch->chip.ngpio = 14;
 		break;
 
 	case PCI_DEVICE_ID_INTEL_CENTERTON_ILB:
-		sch_gpio_core.base = 0;
-		sch_gpio_core.ngpio = 21;
-
-		sch_gpio_resume.base = 21;
-		sch_gpio_resume.ngpio = 9;
+		sch->core_base = 0;
+		sch->resume_base = 21;
+		sch->chip.ngpio = 30;
 		break;
 
-	case PCI_DEVICE_ID_INTEL_QUARK_ILB:
-		sch_gpio_core.base = 0;
-		sch_gpio_core.ngpio = 2;
-
-		sch_gpio_resume.base = 2;
-		sch_gpio_resume.ngpio = 6;
+	case PCI_DEVICE_ID_INTEL_QUARK_X1000_ILB:
+		sch->core_base = 0;
+		sch->resume_base = 2;
+		sch->chip.ngpio = 8;
 		break;
 
 	default:
-		err = -ENODEV;
-		goto err_sch_gpio_core;
+		return -ENODEV;
 	}
 
-	sch_gpio_core.dev = &pdev->dev;
-	sch_gpio_resume.dev = &pdev->dev;
+	gpiochip_add(&sch->chip);
 
-	err = gpiochip_add(&sch_gpio_core);
-	if (err < 0)
-		goto err_sch_gpio_core;
-
-	err = gpiochip_add(&sch_gpio_resume);
-	if (err < 0)
-		goto err_sch_gpio_resume;
-
-	chip->irq_base_core = irq_alloc_descs(-1, 0,
-						sch_gpio_core.ngpio,
+	if (sch->irq_support) {
+		sch->irq_base = irq_alloc_descs(-1, 0, sch->chip.ngpio,
 						NUMA_NO_NODE);
-	if (chip->irq_base_core < 0) {
-		dev_err(&pdev->dev, "failure adding GPIO core IRQ descs\n");
-		chip->irq_base_core = -1;
-		goto err_sch_intr_core;
-	}
-
-	chip->irq_base_resume = irq_alloc_descs(-1, 0,
-						sch_gpio_resume.ngpio,
-						NUMA_NO_NODE);
-	if (chip->irq_base_resume < 0) {
-		dev_err(&pdev->dev, "failure adding GPIO resume IRQ descs\n");
-		chip->irq_base_resume = -1;
-		goto err_sch_intr_resume;
-	}
-
-	platform_set_drvdata(pdev, chip);
-
-	err = platform_device_register(&qrk_gpio_restrict_pdev);
-	if (err < 0)
-		goto err_sch_gpio_device_register;
-
-	/* disable interrupts */
-	sch_gpio_core_irq_disable_all(chip, sch_gpio_core.ngpio);
-	sch_gpio_resume_irq_disable_all(chip, sch_gpio_resume.ngpio);
-
-
-	err = request_irq(irq_num, sch_gpio_irq_handler,
-				IRQF_SHARED, KBUILD_MODNAME, chip);
-	if (err != 0) {
+		if (sch->irq_base < 0) {
 			dev_err(&pdev->dev,
-				"%s request_irq failed\n", __func__);
+				"failed to allocate GPIO IRQ descs\n");
+			goto err_sch_intr_chip;
+		}
+
+		/* disable interrupts */
+		sch_gpio_irq_disable_all(sch);
+
+		err = devm_request_irq(&pdev->dev, sch->irq,
+				       sch_gpio_irq_handler, IRQF_SHARED,
+				       KBUILD_MODNAME, sch);
+
+		if (err) {
+			dev_err(&pdev->dev,
+				"failed to request IRQ\n");
 			goto err_sch_request_irq;
+		}
+
+		sch_gpio_irqs_init(sch);
 	}
 
-	sch_gpio_core_irqs_init(chip, sch_gpio_core.ngpio);
-	sch_gpio_resume_irqs_init(chip, sch_gpio_resume.ngpio);
+	platform_set_drvdata(pdev, sch);
 
+#ifdef CONFIG_INTEL_QRK_GPIO_UIO
 	/* UIO */
-	info->port[0].name = "gpio_regs";
-	info->port[0].start = res->start;
-	info->port[0].size = resource_size(res);
-	info->port[0].porttype = UIO_PORT_X86;
-	info->name = "sch_gpio";
-	info->version = "0.0.1";
+	sch->info.port[0].name = "gpio_regs";
+	sch->info.port[0].start = res->start;
+	sch->info.port[0].size = resource_size(res);
+	sch->info.port[0].porttype = UIO_PORT_X86;
+	sch->info.name = "sch_gpio";
+	sch->info.version = "0.0.1";
 
-	if (uio_register_device(&pdev->dev, info))
+	if (uio_register_device(&pdev->dev, &sch->info))
 		goto err_sch_uio_register;
 
 	pr_info("%s UIO port addr 0x%04x size %lu porttype %d\n",
-		__func__, (unsigned int)info->port[0].start,
-		info->port[0].size, info->port[0].porttype);
+		__func__, (unsigned int)sch->info.port[0].start,
+		sch->info.port[0].size, sch->info.port[0].porttype);
+#endif
+
+	err = platform_device_register(&gpio_restrict_pdev);
+	if (err < 0)
+		goto err_sch_gpio_device_register;
 
 	return 0;
 
-err_sch_uio_register:
-	free_irq(irq_num, chip);
-
-err_sch_request_irq:
-	platform_device_unregister(&qrk_gpio_restrict_pdev);
-
 err_sch_gpio_device_register:
-	irq_free_descs(chip->irq_base_resume, sch_gpio_resume.ngpio);
+#ifdef CONFIG_INTEL_QRK_GPIO_UIO
+	uio_unregister_device(&sch->info);
 
-err_sch_intr_resume:
-	irq_free_descs(chip->irq_base_core, sch_gpio_core.ngpio);
+err_sch_uio_register:
+#endif
+err_sch_request_irq:
+	irq_free_descs(sch->irq_base, sch->chip.ngpio);
 
-err_sch_intr_core:
-	err = gpiochip_remove(&sch_gpio_resume);
-	if (err)
-		dev_err(&pdev->dev, "%s failed, %d\n",
-		"resume gpiochip_remove()", err);
-
-err_sch_gpio_resume:
-	err = gpiochip_remove(&sch_gpio_core);
-	if (err)
-		dev_err(&pdev->dev, "%s failed, %d\n",
-		"core gpiochip_remove()", err);
-
-err_sch_gpio_core:
-	release_region(res->start, resource_size(res));
-	gpio_ba = 0;
-
-	kfree(chip);
-	chip_ptr = 0;
-
-	if (info != NULL)
-		kfree(info);
+err_sch_intr_chip:
+	ret = gpiochip_remove(&sch->chip);
 
 	return err;
 }
 
 static int sch_gpio_remove(struct platform_device *pdev)
 {
-	int err = 0;
-	struct resource *res;
+	int ret;
+	struct sch_gpio *sch = platform_get_drvdata(pdev);
 
-	struct sch_gpio *chip = platform_get_drvdata(pdev);
+#ifdef CONFIG_INTEL_QRK_GPIO_UIO
+	uio_unregister_device(&sch->info);
+#endif
 
-	if (gpio_ba) {
+	if (sch->irq_support)
+		irq_free_descs(sch->irq_base, sch->chip.ngpio);
 
-		if (info != NULL) {
-			uio_unregister_device(info);
-			kfree(info);
-		}
+	platform_device_unregister(&gpio_restrict_pdev);
 
-		sch_gpio_resume_irqs_deinit(chip, sch_gpio_resume.ngpio);
-		sch_gpio_core_irqs_deinit(chip, sch_gpio_core.ngpio);
+	ret = gpiochip_remove(&sch->chip);
 
-		if (irq_num > 0)
-			free_irq(irq_num, chip);
-
-		platform_device_unregister(&qrk_gpio_restrict_pdev);
-
-		irq_free_descs(chip->irq_base_resume,
-				sch_gpio_resume.ngpio);
-
-		irq_free_descs(chip->irq_base_core, sch_gpio_core.ngpio);
-
-		err = gpiochip_remove(&sch_gpio_resume);
-		if (err)
-			dev_err(&pdev->dev, "%s failed, %d\n",
-				"resume gpiochip_remove()", err);
-
-		err  = gpiochip_remove(&sch_gpio_core);
-		if (err)
-			dev_err(&pdev->dev, "%s failed, %d\n",
-				"core gpiochip_remove()", err);
-
-		res = platform_get_resource(pdev, IORESOURCE_IO, 0);
-
-		release_region(res->start, resource_size(res));
-		gpio_ba = 0;
-	}
-
-	kfree(chip);
-
-	chip_ptr = 0;
-
-	return err;
+	return ret;
 }
 
 /*
  * Disables IRQ line of Legacy GPIO chip so that its state is not controlled by
- * PM framework (disabled before calling suspend_noirq callback and re-enabled
- * after calling resume_noirq callback of devices).
+ * PM framework (disabled before calling suspend_noirq callback and
+ * re-enabled after calling resume_noirq callback of devices).
  */
 static int sch_gpio_suspend_sys(struct device *dev)
 {
-	disable_irq(irq_num);
+	struct platform_device *pdev = to_platform_device(dev);
+	struct sch_gpio *sch = platform_get_drvdata(pdev);
+
+	disable_irq(sch->irq);
+
 	return 0;
 }
 
@@ -877,13 +618,15 @@ static int sch_gpio_suspend_sys(struct device *dev)
  */
 static int sch_gpio_suspend_sys_noirq(struct device *dev)
 {
-	struct sch_gpio_context *regs = &chip_ptr->context;
+	struct platform_device *pdev = to_platform_device(dev);
+	struct sch_gpio *sch = platform_get_drvdata(pdev);
+	struct sch_gpio_context *regs = &sch->context;
 
-	regs->cgen	= inl(gpio_ba + CGEN);
-	regs->cgio	= inl(gpio_ba + CGIO);
-	regs->cglvl	= inl(gpio_ba + CGLV);
-	regs->cgsmi	= inl(gpio_ba + CGSMI);
-	regs->cgnmien	= inl(gpio_ba + CGNMIEN);
+	regs->cgen	= inl(sch->iobase + GEN);
+	regs->cgio	= inl(sch->iobase + GIO);
+	regs->cglvl	= inl(sch->iobase + GLV);
+	regs->cgsmi	= inl(sch->iobase + GSMI);
+	regs->cgnmien	= inl(sch->iobase + CGNMIEN);
 
 	return 0;
 }
@@ -893,27 +636,33 @@ static int sch_gpio_suspend_sys_noirq(struct device *dev)
  */
 static int sch_gpio_resume_sys_noirq(struct device *dev)
 {
-	struct sch_gpio_context *regs = &chip_ptr->context;
+	struct platform_device *pdev = to_platform_device(dev);
+	struct sch_gpio *sch = platform_get_drvdata(pdev);
+	struct sch_gpio_context *regs = &sch->context;
 
-	outl(regs->cgio,	gpio_ba + CGIO);
-	outl(regs->cglvl,	gpio_ba + CGLV);
-	outl(regs->cgsmi,	gpio_ba + CGSMI);
-	outl(regs->cgnmien,	gpio_ba + CGNMIEN);
-	outl(regs->cgen,	gpio_ba + CGEN);
+	outl(regs->cgio, sch->iobase + GIO);
+	outl(regs->cglvl, sch->iobase + GLV);
+	outl(regs->cgsmi, sch->iobase + GSMI);
+	outl(regs->cgnmien, sch->iobase + CGNMIEN);
+	outl(regs->cgen, sch->iobase + GEN);
 
 	return 0;
 }
 
 /*
  * Re-enables the IRQ line of Legacy GPIO chip.
- * Done here instead of dpm_resume_no_irq() PM handler in order to be sure that
- * all the system busses (I2C, SPI) are resumed when the IRQ is fired, otherwise
- * a SPI or I2C device might fail to handle its own interrupt because the IRQ
- * handler (bottom half) involves talking to the device.
+ * Done here instead of pm_resume_no_irq() PM handler in order to be sure that
+ * all the system busses (I2C, SPI) are resumed when the IRQ is fired,
+ * otherwise a SPI or I2C device might fail to handle its own interrupt because
+ * the IRQ handler (bottom half) involves talking to the device.
  */
 static int sch_gpio_resume_sys(struct device *dev)
 {
-	enable_irq(irq_num);
+	struct platform_device *pdev = to_platform_device(dev);
+	struct sch_gpio *sch = platform_get_drvdata(pdev);
+
+	enable_irq(sch->irq);
+
 	return 0;
 }
 
@@ -927,7 +676,6 @@ const struct dev_pm_ops sch_gpio_pm_ops = {
 static struct platform_driver sch_gpio_driver = {
 	.driver = {
 		.name	= "sch_gpio",
-		.owner	= THIS_MODULE,
 		.pm	= &sch_gpio_pm_ops,
 	},
 	.probe		= sch_gpio_probe,

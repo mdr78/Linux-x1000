@@ -27,16 +27,21 @@
 #include <linux/module.h>
 #include <linux/pci.h>
 #include <linux/platform_device.h>
-#include <linux/uio_driver.h>
-#include "intel_qrk_gip.h"
+#include <linux/mfd/intel_qrk_gip.h>
 
-static void qrk_gpio_restrict_release(struct device *dev) {}
-static struct platform_device qrk_gpio_restrict_pdev = 
-{
-	.name	= "qrk-gpio-restrict-sc",
-	.dev.release = qrk_gpio_restrict_release,
+#ifdef CONFIG_INTEL_QRK_GPIO_UIO
+#include <linux/uio_driver.h>
+#endif
+
+static void gpio_restrict_release(struct device *dev) {}
+static struct platform_device gpio_restrict_pdev = {
+	.name	= "gpio-restrict-sc",
+	.dev.release = gpio_restrict_release,
 };
+
+#ifdef CONFIG_INTEL_QRK_GPIO_UIO
 struct uio_info *info;
+#endif
 
 /* The base GPIO number under GPIOLIB framework */
 #define INTEL_QRK_GIP_GPIO_BASE		8
@@ -44,30 +49,22 @@ struct uio_info *info;
 /* The default number of South-Cluster GPIO on Quark. */
 #define INTEL_QRK_GIP_NGPIO		8
 
-/*
- * The default base IRQ for searching and allocating the range of GPIO IRQ
- * descriptors.
- */
-#define INTEL_QRK_GIP_GPIO_IRQBASE	56
-
 /* The GPIO private data. */
 static struct gpio_chip *gc;
 static struct irq_chip_generic *igc;
 static void __iomem *reg_base;
 static spinlock_t lock;
 static int irq_base;
-static unsigned int n_gpio = INTEL_QRK_GIP_NGPIO;
-static unsigned int gpio_irqbase = INTEL_QRK_GIP_GPIO_IRQBASE;
 
 /* Store GPIO context across system-wide suspend/resume transitions */
 static struct gpio_saved_regs {
 	u32 data;
 	u32 dir;
 	u32 int_en;
-	u32 int_mask; 
-	u32 int_type; 
-	u32 int_pol; 
-	u32 int_deb; 
+	u32 int_mask;
+	u32 int_type;
+	u32 int_pol;
+	u32 int_deb;
 } saved_regs;
 
 /* PortA registers set. Note other ports are unused */
@@ -82,12 +79,6 @@ static struct gpio_saved_regs {
 #define PORTA_DEBOUNCE			0x48	/* Debounce enable */
 #define PORTA_INT_EOI			0x4c	/* Clear interrupt */
 #define PORTA_EXT			0x50	/* External */
-
-module_param(n_gpio, uint, S_IRUGO | S_IWUSR);
-MODULE_PARM_DESC(n_gpio, "Number of GPIO");
-
-module_param(gpio_irqbase, uint, S_IRUGO | S_IWUSR);
-MODULE_PARM_DESC(gpio_irqbase, "Base IRQ for GPIO range");
 
 /**
  * intel_qrk_gpio_get
@@ -271,7 +262,8 @@ static int intel_qrk_gpio_irq_type(struct irq_data *d, unsigned type)
 
 	if (type & (IRQ_TYPE_LEVEL_HIGH | IRQ_TYPE_LEVEL_LOW)) {
 		__irq_set_handler_locked(d->irq, handle_level_irq);
-	} else if (type & IRQ_TYPE_EDGE_BOTH) {
+	} else if (0 == ret && type & (IRQ_TYPE_EDGE_FALLING
+		   | IRQ_TYPE_EDGE_RISING)) {
 		__irq_set_handler_locked(d->irq, handle_edge_irq);
 	}
 
@@ -510,10 +502,12 @@ int intel_qrk_gpio_probe(struct pci_dev *pdev)
 	int retval = 0;
 	resource_size_t start = 0, len = 0;
 
+#ifdef CONFIG_INTEL_QRK_GPIO_UIO
 	/* Get UIO memory */
 	info = kzalloc(sizeof(struct uio_info), GFP_KERNEL);
 	if (!info)
 		return -ENOMEM;
+#endif
 
 	/* Determine the address of the GPIO area */
 	start = pci_resource_start(pdev, GIP_GPIO_BAR);
@@ -539,13 +533,6 @@ int intel_qrk_gpio_probe(struct pci_dev *pdev)
 		goto err_iounmap;
 	}
 
-	if (n_gpio == 0 || n_gpio > INTEL_QRK_GIP_NGPIO) {
-		dev_err(&pdev->dev, "n_gpio outside range [1,%d]\n",
-			INTEL_QRK_GIP_NGPIO);
-		retval = -EINVAL;
-		goto err_free_gpiochip;
-	}
-
 	gc->label = "intel_qrk_gip_gpio";
 	gc->owner = THIS_MODULE;
 	gc->direction_input = intel_qrk_gpio_direction_input;
@@ -555,7 +542,7 @@ int intel_qrk_gpio_probe(struct pci_dev *pdev)
 	gc->set_debounce = intel_qrk_gpio_set_debounce;
 	gc->to_irq = intel_qrk_gpio_to_irq;
 	gc->base = INTEL_QRK_GIP_GPIO_BASE;
-	gc->ngpio = n_gpio;
+	gc->ngpio = INTEL_QRK_GIP_NGPIO;
 	gc->can_sleep = 0;
 	retval = gpiochip_add(gc);
 	if (retval) {
@@ -569,13 +556,13 @@ int intel_qrk_gpio_probe(struct pci_dev *pdev)
 	 * Allocate a range of IRQ descriptor for the available GPIO.
 	 * IRQs are allocated dynamically.
 	 */
-	irq_base = irq_alloc_descs(-1, gpio_irqbase, n_gpio, NUMA_NO_NODE);
+	irq_base = irq_alloc_descs(-1, 0, gc->ngpio, NUMA_NO_NODE);
 	if (irq_base < 0) {
 		dev_err(&pdev->dev, "failure adding GPIO IRQ descriptors\n");
 		goto err_remove_gpiochip;
 	}
 
-	retval = platform_device_register(&qrk_gpio_restrict_pdev);
+	retval = platform_device_register(&gpio_restrict_pdev);
 	if (retval < 0){
 		goto err_free_irq_descs;
 	}
@@ -584,9 +571,10 @@ int intel_qrk_gpio_probe(struct pci_dev *pdev)
 			reg_base, handle_simple_irq);
 	if (NULL == igc) {
 		retval = -ENOMEM;
-		goto err_free_irq_descs;
+		goto err_unregister_platform_device;
 	}
 
+#ifdef CONFIG_INTEL_QRK_GPIO_UIO
 	/* UIO */
 	info->mem[0].addr = start;
 	info->mem[0].internal_addr = reg_base;
@@ -597,12 +585,14 @@ int intel_qrk_gpio_probe(struct pci_dev *pdev)
 	info->version = "0.0.1";
 
 	if (uio_register_device(&pdev->dev, info))
-		goto err_free_irq_descs;
+		goto err_unregister_platform_device;
 
 	pr_info("%s UIO addr 0x%08x internal_addr 0x%08x size %lu memtype %d\n",
 		__func__, (unsigned int)info->mem[0].addr,
 		(unsigned int)info->mem[0].internal_addr, info->mem[0].size,
 		info->mem[0].memtype);
+#endif
+
 	igc->chip_types->chip.irq_mask = intel_qrk_gpio_irq_mask;
 	igc->chip_types->chip.irq_unmask = intel_qrk_gpio_irq_unmask;
 	igc->chip_types->chip.irq_set_type = intel_qrk_gpio_irq_type;
@@ -610,13 +600,15 @@ int intel_qrk_gpio_probe(struct pci_dev *pdev)
 	igc->chip_types->chip.irq_disable = intel_qrk_gpio_irq_disable;
 	igc->chip_types->chip.irq_ack = intel_qrk_gpio_irq_ack;
 
-	irq_setup_generic_chip(igc, IRQ_MSK(n_gpio), IRQ_GC_INIT_MASK_CACHE,
-			IRQ_NOREQUEST | IRQ_NOPROBE, 0);
+	irq_setup_generic_chip(igc, IRQ_MSK(gc->ngpio), IRQ_GC_INIT_MASK_CACHE,
+			       IRQ_NOREQUEST | IRQ_NOPROBE, 0);
 
 	return 0;
 
+err_unregister_platform_device:
+	platform_device_unregister(&gpio_restrict_pdev);
 err_free_irq_descs:
-	irq_free_descs(irq_base, n_gpio);
+	irq_free_descs(irq_base, gc->ngpio);
 err_remove_gpiochip:
 	if (0 != gpiochip_remove(gc))
 		dev_err(&pdev->dev, "failed removing gpio_chip\n");
@@ -625,8 +617,9 @@ err_free_gpiochip:
 err_iounmap:
 	iounmap(reg_base);
 exit:
-	if (info != NULL)
-		kfree(info);
+#ifdef CONFIG_INTEL_QRK_GPIO_UIO
+	kfree(info);
+#endif
 	return retval;
 }
 
@@ -649,23 +642,24 @@ void intel_qrk_gpio_remove(struct pci_dev *pdev)
 	}
 
 	/* Tear down IRQ descriptors */
-	irq_remove_generic_chip(igc, IRQ_MSK(n_gpio), 0,
-		IRQ_NOREQUEST | IRQ_NOPROBE);
+	irq_remove_generic_chip(igc, IRQ_MSK(gc->ngpio), 0,
+				IRQ_NOREQUEST | IRQ_NOPROBE);
 	kfree(igc);
-	irq_free_descs(irq_base, n_gpio);
 
-	platform_device_unregister(&qrk_gpio_restrict_pdev);
+	platform_device_unregister(&gpio_restrict_pdev);
+
+	irq_free_descs(irq_base, gc->ngpio);
 
 	/* Release GPIO chip */
 	if (0 != gpiochip_remove(gc))
 		dev_err(&pdev->dev, "failed removing gpio_chip\n");
 
-
-	if (info != NULL){
-		uio_unregister_device(info);
-		kfree(info);
-	}
+#ifdef CONFIG_INTEL_QRK_GPIO_UIO
+	uio_unregister_device(info);
+	kfree(info);
+#endif
 
 	kfree(gc);
 	iounmap(reg_base);
+
 }

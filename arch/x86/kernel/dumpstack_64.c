@@ -24,7 +24,6 @@ static char x86_stack_ids[][8] = {
 		[ DEBUG_STACK-1			]	= "#DB",
 		[ NMI_STACK-1			]	= "NMI",
 		[ DOUBLEFAULT_STACK-1		]	= "#DF",
-		[ STACKFAULT_STACK-1		]	= "#SS",
 		[ MCE_STACK-1			]	= "#MC",
 #if DEBUG_STKSZ > EXCEPTION_STKSZ
 		[ N_EXCEPTION_STACKS ...
@@ -249,14 +248,10 @@ void show_regs(struct pt_regs *regs)
 {
 	int i;
 	unsigned long sp;
-	const int cpu = smp_processor_id();
-	struct task_struct *cur = current;
 
 	sp = regs->sp;
-	printk("CPU %d ", cpu);
+	show_regs_print_info(KERN_DEFAULT);
 	__show_regs(regs, 1);
-	printk(KERN_DEFAULT "Process %s (pid: %d, threadinfo %p, task %p)\n",
-	       cur->comm, cur->pid, task_thread_info(cur), cur);
 
 	/*
 	 * When in-kernel, we also print out the stack and code at the

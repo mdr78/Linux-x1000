@@ -2474,8 +2474,8 @@ static irqreturn_t vino_interrupt(int irq, void *dev_id)
 
 		if ((!handled_a) && (done_a || skip_a)) {
 			if (!skip_a) {
-				do_gettimeofday(&vino_drvdata->
-						a.int_data.timestamp);
+				v4l2_get_timestamp(
+					&vino_drvdata->a.int_data.timestamp);
 				vino_drvdata->a.int_data.frame_counter = fc_a;
 			}
 			vino_drvdata->a.int_data.skip = skip_a;
@@ -2489,8 +2489,8 @@ static irqreturn_t vino_interrupt(int irq, void *dev_id)
 
 		if ((!handled_b) && (done_b || skip_b)) {
 			if (!skip_b) {
-				do_gettimeofday(&vino_drvdata->
-						b.int_data.timestamp);
+				v4l2_get_timestamp(
+					&vino_drvdata->b.int_data.timestamp);
 				vino_drvdata->b.int_data.frame_counter = fc_b;
 			}
 			vino_drvdata->b.int_data.skip = skip_b;
@@ -3042,7 +3042,7 @@ static int vino_g_std(struct file *file, void *__fh,
 }
 
 static int vino_s_std(struct file *file, void *__fh,
-			   v4l2_std_id *std)
+			   v4l2_std_id std)
 {
 	struct vino_channel_settings *vcs = video_drvdata(file);
 	unsigned long flags;
@@ -3056,7 +3056,7 @@ static int vino_s_std(struct file *file, void *__fh,
 	}
 
 	/* check if the standard is valid for the current input */
-	if ((*std) & vino_inputs[vcs->input].std) {
+	if (std & vino_inputs[vcs->input].std) {
 		dprintk("standard accepted\n");
 
 		/* change the video norm for SAA7191
@@ -3065,13 +3065,13 @@ static int vino_s_std(struct file *file, void *__fh,
 		if (vcs->input == VINO_INPUT_D1)
 			goto out;
 
-		if ((*std) & V4L2_STD_PAL) {
+		if (std & V4L2_STD_PAL) {
 			ret = vino_set_data_norm(vcs, VINO_DATA_NORM_PAL,
 						 &flags);
-		} else if ((*std) & V4L2_STD_NTSC) {
+		} else if (std & V4L2_STD_NTSC) {
 			ret = vino_set_data_norm(vcs, VINO_DATA_NORM_NTSC,
 						 &flags);
-		} else if ((*std) & V4L2_STD_SECAM) {
+		} else if (std & V4L2_STD_SECAM) {
 			ret = vino_set_data_norm(vcs, VINO_DATA_NORM_SECAM,
 						 &flags);
 		} else {
@@ -3147,7 +3147,6 @@ static int vino_try_fmt_vid_cap(struct file *file, void *__fh,
 	pf->colorspace =
 		vino_data_formats[tempvcs.data_format].colorspace;
 
-	pf->priv = 0;
 	return 0;
 }
 
@@ -3174,8 +3173,6 @@ static int vino_g_fmt_vid_cap(struct file *file, void *__fh,
 		vcs->decimation;
 	pf->colorspace =
 		vino_data_formats[vcs->data_format].colorspace;
-
-	pf->priv = 0;
 
 	spin_unlock_irqrestore(&vino_drvdata->input_lock, flags);
 	return 0;
@@ -3218,8 +3215,6 @@ static int vino_s_fmt_vid_cap(struct file *file, void *__fh,
 		vcs->decimation;
 	pf->colorspace =
 		vino_data_formats[vcs->data_format].colorspace;
-
-	pf->priv = 0;
 
 	spin_unlock_irqrestore(&vino_drvdata->input_lock, flags);
 	return 0;
@@ -3409,6 +3404,9 @@ static void vino_v4l2_get_buffer_status(struct vino_channel_settings *vcs,
 
 	if (fb->map_count > 0)
 		b->flags |= V4L2_BUF_FLAG_MAPPED;
+
+	b->flags &= ~V4L2_BUF_FLAG_TIMESTAMP_MASK;
+	b->flags |= V4L2_BUF_FLAG_TIMESTAMP_MONOTONIC;
 
 	b->index = fb->id;
 	b->memory = (vcs->fb_queue.type == VINO_MEMORY_MMAP) ?

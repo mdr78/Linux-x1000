@@ -37,10 +37,8 @@
 #include <linux/iio/iio.h>
 #include <linux/iio/sysfs.h>
 #include <linux/iio/events.h>
-
 #include <linux/iio/common/st_sensors.h>
 #include <linux/iio/common/st_sensors_i2c.h>
-
 #include <linux/platform_data/lis331dlh_intel_qrk.h>
 
 /* DEFAULT VALUE FOR SENSORS */
@@ -115,8 +113,7 @@
 { \
 	.type = device_type, \
 	.modified = 1, \
-	.info_mask = IIO_CHAN_INFO_RAW_SEPARATE_BIT | \
-			IIO_CHAN_INFO_SCALE_SEPARATE_BIT, \
+	.info_mask_separate = BIT(IIO_CHAN_INFO_RAW) | BIT(IIO_CHAN_INFO_SCALE) , \
 	.scan_index = index, \
 	.channel = mod, \
 	.channel2 = mod, \
@@ -128,7 +125,8 @@
 		.storagebits = 16, \
 		.endianness = endian, \
 	}, \
-	.event_mask = IIO_EV_BIT(IIO_EV_TYPE_THRESH, IIO_EV_DIR_RISING), \
+	.event_spec = lis331dlh_events,					\
+	.num_event_specs = ARRAY_SIZE(lis331dlh_events),			\
 }
 
 static const u8 iio_modifier_map[] = {
@@ -140,6 +138,15 @@ static const u8 iio_modifier_map[] = {
 	IIO_MOD_X_AND_Z,
 	IIO_MOD_Y_AND_Z,
 	IIO_MOD_X_AND_Y_AND_Z,
+};
+
+static const struct iio_event_spec lis331dlh_events[] = {
+	{
+		.type = IIO_EV_TYPE_THRESH,
+		.dir = IIO_EV_DIR_RISING,
+		.mask_separate = BIT(IIO_EV_INFO_VALUE) |
+			BIT(IIO_EV_INFO_ENABLE),
+	},
 };
 
 
@@ -204,7 +211,7 @@ static inline int lis331dlh_intel_qrk_read_info_raw(struct iio_dev *indio_dev,
 	int err;
 
 	mutex_lock(&indio_dev->mlock);
-	err = st_sensors_read_axis_data(indio_dev, ch->address, val);
+	err = st_sensors_read_axis_data(indio_dev, ch, val);
 
 	if (unlikely(err < 0))
 		goto read_error;
@@ -279,10 +286,12 @@ static const struct attribute_group lis331dlh_intel_qrk_attribute_group = {
 	.attrs = lis331dlh_intel_qrk_attributes,
 };
 
-static int lis331dlh_intel_qrk_read_event_value(
-	struct iio_dev *indio_dev,
-	u64 event_code,
-	int *val)
+static int lis331dlh_intel_qrk_read_event_value(struct iio_dev *indio_dev,
+	const struct iio_chan_spec *chan,
+	enum iio_event_type type,
+	enum iio_event_direction dir,
+	enum iio_event_info info,
+	int *val, int *val2)
 {
 	int err;
 	u8 data;
@@ -291,14 +300,20 @@ static int lis331dlh_intel_qrk_read_event_value(
 	err = sdata->tf->read_byte(&sdata->tb, sdata->dev,
 				ST_ACCEL_2_INT2_THRESH_ADDR, &data);
 
+	if (err)
+		return err;
+
 	*val = (int) data;
-	return err;
+	return IIO_VAL_INT;
+
 }
 
-static int lis331dlh_intel_qrk_write_event_value(
-	struct iio_dev *indio_dev,
-	u64 event_code,
-	int val)
+static int lis331dlh_intel_qrk_write_event_value(struct iio_dev *indio_dev,
+	const struct iio_chan_spec *chan,
+	enum iio_event_type type,
+	enum iio_event_direction dir,
+	enum iio_event_info info,
+	int val, int val2)
 {
 	int err;
 	struct st_sensor_data *sdata;
@@ -350,9 +365,10 @@ static int lis331dlh_intel_qrk_configure_threshold_interrupt(
 	return err;
 }
 
-static int lis331dlh_intel_qrk_read_event_config(
-	struct iio_dev *indio_dev,
-	u64 event_code)
+static int lis331dlh_intel_qrk_read_event_config(struct iio_dev *indio_dev,
+	const struct iio_chan_spec *chan,
+	enum iio_event_type type,
+	enum iio_event_direction dir)
 {
 	int err = 0;
 	u8 data, mask;
@@ -362,14 +378,15 @@ static int lis331dlh_intel_qrk_read_event_config(
 				   ST_ACCEL_2_INT2_CFG_ADDR,
 				   &data);
 
-	mask = 1 << ((IIO_EVENT_CODE_EXTRACT_MODIFIER(event_code) << 1) - 1);
+	mask = (1 << ((chan->channel2 << 1) -1));
 
 	return !!(data & mask);
 }
 
-static int lis331dlh_intel_qrk_write_event_config(
-	struct iio_dev *indio_dev,
-	u64 event_code,
+static int lis331dlh_intel_qrk_write_event_config(struct iio_dev *indio_dev,
+	const struct iio_chan_spec *chan,
+	enum iio_event_type type,
+	enum iio_event_direction dir,
 	int state)
 {
 	int err;
@@ -379,7 +396,7 @@ static int lis331dlh_intel_qrk_write_event_config(
 	bool new_int_state;
 
 	struct st_sensor_data *sdata = iio_priv(indio_dev);
-	mask = 1 << ((IIO_EVENT_CODE_EXTRACT_MODIFIER(event_code) << 1) - 1);
+	mask = (1 << ((chan->channel2 << 1) -1));
 
 	err = st_sensors_write_data_with_mask(indio_dev,
 					ST_ACCEL_2_INT2_CFG_ADDR,
@@ -485,7 +502,7 @@ static struct st_sensors lis331dlh_intel_qrk_sensor = {
 	},
 	.drdy_irq = {
 		.addr = ST_ACCEL_2_CTRL_REG3,
-		.mask = ST_ACCEL_2_DRDY_IRQ_MASK,
+		.mask_int2 = ST_ACCEL_2_DRDY_IRQ_MASK,
 	},
 	.multi_read_bit = ST_ACCEL_2_MULTIREAD_BIT,
 	.bootime = 2,
@@ -549,7 +566,7 @@ static int lis331dlh_intel_qrk_probe(
 
 	adata->sensor->drdy_irq.ig1.en_mask = QRK_ACCEL_INT2_DISABLED;
 
-	ret = st_sensors_init_sensor(indio_dev);
+	ret = st_sensors_init_sensor(indio_dev,pdata->default_lis331dlh_pdata);
 	if (unlikely(ret < 0))
 		goto lis331dlh_intel_qrk_init_err;
 

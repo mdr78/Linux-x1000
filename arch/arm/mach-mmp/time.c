@@ -28,8 +28,8 @@
 #include <linux/of.h>
 #include <linux/of_address.h>
 #include <linux/of_irq.h>
+#include <linux/sched_clock.h>
 
-#include <asm/sched_clock.h>
 #include <mach/addr-map.h>
 #include <mach/regs-timers.h>
 #include <mach/regs-apbc.h>
@@ -61,7 +61,7 @@ static inline uint32_t timer_read(void)
 	return __raw_readl(mmp_timer_base + TMR_CVWR(1));
 }
 
-static u32 notrace mmp_read_sched_clock(void)
+static u64 notrace mmp_read_sched_clock(void)
 {
 	return timer_read();
 }
@@ -141,7 +141,6 @@ static void timer_set_mode(enum clock_event_mode mode,
 static struct clock_event_device ckevt = {
 	.name		= "clockevent",
 	.features	= CLOCK_EVT_FEAT_ONESHOT,
-	.shift		= 32,
 	.rating		= 200,
 	.set_next_event	= timer_set_next_event,
 	.set_mode	= timer_set_mode,
@@ -196,17 +195,15 @@ void __init timer_init(int irq)
 {
 	timer_config();
 
-	setup_sched_clock(mmp_read_sched_clock, 32, CLOCK_TICK_RATE);
+	sched_clock_register(mmp_read_sched_clock, 32, CLOCK_TICK_RATE);
 
-	ckevt.mult = div_sc(CLOCK_TICK_RATE, NSEC_PER_SEC, ckevt.shift);
-	ckevt.max_delta_ns = clockevent_delta2ns(MAX_DELTA, &ckevt);
-	ckevt.min_delta_ns = clockevent_delta2ns(MIN_DELTA, &ckevt);
 	ckevt.cpumask = cpumask_of(0);
 
 	setup_irq(irq, &timer_irq);
 
 	clocksource_register_hz(&cksrc, CLOCK_TICK_RATE);
-	clockevents_register_device(&ckevt);
+	clockevents_config_and_register(&ckevt, CLOCK_TICK_RATE,
+					MIN_DELTA, MAX_DELTA);
 }
 
 #ifdef CONFIG_OF

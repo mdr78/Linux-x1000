@@ -42,7 +42,7 @@ static void __iomem *request_and_map(struct device *dev,
 	}
 
 	ptr = devm_ioremap_nocache(dev, res->start, resource_size(res));
-	if (!res)
+	if (!ptr)
 		dev_err(dev, "ioremap_nocache of %s failed!", res->name);
 
 	return ptr;
@@ -90,7 +90,7 @@ static int denali_dt_probe(struct platform_device *ofdev)
 	denali->irq = platform_get_irq(ofdev, 0);
 	if (denali->irq < 0) {
 		dev_err(&ofdev->dev, "no irq defined\n");
-		return -ENXIO;
+		return denali->irq;
 	}
 
 	denali->flash_reg = request_and_map(&ofdev->dev, denali_reg);
@@ -108,7 +108,7 @@ static int denali_dt_probe(struct platform_device *ofdev)
 		denali->dev->dma_mask = NULL;
 	}
 
-	dt->clk = clk_get(&ofdev->dev, NULL);
+	dt->clk = devm_clk_get(&ofdev->dev, NULL);
 	if (IS_ERR(dt->clk)) {
 		dev_err(&ofdev->dev, "no clk available\n");
 		return PTR_ERR(dt->clk);
@@ -124,7 +124,6 @@ static int denali_dt_probe(struct platform_device *ofdev)
 
 out_disable_clk:
 	clk_disable_unprepare(dt->clk);
-	clk_put(dt->clk);
 
 	return ret;
 }
@@ -135,7 +134,6 @@ static int denali_dt_remove(struct platform_device *ofdev)
 
 	denali_remove(&dt->denali);
 	clk_disable(dt->clk);
-	clk_put(dt->clk);
 
 	return 0;
 }
@@ -146,21 +144,11 @@ static struct platform_driver denali_dt_driver = {
 	.driver		= {
 		.name	= "denali-nand-dt",
 		.owner	= THIS_MODULE,
-		.of_match_table	= of_match_ptr(denali_nand_dt_ids),
+		.of_match_table	= denali_nand_dt_ids,
 	},
 };
 
-static int __init denali_init_dt(void)
-{
-	return platform_driver_register(&denali_dt_driver);
-}
-module_init(denali_init_dt);
-
-static void __exit denali_exit_dt(void)
-{
-	platform_driver_unregister(&denali_dt_driver);
-}
-module_exit(denali_exit_dt);
+module_platform_driver(denali_dt_driver);
 
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("Jamie Iles");

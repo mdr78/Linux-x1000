@@ -179,7 +179,6 @@ static int __init ttyprintk_init(void)
 {
 	int ret = -ENOMEM;
 
-	tpk_port.port.ops = &null_ops;
 	mutex_init(&tpk_port.port_write_mutex);
 
 	ttyprintk_driver = tty_alloc_driver(1,
@@ -190,6 +189,7 @@ static int __init ttyprintk_init(void)
 		return PTR_ERR(ttyprintk_driver);
 
 	tty_port_init(&tpk_port.port);
+	tpk_port.port.ops = &null_ops;
 
 	ttyprintk_driver->driver_name = "ttyprintk";
 	ttyprintk_driver->name = "ttyprintk";
@@ -216,4 +216,4 @@ error:
 	ttyprintk_driver = NULL;
 	return ret;
 }
-module_init(ttyprintk_init);
+device_initcall(ttyprintk_init);

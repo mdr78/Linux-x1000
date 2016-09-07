@@ -384,7 +384,8 @@ __SYSCALL(174, sys_chroot, 1)
 #define __NR_pivot_root 			175
 __SYSCALL(175, sys_pivot_root, 2)
 #define __NR_umount 				176
-__SYSCALL(176, sys_umount, 2)
+__SYSCALL(176, sys_oldumount, 1)
+#define __ARCH_WANT_SYS_OLDUMOUNT
 #define __NR_swapoff 				177
 __SYSCALL(177, sys_swapoff, 1)
 #define __NR_sync 				178
@@ -483,7 +484,7 @@ __SYSCALL(222, sys_ni_syscall, 0)
 #define __NR_restart_syscall 			223
 __SYSCALL(223, sys_restart_syscall, 0)
 #define __NR_sigaltstack 			224
-__SYSCALL(224, xtensa_sigaltstack, 2)
+__SYSCALL(224, sys_sigaltstack, 2)
 #define __NR_rt_sigreturn 			225
 __SYSCALL(225, xtensa_rt_sigreturn, 1)
 #define __NR_rt_sigaction 			226
@@ -728,8 +729,18 @@ __SYSCALL(330, sys_prlimit64, 4)
 #define __NR_kcmp				331
 __SYSCALL(331, sys_kcmp, 5)
 
+#define __NR_finit_module			332
+__SYSCALL(332, sys_finit_module, 3)
 
-#define __NR_syscall_count			332
+#define __NR_accept4				333
+__SYSCALL(333, sys_accept4, 4)
+
+#define __NR_sched_setattr			334
+__SYSCALL(334, sys_sched_setattr, 2)
+#define __NR_sched_getattr			335
+__SYSCALL(335, sys_sched_getattr, 3)
+
+#define __NR_syscall_count			336
 
 /*
  * sysxtensa syscall handler

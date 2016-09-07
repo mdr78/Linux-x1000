@@ -1016,7 +1016,9 @@ static int gbefb_mmap(struct fb_info *info,
 	/* check range */
 	if (vma->vm_pgoff > (~0UL >> PAGE_SHIFT))
 		return -EINVAL;
-	if (offset + size > gbe_mem_size)
+	if (size > gbe_mem_size)
+		return -EINVAL;
+	if (offset > gbe_mem_size - size)
 		return -EINVAL;
 
 	/* remap using the fastest write-through mode on architecture */
@@ -1234,9 +1236,9 @@ static int gbefb_probe(struct platform_device *p_dev)
 	platform_set_drvdata(p_dev, info);
 	gbefb_create_sysfs(&p_dev->dev);
 
-	printk(KERN_INFO "fb%d: %s rev %d @ 0x%08x using %dkB memory\n",
-	       info->node, info->fix.id, gbe_revision, (unsigned) GBE_BASE,
-	       gbe_mem_size >> 10);
+	fb_info(info, "%s rev %d @ 0x%08x using %dkB memory\n",
+		info->fix.id, gbe_revision, (unsigned)GBE_BASE,
+		gbe_mem_size >> 10);
 
 	return 0;
 

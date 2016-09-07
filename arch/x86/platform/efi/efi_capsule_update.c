@@ -321,3 +321,4 @@ MODULE_LICENSE("Dual BSD/GPL");
 
 module_init(efi_capsule_update_init);
 module_exit(efi_capsule_update_exit);
+

@@ -52,7 +52,7 @@ loop1:
 	add	x2, x2, #4			// add 4 (line length offset)
 	mov	x4, #0x3ff
 	and	x4, x4, x1, lsr #3		// find maximum number on the way size
-	clz	x5, x4				// find bit position of way size increment
+	clz	w5, w4				// find bit position of way size increment
 	mov	x7, #0x7fff
 	and	x7, x7, x1, lsr #13		// extract max number of the index size
 loop2:
@@ -146,7 +146,7 @@ ENDPROC(flush_icache_range)
 ENDPROC(__flush_cache_user_range)
 
 /*
- *	__flush_kern_dcache_page(kaddr)
+ *	__flush_dcache_area(kaddr, size)
  *
  *	Ensure that the data held in the page kaddr is written back to the
  *	page in question.

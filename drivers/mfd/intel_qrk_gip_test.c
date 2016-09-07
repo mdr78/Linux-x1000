@@ -285,7 +285,7 @@ static int gpio_sc_level_int(int positive, int masking)
 	 * Submit task to workqueue to drive the external Test Equipment.
 	 * Note the task is delayed long enough to have Aarvark already set up.
 	 * This because Aardvark has to ignore the initial glitches during the
-	 * previous GPIO setup phase. 
+	 * previous GPIO setup phase.
 	 */
 	schedule_delayed_work(&work, 20 * HZ);
 
@@ -696,13 +696,13 @@ static int gpio_spidev_unregister(int north_cluster)
 }
 
 /**
- * gip_system_power_transition 
+ * gip_system_power_transition
  *
  * @param state: 0 if transition to S3, !0 if transition to S0
  * @return 0 success < 0 failure
  *
  * Exercise system-wide suspend/resume power management transitions.
- * 
+ *
  */
 static int gip_system_power_transition(int state)
 {
@@ -727,24 +727,24 @@ static int gip_system_power_transition(int state)
 }
 
 /**
- * gpio_nmi_enable 
+ * gpio_nmi_enable
  *
  * @param enable: 0 to disable, !0 to enable
  * @return 0 success < 0 failure
  *
  * Hack the legacy GPIO hardware to enable rising-edge triggered NMI on Core
  * Well gpio0.
- * 
+ *
  */
 static int gpio_nmi_enable(int enable)
 {
 	unsigned int base_u32 = 0x0;
 	unsigned short base = 0x0;
 	struct pci_dev *ilb = pci_get_device(PCI_VENDOR_ID_INTEL,
-					     PCI_DEVICE_ID_INTEL_QUARK_ILB,
+					     PCI_DEVICE_ID_INTEL_QUARK_X1000_ILB,
 					     NULL);
 	/* Assume interrupts are disabled by default by BIOS */
-	unsigned char gpio = enable ? 0x01 : 0x00; 
+	unsigned char gpio = enable ? 0x01 : 0x00;
 
 	if (NULL == ilb) {
 		pr_err("can't find iLB device\n");
@@ -1219,7 +1219,7 @@ static int __init intel_qrk_gip_test_init(void)
 		&intel_qrk_gip_test_driver, intel_qrk_gip_test_probe, NULL, 0, NULL, 0);
 
 	if(IS_ERR(gip_test_dev.pldev)){
-		printk(KERN_ERR "platform_create_bundle fail!\n"); 
+		printk(KERN_ERR "platform_create_bundle fail!\n");
 		retval = PTR_ERR(gip_test_dev.pldev);
 		goto err_class;
 	}
@@ -1244,4 +1244,3 @@ module_exit(intel_qrk_gip_test_exit);
 MODULE_AUTHOR("Josef Ahmad <josef.ahmad@intel.com>");
 MODULE_DESCRIPTION("Quark GIP test module");
 MODULE_LICENSE("Dual BSD/GPL");
-

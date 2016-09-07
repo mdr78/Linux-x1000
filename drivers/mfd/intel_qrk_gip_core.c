@@ -31,18 +31,18 @@
 #include <linux/mfd/intel_qrk_gip_pdata.h>
 #include <linux/module.h>
 #include <linux/pci.h>
-#include "intel_qrk_gip.h"
+#include <linux/mfd/intel_qrk_gip.h>
 
 static unsigned int enable_msi = 1;
-module_param(enable_msi, uint, S_IRUGO | S_IWUSR);
+module_param(enable_msi, uint, S_IRUGO);
 MODULE_PARM_DESC(enable_msi, "Enable PCI MSI mode");
 
 static unsigned int i2c = 1;
-module_param(i2c, uint, S_IRUGO | S_IWUSR);
+module_param(i2c, uint, S_IRUGO);
 MODULE_PARM_DESC(i2c, "Register I2C adapter");
 
 static unsigned int gpio = 1;
-module_param(gpio, uint, S_IRUGO | S_IWUSR);
+module_param(gpio, uint, S_IRUGO);
 MODULE_PARM_DESC(gpio, "Register GPIO chip");
 
 /* GIP private data, supporting only a single instance of the device. */
@@ -69,13 +69,12 @@ static irqreturn_t intel_qrk_gip_handler(int irq, void *dev_id)
 
 	mask_pvm(data->pci_device);
 
+	if (likely(gpio))
+		ret_gpio = intel_qrk_gpio_isr(irq, NULL);
+
 	if (likely(i2c)) {
 		/* Only I2C gets platform data */
 		ret_i2c = i2c_dw_isr(irq, data->i2c_drvdata);
-	}
-
-	if (likely(gpio)) {
-		ret_gpio = intel_qrk_gpio_isr(irq, NULL);
 	}
 
 	unmask_pvm(data->pci_device);
@@ -97,7 +96,7 @@ MODULE_DEVICE_TABLE(pci, intel_qrk_gip_ids);
 
 /**
  * qrk_gip_suspend
- * 
+ *
  * @param device: Pointer to device
  * @return 0 success < 0 failure
  *
@@ -132,7 +131,7 @@ static int qrk_gip_suspend(struct device *dev)
 
 /**
  * qrk_gip_resume
- * 
+ *
  * @param device: Pointer to device
  * @return 0 success < 0 failure
  *
@@ -204,7 +203,7 @@ static int intel_qrk_gip_probe(struct pci_dev *pdev,
 	}
 	pci_set_drvdata(pdev, gip_drvdata);
 
-	gip_drvdata->pci_device = pdev; 
+	gip_drvdata->pci_device = pdev;
 
 	/* Retrieve platform data if there is any */
 	if (*intel_qrk_gip_get_pdata) {
@@ -229,7 +228,7 @@ static int intel_qrk_gip_probe(struct pci_dev *pdev,
 		pci_set_master(pdev);
 		retval = pci_enable_msi(pdev);
 		if (retval)
-			goto err_release_drvdata;
+			dev_dbg(&pdev->dev, "failed to allocate MSI entry\n");
 	}
 
 	/*
@@ -241,7 +240,7 @@ static int intel_qrk_gip_probe(struct pci_dev *pdev,
 			"intel_qrk_gip", gip_drvdata);
 	if (retval) {
 		dev_err(&pdev->dev, "error requesting IRQ\n");
-		goto err;
+		goto err_release_drvdata;
 	}
 
 	return 0;
@@ -249,7 +248,6 @@ static int intel_qrk_gip_probe(struct pci_dev *pdev,
 err_release_drvdata:
 	pci_set_drvdata(pdev, NULL);
 	kfree(gip_drvdata);
-err:
 	if (enable_msi)
 		pci_disable_msi(pdev);
 err_pciregions_release:
@@ -305,8 +303,8 @@ static struct pci_driver intel_qrk_gip_driver = {
 	.id_table	= intel_qrk_gip_ids,
 	.probe		= intel_qrk_gip_probe,
 	.remove		= intel_qrk_gip_remove,
-	.driver         = {
-		.pm     = &qrk_gip_pm_ops,
+	.driver		= {
+		.pm	= &qrk_gip_pm_ops,
 	},
 };
 
@@ -325,4 +323,4 @@ module_exit(intel_qrk_gip_exit);
 
 MODULE_AUTHOR("Intel Corporation");
 MODULE_DESCRIPTION("Quark GIP driver");
-MODULE_LICENSE("Dual BSD/GPL");
+MODULE_LICENSE("GPL");

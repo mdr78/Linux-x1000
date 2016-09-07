@@ -52,6 +52,7 @@
 #define REG_SELECT_PWM			0x1a
 #define REG_PIN_DIR			0x1c
 #define REG_DRIVE_PULLUP		0x1d
+#define REG_DRIVE_STRONG		0x21
 #define REG_PWM_SELECT			0x28
 #define REG_PWM_CLK			0x29
 #define REG_PWM_PERIOD			0x2a
@@ -144,10 +145,14 @@ static int cy8c9540a_gpio_get_value(struct gpio_chip *chip, unsigned gpio)
 	port = cypress_get_port(gpio);
 	in_reg = REG_INPUT_PORT0 + port;
 
+	mutex_lock(&dev->lock);
+
 	ret = i2c_smbus_read_byte_data(client, in_reg);
 	if (ret < 0) {
 		dev_err(&client->dev, "can't read input port%u\n", in_reg);
 	}
+
+	mutex_unlock(&dev->lock);
 
 	return !!(ret & BIT(cypress_get_offs(gpio, port)));
 }
@@ -257,6 +262,18 @@ static int cy8c9540a_gpio_direction(struct gpio_chip *chip, unsigned gpio,
 
 	mutex_lock(&dev->lock);
 
+	if (val)
+		dev->outreg_cache[port] |= BIT(cypress_get_offs(gpio, port));
+	else
+		dev->outreg_cache[port] &= ~BIT(cypress_get_offs(gpio, port));
+
+	ret = i2c_smbus_write_byte_data(client, REG_OUTPUT_PORT0 + port,
+					dev->outreg_cache[port]);
+	if (ret < 0) {
+		dev_err(&client->dev, "can't write output port%u\n", port);
+		goto end;
+	}
+
 	ret = i2c_smbus_write_byte_data(client, REG_PORT_SELECT, port);
 	if (ret < 0) {
 		dev_err(&client->dev, "can't select port %u\n", port);
@@ -310,6 +327,7 @@ static void cy8c9540a_irq_bus_sync_unlock(struct irq_data *d)
 	int ret = 0;
 	int i = 0;
 
+	mutex_lock(&dev->lock);
 	for (i = 0; i < NPORTS; i++) {
 		if (dev->irq_mask_cache[i] ^ dev->irq_mask[i]) {
 			dev->irq_mask_cache[i] = dev->irq_mask[i];
@@ -333,6 +351,7 @@ static void cy8c9540a_irq_bus_sync_unlock(struct irq_data *d)
 	}
 
 end:
+	mutex_unlock(&dev->lock);
 	mutex_unlock(&dev->irq_lock);
 }
 
@@ -394,7 +413,7 @@ static irqreturn_t cy8c9540a_irq_handler(int irq, void *devid)
 	int ret = 0;
 
 	ret = i2c_smbus_read_i2c_block_data(dev->client, REG_INTR_STAT_PORT0,
-		NPORTS, stat);	/* W1C  */
+		NPORTS, stat);	/* Read to clear */
 	if (ret < 0) {
 		memset(stat, 0, sizeof(stat));
 	}
@@ -434,7 +453,7 @@ static int cy8c9540a_irq_setup(struct cy8c9540a *dev)
 	/* Clear interrupt state */
 
 	ret = i2c_smbus_read_i2c_block_data(dev->client, REG_INTR_STAT_PORT0,
-		NPORTS, dummy);	/* W1C  */
+		NPORTS, dummy);	/* Read to clear */
 	if (ret < 0) {
 		dev_err(&client->dev, "couldn't clear int status\n");
 		goto err;
@@ -525,9 +544,15 @@ static int cy8c9540a_pwm_config(struct pwm_chip *chip, struct pwm_device *pwm,
 	 * Check period's upper bound.  Note the duty cycle is already sanity
 	 * checked by the PWM framework.
 	 */
-	if (period > PWM_MAX_PERIOD) {
-		dev_err(&client->dev, "period must be within [0-%d]ns\n",
-			PWM_MAX_PERIOD * PWM_TCLK_NS);
+	if (period > PWM_MAX_PERIOD || 0 == period) {
+		dev_err(&client->dev, "period must be within [%d-%d]ns\n",
+			PWM_TCLK_NS, PWM_MAX_PERIOD * PWM_TCLK_NS);
+		return -EINVAL;
+	}
+
+	if (period == duty) {
+		dev_err(&client->dev,
+			"duty cycle must be smaller than the period\n");
 		return -EINVAL;
 	}
 
@@ -562,7 +587,6 @@ static int cy8c9540a_pwm_enable(struct pwm_chip *chip, struct pwm_device *pwm)
 	s32 ret = 0;
 	int gpio = 0;
 	int port = 0, pin = 0;
-	u8 out_reg = 0;
 	u8 val = 0;
 	struct cy8c9540a *dev =
 	    container_of(chip, struct cy8c9540a, pwm_chip);
@@ -573,18 +597,47 @@ static int cy8c9540a_pwm_enable(struct pwm_chip *chip, struct pwm_device *pwm)
 	}
 
 	gpio = dev->pwm2gpio_mapping[pwm->pwm];
-	port = cypress_get_port(gpio);
-	pin = cypress_get_offs(gpio, port);
-	out_reg = REG_OUTPUT_PORT0 + port;
-
-	/* Set pin as output driving high */
-	ret = cy8c9540a_gpio_direction(&dev->gpio_chip, gpio, 1, 1);
-	if (ret < 0) {
-		dev_err(&client->dev, "can't set pwm%u as output\n", pwm->pwm);
-		return ret;
+	if (CY8C9540A_PWM_UNUSED == gpio) {
+		dev_err(&client->dev, "pwm%d is unused\n", pwm->pwm);
+		return -EINVAL;
 	}
 
+	port = cypress_get_port(gpio);
+	pin = cypress_get_offs(gpio, port);
+
 	mutex_lock(&dev->lock);
+
+	/* Set output port pin high */
+	dev->outreg_cache[port] |= BIT((u8)pin);
+
+	ret = i2c_smbus_write_byte_data(client, REG_OUTPUT_PORT0 + port,
+					dev->outreg_cache[port]);
+	if (ret < 0) {
+		dev_err(&client->dev, "can't write output port%u\n", port);
+		goto end;
+	}
+
+	/* Select the correct port */
+	ret = i2c_smbus_write_byte_data(client, REG_PORT_SELECT, (u8) port);
+	if (ret < 0) {
+		dev_err(&client->dev, "can't write to PORT_SELECT\n");
+		goto end;
+	}
+
+	/* Output on the pin */
+	ret = i2c_smbus_read_byte_data(client, REG_DRIVE_STRONG);
+	if (ret < 0) {
+		dev_err(&client->dev, "can't read pin direction\n");
+		goto end;
+	}
+
+	val = (u8)(ret | BIT((u8)pin));
+
+	ret = i2c_smbus_write_byte_data(client, REG_DRIVE_STRONG, val);
+	if (ret < 0) {
+		dev_err(&client->dev, "can't set drive mode port %u\n", port);
+		goto end;
+	}
 
 	/* Enable PWM */
 	ret = i2c_smbus_read_byte_data(client, REG_SELECT_PWM);
@@ -630,6 +683,23 @@ static void cy8c9540a_pwm_disable(struct pwm_chip *chip, struct pwm_device *pwm)
 
 	mutex_lock(&dev->lock);
 
+	/* Make sure the correct port is selected */
+	ret = i2c_smbus_write_byte_data(client, REG_PORT_SELECT, (u8) port);
+	if (ret < 0) {
+		dev_err(&client->dev, "can't write to SELECT_PORT\n");
+		goto end;
+	}
+
+	/* Configure the IO to Low for when the PWM is disabled later */
+	dev->outreg_cache[port] &= ~BIT((u8)pin);
+
+	ret = i2c_smbus_write_byte_data(client, REG_OUTPUT_PORT0 + port,
+					dev->outreg_cache[port]);
+	if (ret < 0) {
+		dev_err(&client->dev, "can't write to OUTPUT_PORT\n");
+		goto end;
+	}
+
 	/* Disable PWM */
 	ret = i2c_smbus_read_byte_data(client, REG_SELECT_PWM);
 	if (ret < 0) {
@@ -648,7 +718,7 @@ end:
 	return;
 }
 
-/* 
+/*
  * Some PWMs may be unavailable.  Prevent user from reserving them.
  */
 static int cy8c9540a_pwm_request(struct pwm_chip *chip, struct pwm_device *pwm)
@@ -970,4 +1040,3 @@ module_i2c_driver(cy8c9540a_driver);
 MODULE_AUTHOR("Josef Ahmad <josef.ahmad@linux.intel.com>");
 MODULE_DESCRIPTION("GPIO/PWM driver for CY8C9540A I/O expander");
 MODULE_LICENSE("GPL");
-

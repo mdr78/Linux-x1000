@@ -29,14 +29,37 @@
 #include <plat/pll.h>
 #include <plat/regs-srom.h>
 
-#include <mach/regs-irq.h>
-#include <mach/regs-gpio.h>
-#include <mach/regs-clock.h>
-#include <mach/regs-pmu.h>
+#include <mach/map.h>
 #include <mach/pm-core.h>
-#include <mach/pmu.h>
 
-static struct sleep_save exynos4_set_clksrc[] = {
+#include "common.h"
+#include "regs-pmu.h"
+
+#define EXYNOS4_EPLL_LOCK			(S5P_VA_CMU + 0x0C010)
+#define EXYNOS4_VPLL_LOCK			(S5P_VA_CMU + 0x0C020)
+
+#define EXYNOS4_EPLL_CON0			(S5P_VA_CMU + 0x0C110)
+#define EXYNOS4_EPLL_CON1			(S5P_VA_CMU + 0x0C114)
+#define EXYNOS4_VPLL_CON0			(S5P_VA_CMU + 0x0C120)
+#define EXYNOS4_VPLL_CON1			(S5P_VA_CMU + 0x0C124)
+
+#define EXYNOS4_CLKSRC_MASK_TOP			(S5P_VA_CMU + 0x0C310)
+#define EXYNOS4_CLKSRC_MASK_CAM			(S5P_VA_CMU + 0x0C320)
+#define EXYNOS4_CLKSRC_MASK_TV			(S5P_VA_CMU + 0x0C324)
+#define EXYNOS4_CLKSRC_MASK_LCD0		(S5P_VA_CMU + 0x0C334)
+#define EXYNOS4_CLKSRC_MASK_MAUDIO		(S5P_VA_CMU + 0x0C33C)
+#define EXYNOS4_CLKSRC_MASK_FSYS		(S5P_VA_CMU + 0x0C340)
+#define EXYNOS4_CLKSRC_MASK_PERIL0		(S5P_VA_CMU + 0x0C350)
+#define EXYNOS4_CLKSRC_MASK_PERIL1		(S5P_VA_CMU + 0x0C354)
+
+#define EXYNOS4_CLKSRC_MASK_DMC			(S5P_VA_CMU + 0x10300)
+
+#define EXYNOS4_EPLLCON0_LOCKED_SHIFT		(29)
+#define EXYNOS4_VPLLCON0_LOCKED_SHIFT		(29)
+
+#define EXYNOS4210_CLKSRC_MASK_LCD1		(S5P_VA_CMU + 0x0C338)
+
+static const struct sleep_save exynos4_set_clksrc[] = {
 	{ .reg = EXYNOS4_CLKSRC_MASK_TOP		, .val = 0x00000001, },
 	{ .reg = EXYNOS4_CLKSRC_MASK_CAM		, .val = 0x11111111, },
 	{ .reg = EXYNOS4_CLKSRC_MASK_TV			, .val = 0x00000111, },
@@ -48,7 +71,7 @@ static struct sleep_save exynos4_set_clksrc[] = {
 	{ .reg = EXYNOS4_CLKSRC_MASK_DMC		, .val = 0x00010000, },
 };
 
-static struct sleep_save exynos4210_set_clksrc[] = {
+static const struct sleep_save exynos4210_set_clksrc[] = {
 	{ .reg = EXYNOS4210_CLKSRC_MASK_LCD1		, .val = 0x00001111, },
 };
 
@@ -91,8 +114,8 @@ static int exynos_cpu_suspend(unsigned long arg)
 	/* issue the standby signal into the pm unit. */
 	cpu_do_idle();
 
-	/* we should never get past here */
-	panic("sleep resumed to originator?");
+	pr_info("Failed to suspend the system\n");
+	return 1; /* Aborting suspend */
 }
 
 static void exynos_pm_prepare(void)
@@ -217,6 +240,9 @@ static __init int exynos_pm_drvinit(void)
 	struct clk *pll_base;
 	unsigned int tmp;
 
+	if (soc_is_exynos5440())
+		return 0;
+
 	s3c_pm_init();
 
 	/* All wakeup disable */
@@ -282,6 +308,8 @@ static void exynos_pm_resume(void)
 	if (!(tmp & S5P_CENTRAL_LOWPWR_CFG)) {
 		tmp |= S5P_CENTRAL_LOWPWR_CFG;
 		__raw_writel(tmp, S5P_CENTRAL_SEQ_CONFIGURATION);
+		/* clear the wakeup state register */
+		__raw_writel(0x0, S5P_WAKEUP_STAT);
 		/* No need to perform below restore code */
 		goto early_wakeup;
 	}
@@ -338,6 +366,9 @@ static struct syscore_ops exynos_pm_syscore_ops = {
 
 static __init int exynos_pm_syscore_init(void)
 {
+	if (soc_is_exynos5440())
+		return 0;
+
 	register_syscore_ops(&exynos_pm_syscore_ops);
 	return 0;
 }

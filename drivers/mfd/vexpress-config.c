@@ -16,7 +16,6 @@
 #include <linux/bitops.h>
 #include <linux/completion.h>
 #include <linux/export.h>
-#include <linux/init.h>
 #include <linux/list.h>
 #include <linux/of.h>
 #include <linux/of_device.h>
@@ -184,13 +183,14 @@ static int vexpress_config_schedule(struct vexpress_config_trans *trans)
 
 	spin_lock_irqsave(&bridge->transactions_lock, flags);
 
-	vexpress_config_dump_trans("Executing", trans);
-
-	if (list_empty(&bridge->transactions))
+	if (list_empty(&bridge->transactions)) {
+		vexpress_config_dump_trans("Executing", trans);
 		status = bridge->info->func_exec(trans->func->func,
 				trans->offset, trans->write, trans->data);
-	else
+	} else {
+		vexpress_config_dump_trans("Queuing", trans);
 		status = VEXPRESS_CONFIG_STATUS_WAIT;
+	}
 
 	switch (status) {
 	case VEXPRESS_CONFIG_STATUS_DONE:
@@ -212,25 +212,31 @@ void vexpress_config_complete(struct vexpress_config_bridge *bridge,
 {
 	struct vexpress_config_trans *trans;
 	unsigned long flags;
+	const char *message = "Completed";
 
 	spin_lock_irqsave(&bridge->transactions_lock, flags);
 
 	trans = list_first_entry(&bridge->transactions,
 			struct vexpress_config_trans, list);
-	vexpress_config_dump_trans("Completed", trans);
-
 	trans->status = status;
-	list_del(&trans->list);
 
-	if (!list_empty(&bridge->transactions)) {
-		vexpress_config_dump_trans("Pending", trans);
+	do {
+		vexpress_config_dump_trans(message, trans);
+		list_del(&trans->list);
+		complete(&trans->completion);
 
-		bridge->info->func_exec(trans->func->func, trans->offset,
-				trans->write, trans->data);
-	}
+		if (list_empty(&bridge->transactions))
+			break;
+
+		trans = list_first_entry(&bridge->transactions,
+				struct vexpress_config_trans, list);
+		vexpress_config_dump_trans("Executing pending", trans);
+		trans->status = bridge->info->func_exec(trans->func->func,
+				trans->offset, trans->write, trans->data);
+		message = "Finished pending";
+	} while (trans->status == VEXPRESS_CONFIG_STATUS_DONE);
+
 	spin_unlock_irqrestore(&bridge->transactions_lock, flags);
-
-	complete(&trans->completion);
 }
 EXPORT_SYMBOL(vexpress_config_complete);
 

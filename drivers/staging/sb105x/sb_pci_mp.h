@@ -9,7 +9,6 @@
 #include <linux/sched.h>
 
 #include <linux/kernel.h>
-#include <linux/init.h>
 #include <linux/slab.h>
 #include <linux/wait.h>
 #include <linux/tty_driver.h>
@@ -19,7 +18,6 @@
 #include <asm/uaccess.h>
 #include <asm/io.h>
 #include <asm/irq.h>
-#include <asm/segment.h>
 #include <asm/serial.h>
 #include <linux/interrupt.h>
 
@@ -174,7 +172,7 @@ static DEFINE_MUTEX(mp_mutex);
 #define DEBUG_INTR(fmt...)  do { } while (0)
 #endif
 
-#if defined(__i386__) && (defined(CONFIG_M386) || defined(CONFIG_M486))
+#if defined(__i386__) && defined(CONFIG_M486)
 #define SERIAL_INLINE
 #endif
 #ifdef SERIAL_INLINE

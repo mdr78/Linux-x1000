@@ -344,7 +344,7 @@ static void sh_mobile_lcdc_clk_on(struct sh_mobile_lcdc_priv *priv)
 {
 	if (atomic_inc_and_test(&priv->hw_usecnt)) {
 		if (priv->dot_clk)
-			clk_enable(priv->dot_clk);
+			clk_prepare_enable(priv->dot_clk);
 		pm_runtime_get_sync(priv->dev);
 		if (priv->meram_dev && priv->meram_dev->pdev)
 			pm_runtime_get_sync(&priv->meram_dev->pdev->dev);
@@ -358,7 +358,7 @@ static void sh_mobile_lcdc_clk_off(struct sh_mobile_lcdc_priv *priv)
 			pm_runtime_put_sync(&priv->meram_dev->pdev->dev);
 		pm_runtime_put(priv->dev);
 		if (priv->dot_clk)
-			clk_disable(priv->dot_clk);
+			clk_disable_unprepare(priv->dot_clk);
 	}
 }
 
@@ -574,8 +574,9 @@ static int sh_mobile_lcdc_display_notify(struct sh_mobile_lcdc_chan *ch,
 	switch (event) {
 	case SH_MOBILE_LCDC_EVENT_DISPLAY_CONNECT:
 		/* HDMI plug in */
+		console_lock();
 		if (lock_fb_info(info)) {
-			console_lock();
+
 
 			ch->display.width = monspec->max_x * 10;
 			ch->display.height = monspec->max_y * 10;
@@ -594,19 +595,20 @@ static int sh_mobile_lcdc_display_notify(struct sh_mobile_lcdc_chan *ch,
 				fb_set_suspend(info, 0);
 			}
 
-			console_unlock();
+
 			unlock_fb_info(info);
 		}
+		console_unlock();
 		break;
 
 	case SH_MOBILE_LCDC_EVENT_DISPLAY_DISCONNECT:
 		/* HDMI disconnect */
+		console_lock();
 		if (lock_fb_info(info)) {
-			console_lock();
 			fb_set_suspend(info, 1);
-			console_unlock();
 			unlock_fb_info(info);
 		}
+		console_unlock();
 		break;
 
 	case SH_MOBILE_LCDC_EVENT_DISPLAY_MODE:
@@ -858,6 +860,7 @@ static void sh_mobile_lcdc_geometry(struct sh_mobile_lcdc_chan *ch)
 	tmp = ((mode->xres & 7) << 24) | ((display_h_total & 7) << 16)
 	    | ((mode->hsync_len & 7) << 8) | (hsync_pos & 7);
 	lcdc_write_chan(ch, LDHAJR, tmp);
+	lcdc_write_chan_mirror(ch, LDHAJR, tmp);
 }
 
 static void sh_mobile_lcdc_overlay_setup(struct sh_mobile_lcdc_overlay *ovl)
@@ -1224,7 +1227,7 @@ static void sh_mobile_lcdc_stop(struct sh_mobile_lcdc_priv *priv)
 		/* Free the MERAM cache. */
 		if (ch->cache) {
 			sh_mobile_meram_cache_free(priv->meram_dev, ch->cache);
-			ch->cache = 0;
+			ch->cache = NULL;
 		}
 
 	}
